@@ -4,20 +4,11 @@
 #include <QCursor>
 #include <QTimer>
 #include <QSplitter>
-#include <QVideoWidget>
-#include <QMediaPlayer>
-#include <QAudioOutput>
 #include <QIcon>
 #include <QLineEdit>
 #include <QTextEdit>
 #include <windows.h>
 #include <winuser.h>
-#include "Widgets/PlayerControls.h"
-#include "Widgets/PlayerTitleBar.h"
-#include "Library.h"
-#include "Downloads.h"
-#include "Search.h"
-#include "Settings.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowIcon(QIcon(":/Assets/Icon.ico"));
@@ -39,13 +30,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* videoLayout = new QVBoxLayout(videoContainer);
     videoLayout->setContentsMargins(0, 0, 0, 0);
 
-    videoWidget = new QVideoWidget(videoContainer);
+    // VLC Render Canvas
+    videoWidget = new QFrame(videoContainer);
+    videoWidget->setStyleSheet("background-color: black;");
     videoLayout->addWidget(videoWidget);
 
-    mediaPlayer = new QMediaPlayer(this);
-    audioOutput = new QAudioOutput(this);
-    mediaPlayer->setAudioOutput(audioOutput);
-    mediaPlayer->setVideoOutput(videoWidget);
+    // Initialize VLC
+    vlcInstance = std::make_shared<VLC::Instance>(0, nullptr);
+    vlcPlayer = std::make_shared<VLC::MediaPlayer>(*vlcInstance);
+
+    // Defer handle assignment until the window is shown to avoid crashes
+    QTimer::singleShot(0, this, [this]() {
+        vlcPlayer->setHwnd((void*)videoWidget->winId());
+        });
 
     mainSplitter->addWidget(videoContainer);
     mainSplitter->setCollapsible(0, false);
@@ -56,7 +53,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     Qt::WindowFlags overlayFlags = Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus;
 
-    playerControls = new PlayerControls(mediaPlayer, this);
+    playerControls = new PlayerControls(vlcPlayer.get(), this);
     playerControls->setWindowFlags(overlayFlags);
     playerControls->setAttribute(Qt::WA_TranslucentBackground);
 
@@ -90,7 +87,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             mainSplitter->setHandleWidth(0);
             mainSplitter->setSizes({ 1000, 0 });
         }
-
         QTimer::singleShot(100, this, [this]() {
             updateOverlayPosition();
             playerControls->raise();
@@ -125,6 +121,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     resize(1000, 700);
 }
 
+// Keep your existing helper functions below...
+// (nativeEvent, installFilterRecursive, resizeEvent, moveEvent, etc.)
+
 bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
     MSG* msg = static_cast<MSG*>(message);
     if (msg->message == WM_MOVING || msg->message == WM_MOVE) updateOverlayPosition();
@@ -151,8 +150,8 @@ void MainWindow::moveEvent(QMoveEvent* event) {
 }
 
 void MainWindow::onSingleClickTimeout() {
-    if (mediaPlayer->playbackState() == QMediaPlayer::PlayingState) mediaPlayer->pause();
-    else mediaPlayer->play();
+    if (vlcPlayer->isPlaying()) vlcPlayer->pause();
+    else vlcPlayer->play();
 }
 
 void MainWindow::keyPressEvent(QKeyEvent* event) {
@@ -161,8 +160,8 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         if (isFullScreen()) { showNormal(); mainSplitter->setHandleWidth(2); mainSplitter->setSizes({ 600, 300 }); }
         break;
     case Qt::Key_Space:
-        if (mediaPlayer->playbackState() == QMediaPlayer::PlayingState) mediaPlayer->pause();
-        else mediaPlayer->play();
+        if (vlcPlayer->isPlaying()) vlcPlayer->pause();
+        else vlcPlayer->play();
         break;
     default:
         QMainWindow::keyPressEvent(event);
@@ -172,21 +171,13 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     if (event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
-
         if (qobject_cast<QLineEdit*>(watched) || qobject_cast<QTextEdit*>(watched)) {
-            if (keyEvent->key() != Qt::Key_Escape) {
-                return false;
-            }
+            if (keyEvent->key() != Qt::Key_Escape) return false;
         }
-
         keyPressEvent(keyEvent);
-
-        if (keyEvent->key() == Qt::Key_Space || keyEvent->key() == Qt::Key_Escape) {
-            return true;
-        }
+        if (keyEvent->key() == Qt::Key_Space || keyEvent->key() == Qt::Key_Escape) return true;
         return false;
     }
-
     if (watched == videoWidget) {
         if (event->type() == QEvent::MouseButtonPress) {
             clickTimer->start(250);
@@ -245,11 +236,11 @@ void MainWindow::playVideo(const QUrl& fileUrl, const QString& title) {
         titleBar->setTitle("Streaming...");
     }
 
-    // RESTORED: Shows the gear icon ONLY if the URL is not a local file
     playerControls->setStreamingMode(!fileUrl.isLocalFile());
 
-    mediaPlayer->setSource(fileUrl);
-    mediaPlayer->play();
+    VLC::Media media(*vlcInstance, fileUrl.toString().toUtf8().constData(), VLC::Media::FromLocation);
+    vlcPlayer->setMedia(media);
+    vlcPlayer->play();
     showOSD();
 }
 

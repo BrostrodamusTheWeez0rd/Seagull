@@ -4,15 +4,17 @@
 #include <QMainWindow>
 #include <QTabWidget>
 #include <QSplitter>
-#include <QMediaPlayer>
-#include <QAudioOutput>
-#include <QVideoWidget>
+#include <QWidget>
+#include <QFrame>
 #include <QUrl>
 #include <QEvent>
 #include <QTimer>
 #include <QPoint>
 #include <QKeyEvent>
 #include <QByteArray>
+#include <memory>
+
+#include <vlcpp/vlc.hpp>
 
 #include "Library.h"
 #include "Downloads.h"
@@ -50,9 +52,11 @@ private:
     QSplitter* mainSplitter;
     QTabWidget* tabs;
     QWidget* videoContainer;
-    QMediaPlayer* mediaPlayer;
-    QAudioOutput* audioOutput;
-    QVideoWidget* videoWidget;
+
+    // VLC Core Components
+    std::shared_ptr<VLC::Instance> vlcInstance;
+    std::shared_ptr<VLC::MediaPlayer> vlcPlayer;
+    QFrame* videoWidget;
 
     PlayerControls* playerControls;
     PlayerTitleBar* titleBar;
