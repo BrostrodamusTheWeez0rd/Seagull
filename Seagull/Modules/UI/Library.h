@@ -21,7 +21,16 @@
 #include <QTimer>
 #include <QFileInfo>
 
+// -------------------------
+// Folder-only filter
+// -------------------------
 class FolderOnlyFilter : public QSortFilterProxyModel {
+    Q_OBJECT
+public:
+    explicit FolderOnlyFilter(QObject* parent = nullptr)
+        : QSortFilterProxyModel(parent) {
+    }
+
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override {
         auto* fsModel = qobject_cast<QFileSystemModel*>(sourceModel());
@@ -39,16 +48,21 @@ protected:
     }
 };
 
+// -------------------------
+// Media filter
+// -------------------------
 class MediaFilterModel : public QSortFilterProxyModel {
+    Q_OBJECT
+
 public:
-    // FIX 1: We need to know which folder the user clicked on
-    void setCurrentRootPath(const QString& path) {
-        currentRootPath = path;
-        invalidateFilter(); // Force the table to refresh with the new rule
+    explicit MediaFilterModel(QObject* parent = nullptr)
+        : QSortFilterProxyModel(parent) {
     }
 
-private:
-    QString currentRootPath;
+    void setCurrentRootPath(const QString& path) {
+        currentRootPath = path;
+        invalidateFilter();
+    }
 
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override {
@@ -58,11 +72,8 @@ protected:
         QModelIndex index = fsModel->index(sourceRow, 0, sourceParent);
         if (!index.isValid()) return false;
 
-        // FIX 2: We must accept the parent directory we are currently navigating into!
-        // However, we reject all SUB-directories so they don't show up in the file list.
         if (fsModel->isDir(index)) {
             QString path = fsModel->filePath(index);
-            // Accept ONLY if this folder is our target root (or its parent)
             return currentRootPath.startsWith(path);
         }
 
@@ -85,10 +96,17 @@ protected:
 
         return fsModel->fileName(index).contains(filter, Qt::CaseInsensitive);
     }
+
+private:
+    QString currentRootPath;
 };
 
+// -------------------------
+// Library widget
+// -------------------------
 class Library : public QWidget {
     Q_OBJECT
+
 public:
     explicit Library(QWidget* parent = nullptr);
 
@@ -113,27 +131,28 @@ private:
     void setTableRootSafe(const QModelIndex& sourceIndex);
 
 private:
-    QVBoxLayout* mainLayout;
-    QHBoxLayout* toolbarLayout;
+    QVBoxLayout* mainLayout = nullptr;
+    QHBoxLayout* toolbarLayout = nullptr;
 
-    QPushButton* backBtn;
-    QPushButton* fwdBtn;
-    QPushButton* upBtn;
-    QPushButton* refreshBtn;
-    QPushButton* plusFolderBtn;
+    QPushButton* backBtn = nullptr;
+    QPushButton* fwdBtn = nullptr;
+    QPushButton* upBtn = nullptr;
+    QPushButton* refreshBtn = nullptr;
+    QPushButton* plusFolderBtn = nullptr;
 
-    QLineEdit* addressBar;
-    QLineEdit* searchBar;
+    QLineEdit* addressBar = nullptr;
+    QLineEdit* searchBar = nullptr;
 
-    QSplitter* mainSplitter;
-    QTreeView* folderTree;
-    QTableView* fileTable;
+    QSplitter* mainSplitter = nullptr;
+    QTreeView* folderTree = nullptr;
+    QTableView* fileTable = nullptr;
 
-    QFileSystemModel* fileModel;
-    FolderOnlyFilter* treeFilter;
-    MediaFilterModel* tableFilter;
+    QFileSystemModel* fileModel = nullptr;
+    FolderOnlyFilter* treeFilter = nullptr;
+    MediaFilterModel* tableFilter = nullptr;
 
     QList<QString> history;
-    int historyIndex;
+    int historyIndex = -1;
 };
+
 #endif

@@ -6,23 +6,25 @@
 #include <QByteArray>
 #include <QUrl>
 #include <QIODevice>
+#include <QVariantMap>
 
-// A thin QIODevice wrapper around a QProcess stdout stream.
-// QMediaPlayer::setSourceDevice() needs a QIODevice — this bridges the gap.
+struct StreamOption {
+    QString formatId;
+    QString label;
+    bool isAudioOnly;
+};
+
 class FfmpegStreamDevice : public QIODevice {
     Q_OBJECT
 public:
     explicit FfmpegStreamDevice(QProcess* process, QObject* parent = nullptr)
         : QIODevice(parent), m_process(process) {
     }
-
     bool isSequential() const override { return true; }
-
     bool open(OpenMode mode) override {
         if (!(mode & QIODevice::ReadOnly)) return false;
         return QIODevice::open(mode);
     }
-
     qint64 bytesAvailable() const override {
         return m_process->bytesAvailable() + QIODevice::bytesAvailable();
     }
@@ -35,7 +37,6 @@ private:
     QProcess* m_process;
 };
 
-// ─────────────────────────────────────────────
 class SgYtDlp : public QObject {
     Q_OBJECT
 public:
@@ -43,7 +44,9 @@ public:
     ~SgYtDlp();
 
     void download(const QString& url);
-    void fetchMetadataAndStreamUrl(const QString& url);
+    void fetchMetadataAndStreamUrl(const QString& url, const QString& formatId = QString());
+    void probeAvailableQualities(const QString& url);
+    void fetchPlaylistEntries(const QString& playlistUrl);
     void cancel();
 
 signals:
@@ -52,13 +55,9 @@ signals:
     void finished(bool success);
     void metadataReady(const QString& title, const QString& uploader, const QString& duration,
         const QString& viewCount, const QString& uploadDate, const QString& thumbUrl);
-
-    // Emits the live QIODevice* for streaming — caller passes to QMediaPlayer::setSourceDevice()
-    // mimeType will be "video/mp2t"
-    void streamDeviceReady(QIODevice* device, const QString& mimeType);
-
-    // Fallback for single combined URLs (no proxy needed)
-    void streamUrlReady(const QUrl& url);
+    void availableQualitiesFound(const QList<StreamOption>& options);
+    void streamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl = QUrl());
+    void playlistEntriesReady(const QList<QString>& urls);
 
 private slots:
     void handleReadyRead();
@@ -66,16 +65,10 @@ private slots:
 
 private:
     QProcess* m_process;
-    QProcess* m_proxyProcess = nullptr;
-    FfmpegStreamDevice* m_streamDevice = nullptr;
 
-    void startProxy(const QString& videoUrl, const QString& audioUrl);
-    void stopProxy();
-
-    enum class JobMode { Idle, Downloading, FetchingMetadata };
+    enum class JobMode { Idle, Downloading, FetchingMetadata, Probing, FetchingPlaylist };
     JobMode currentMode = JobMode::Idle;
 
     QByteArray processBuffer;
-
     QStringList buildDownloadArgs(const QString& url);
 };

@@ -4,6 +4,7 @@
 #include <QInputDialog>
 #include <QDir>
 #include <QRegularExpression>
+#include <QFileInfo>
 
 Library::Library(QWidget* parent) : QWidget(parent) {
     mainLayout = new QVBoxLayout(this);
@@ -32,8 +33,6 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     mainLayout->addLayout(toolbarLayout);
 
     fileModel = new QFileSystemModel(this);
-
-    // IMPORTANT: use rootPath, not ""
     fileModel->setRootPath(QDir::rootPath());
 
     fileModel->setFilter(QDir::AllDirs |
@@ -47,7 +46,6 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     tableFilter = new MediaFilterModel();
     tableFilter->setSourceModel(fileModel);
 
-    // FIX 1: recursive filtering breaks QFileSystemModel stability here
     treeFilter->setRecursiveFilteringEnabled(true);
     tableFilter->setRecursiveFilteringEnabled(false);
 
@@ -66,6 +64,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     mainSplitter->addWidget(folderTree);
     mainSplitter->addWidget(fileTable);
     mainSplitter->setSizes({ 250, 750 });
+
     mainLayout->addWidget(mainSplitter);
 
     historyIndex = -1;
@@ -78,64 +77,91 @@ Library::Library(QWidget* parent) : QWidget(parent) {
 
     connect(searchBar, &QLineEdit::textChanged, this, &Library::updateSearch);
     connect(folderTree, &QTreeView::clicked, this, &Library::onTreeClicked);
-    // Double clicking tree will also navigate
     connect(folderTree, &QTreeView::doubleClicked, this, &Library::onTreeDoubleClicked);
     connect(fileTable, &QTableView::doubleClicked, this, &Library::onFileDoubleClicked);
     connect(fileTable, &QTableView::customContextMenuRequested, this, &Library::showContextMenu);
 
-    // FIX 2: delay initial navigation properly (prevents empty proxy state)
     QTimer::singleShot(0, this, [this]() {
         navigateTo(QDir::homePath());
         });
 }
 
 void Library::navigateTo(const QString& path, bool recordHistory) {
-    QModelIndex srcIdx = fileModel->index(path);
-    if (!srcIdx.isValid()) return;
+    if (path.isEmpty())
+        return;
 
-    folderTree->setCurrentIndex(treeFilter->mapFromSource(srcIdx));
+    QModelIndex srcIdx = fileModel->index(path);
+    if (!srcIdx.isValid())
+        return;
+
+    QModelIndex treeProxy = treeFilter->mapFromSource(srcIdx);
+    folderTree->setCurrentIndex(treeProxy);
+
     setTableRootSafe(srcIdx);
     addressBar->setText(path);
 
     if (recordHistory) {
-        while (history.size() > historyIndex + 1) {
+        while (history.size() > historyIndex + 1)
             history.removeLast();
-        }
+
         history.append(path);
         historyIndex++;
     }
 }
 
 void Library::setTableRootSafe(const QModelIndex& sourceIndex) {
-    // FIX 3: Tell the proxy model exactly which directory we want to enter,
-    // so it temporarily "allows" this directory to bypass the 'No Folders' rule!
-    tableFilter->setCurrentRootPath(fileModel->filePath(sourceIndex));
+    if (!sourceIndex.isValid())
+        return;
+
+    QString path = fileModel->filePath(sourceIndex);
+    if (path.isEmpty())
+        return;
+
+    tableFilter->setCurrentRootPath(path);
 
     QModelIndex proxyIdx = tableFilter->mapFromSource(sourceIndex);
-    fileTable->setRootIndex(proxyIdx);
+    if (proxyIdx.isValid())
+        fileTable->setRootIndex(proxyIdx);
 }
 
 void Library::onTreeClicked(const QModelIndex& index) {
     QModelIndex srcIdx = treeFilter->mapToSource(index);
-    QString path = fileModel->filePath(srcIdx);
-    navigateTo(path);
+    if (!srcIdx.isValid())
+        return;
+
+    navigateTo(fileModel->filePath(srcIdx));
 }
 
 void Library::onTreeDoubleClicked(const QModelIndex& index) {
     QModelIndex srcIdx = treeFilter->mapToSource(index);
-    QString path = fileModel->filePath(srcIdx);
-    navigateTo(path);
+    if (!srcIdx.isValid())
+        return;
+
+    navigateTo(fileModel->filePath(srcIdx));
 }
 
 void Library::onFileDoubleClicked(const QModelIndex& index) {
     QModelIndex srcIdx = tableFilter->mapToSource(index);
+    if (!srcIdx.isValid())
+        return;
+
     QString path = fileModel->filePath(srcIdx);
+    if (path.isEmpty())
+        return;
+
     QFileInfo info(path);
 
-    // Only emit play signal if it's a file, not a folder
-    if (info.isFile()) {
-        emit playMediaRequested(QUrl::fromLocalFile(path));
-    }
+    // CRITICAL FIX: prevent directories or invalid files being emitted
+    if (!info.exists() || !info.isFile())
+        return;
+
+    QUrl url = QUrl::fromLocalFile(info.absoluteFilePath());
+
+    // extra safety: prevent garbage URLs
+    if (!url.isValid() || url.isEmpty())
+        return;
+
+    emit playMediaRequested(url);
 }
 
 void Library::goBack() {
@@ -154,22 +180,30 @@ void Library::goForward() {
 
 void Library::goUp() {
     QDir dir(addressBar->text());
-    if (dir.cdUp()) {
+    if (dir.cdUp())
         navigateTo(dir.absolutePath());
-    }
 }
 
 void Library::refreshLibrary() {
     QModelIndex srcIdx = fileModel->index(addressBar->text());
-    fileModel->fetchMore(srcIdx);
+    if (srcIdx.isValid())
+        fileModel->fetchMore(srcIdx);
 }
 
 void Library::createNewFolder() {
     QString currentPath = addressBar->text();
-    if (currentPath.isEmpty()) return;
+    if (currentPath.isEmpty())
+        return;
 
     bool ok;
-    QString folderName = QInputDialog::getText(this, "New Folder", "Folder Name:", QLineEdit::Normal, "", &ok);
+    QString folderName = QInputDialog::getText(
+        this,
+        "New Folder",
+        "Folder Name:",
+        QLineEdit::Normal,
+        "",
+        &ok
+    );
 
     if (ok && !folderName.isEmpty()) {
         QDir dir(currentPath);
@@ -178,23 +212,29 @@ void Library::createNewFolder() {
 }
 
 void Library::updateSearch(const QString& text) {
-    tableFilter->setFilterRegularExpression(QRegularExpression(text, QRegularExpression::CaseInsensitiveOption));
+    tableFilter->setFilterRegularExpression(
+        QRegularExpression(text, QRegularExpression::CaseInsensitiveOption)
+    );
 }
 
 void Library::showContextMenu(const QPoint& pos) {
     QModelIndex index = fileTable->indexAt(pos);
-    if (!index.isValid()) return;
+    if (!index.isValid())
+        return;
 
     QMenu menu(this);
     QAction* playAction = menu.addAction("Play");
+
     QAction* selected = menu.exec(fileTable->viewport()->mapToGlobal(pos));
 
-    if (selected == playAction) {
+    if (selected == playAction)
         onFileDoubleClicked(index);
-    }
 }
 
 void Library::updateAddressBar(const QModelIndex& index) {
     QModelIndex srcIdx = treeFilter->mapToSource(index);
+    if (!srcIdx.isValid())
+        return;
+
     addressBar->setText(fileModel->filePath(srcIdx));
 }

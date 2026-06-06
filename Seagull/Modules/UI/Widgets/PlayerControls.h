@@ -13,26 +13,36 @@
 #include <QFrame>
 #include <QGraphicsColorizeEffect>
 #include <QHideEvent>
-
-#include <vlcpp/vlc.hpp> // The C++ VLC Wrapper
+#include <QSettings>
+#include <vlcpp/vlc.hpp>
+#include "../../Backend/SgYtDlp.h"
 
 class PlayerControls : public QWidget {
     Q_OBJECT
 public:
     explicit PlayerControls(VLC::MediaPlayer* player, QWidget* parent = nullptr);
+    ~PlayerControls();
+
     void updateVolumePosition();
     void setVolumeUi(int volume);
     void setStreamingMode(bool isStream);
+    void applyAudioState();
+    void stopPolling();
+
+public slots:
+    void setAvailableQualities(const QList<StreamOption>& options);
 
 signals:
     void fullscreenRequested();
+    void stopRequested();
+    void qualitySelected(QString formatId);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void hideEvent(QHideEvent* event) override;
 
 private slots:
-    void pollVlcState(); // New polling function to safely sync VLC with Qt UI
+    void pollVlcState();
     void seek(int position);
     void togglePlayback();
     void toggleMute();
@@ -43,7 +53,8 @@ private slots:
 
 private:
     VLC::MediaPlayer* m_player;
-    QTimer* uiPollTimer; // Timer to check VLC status
+    QTimer* uiPollTimer;
+    QSettings m_settings;
 
     QPushButton* playPauseBtn;
     QPushButton* stopBtn;
@@ -67,7 +78,7 @@ private:
 
     QLabel* timeLabel;
     qint64 m_duration;
-    bool isUserSeeking; // Prevent UI jitter while dragging slider
+    bool isUserSeeking;
 
     QString formatTime(qint64 ms);
 };

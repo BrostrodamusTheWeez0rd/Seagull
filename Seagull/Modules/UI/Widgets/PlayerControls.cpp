@@ -14,9 +14,12 @@
 #include <QApplication>
 #include <QHideEvent>
 #include <QDebug> 
+#include <QSettings>         
+#include <QCoreApplication>  
 
 PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
-    : QWidget(parent), m_player(player), m_duration(0), isUserSeeking(false) {
+    : QWidget(parent), m_player(player), m_duration(0), isUserSeeking(false),
+    m_settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat) {
 
     auto* windowLayout = new QVBoxLayout(this);
     windowLayout->setContentsMargins(0, 0, 0, 0);
@@ -48,16 +51,13 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     nextBtn = new QPushButton();
     muteBtn = new QPushButton();
     qualityBtn = new QPushButton("⚙");
-
     qualityBtn->hide();
-
     fullscreenBtn = new QPushButton("⛶");
 
     prevBtn->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
     playPauseBtn->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
     stopBtn->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
     nextBtn->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
-    muteBtn->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
 
     QSize iconSize(20, 20);
     QList<QPushButton*> btns = { prevBtn, playPauseBtn, stopBtn, nextBtn, muteBtn, qualityBtn, fullscreenBtn };
@@ -87,7 +87,6 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
 
     setFixedSize(500, 50);
 
-    // --- Vertical Volume Pill Setup ---
     volumeFrame = new QFrame();
     volumeFrame->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
     volumeFrame->setAttribute(Qt::WA_TranslucentBackground);
@@ -102,7 +101,6 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
 
     volumeSlider = new QSlider(Qt::Vertical);
     volumeSlider->setRange(0, 100);
-    volumeSlider->setValue(100);
     volumeSlider->setCursor(Qt::PointingHandCursor);
     volumeSlider->setStyleSheet(
         "QSlider { background: transparent; border: none; }"
@@ -121,33 +119,16 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     volumeTextTimer->setSingleShot(true);
     connect(volumeTextTimer, &QTimer::timeout, this, &PlayerControls::resetMuteButton);
 
-    // --- Vertical Quality Pill Setup ---
     qualityFrame = new QFrame();
     qualityFrame->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
     qualityFrame->setAttribute(Qt::WA_TranslucentBackground);
-    qualityFrame->setFixedSize(60, 110);
 
     qualityContentFrame = new QFrame(qualityFrame);
-    qualityContentFrame->setGeometry(0, 0, 60, 110);
     qualityContentFrame->setStyleSheet("background: rgba(25, 25, 25, 215); border-radius: 20px; border: 1px solid white;");
 
     auto* qualLayout = new QVBoxLayout(qualityContentFrame);
     qualLayout->setContentsMargins(5, 10, 5, 10);
     qualLayout->setSpacing(2);
-
-    QStringList dummyQualities = { "1080p", "720p", "Audio" };
-    for (const QString& q : dummyQualities) {
-        QPushButton* qb = new QPushButton(q);
-        qb->setCursor(Qt::PointingHandCursor);
-        qb->setStyleSheet(
-            "QPushButton { background: transparent; color: white; border: none; font-size: 11px; font-weight: bold; border-radius: 5px; padding: 5px; }"
-            "QPushButton:hover { background: rgba(255,255,255,50); }"
-        );
-        connect(qb, &QPushButton::clicked, this, [this, q]() {
-            qualityFrame->hide();
-            });
-        qualLayout->addWidget(qb);
-    }
 
     qualityHideTimer = new QTimer(this);
     qualityHideTimer->setSingleShot(true);
@@ -158,13 +139,11 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     qualityBtn->installEventFilter(this);
     qualityFrame->installEventFilter(this);
 
-    // Connections
     connect(playPauseBtn, &QPushButton::clicked, this, &PlayerControls::togglePlayback);
-    connect(stopBtn, &QPushButton::clicked, this, [this]() { m_player->stop(); });
+    connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
     connect(fullscreenBtn, &QPushButton::clicked, this, &PlayerControls::fullscreenRequested);
 
-    // Seeking logic to prevent stuttering
     connect(positionSlider, &QSlider::sliderPressed, this, [this]() { isUserSeeking = true; });
     connect(positionSlider, &QSlider::sliderReleased, this, [this]() {
         isUserSeeking = false;
@@ -172,17 +151,51 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
         });
     connect(volumeSlider, &QSlider::valueChanged, this, &PlayerControls::setVolume);
 
-    // Start UI Polling Loop
     uiPollTimer = new QTimer(this);
     connect(uiPollTimer, &QTimer::timeout, this, &PlayerControls::pollVlcState);
-    uiPollTimer->start(250); // Poll 4 times a second
+    uiPollTimer->start(250);
+
+    applyAudioState();
+}
+
+PlayerControls::~PlayerControls() {
+    stopPolling();
+    if (volumeHideTimer) volumeHideTimer->stop();
+    if (volumeTextTimer) volumeTextTimer->stop();
+    if (qualityHideTimer) qualityHideTimer->stop();
+}
+
+void PlayerControls::stopPolling() {
+    if (uiPollTimer) uiPollTimer->stop();
+}
+
+void PlayerControls::applyAudioState() {
+    if (!m_settings.contains("Audio/Volume")) {
+        m_settings.setValue("Audio/Volume", 100);
+        m_settings.sync();
+    }
+    if (!m_settings.contains("Audio/Muted")) {
+        m_settings.setValue("Audio/Muted", false);
+        m_settings.sync();
+    }
+
+    int savedVolume = m_settings.value("Audio/Volume", 100).toInt();
+    bool savedMute = m_settings.value("Audio/Muted", false).toBool();
+
+    if (m_player) {
+        m_player->setVolume(savedVolume);
+        m_player->setMute(savedMute);
+    }
+
+    setVolumeUi(savedVolume);
+    if (muteBtn) {
+        muteBtn->setIcon(style()->standardIcon(savedMute ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
+    }
 }
 
 void PlayerControls::setStreamingMode(bool isStream) {
     qualityBtn->setVisible(isStream);
-    if (!isStream && qualityFrame) {
-        qualityFrame->hide();
-    }
+    if (!isStream && qualityFrame) qualityFrame->hide();
 }
 
 void PlayerControls::hideEvent(QHideEvent* event) {
@@ -203,6 +216,8 @@ void PlayerControls::updateVolumePosition() {
 }
 
 void PlayerControls::setVolumeUi(int volume) {
+    if (!volumeSlider || !muteBtn || !volumeTextTimer) return;
+
     volumeSlider->blockSignals(true);
     volumeSlider->setValue(volume);
     volumeSlider->blockSignals(false);
@@ -213,8 +228,10 @@ void PlayerControls::setVolumeUi(int volume) {
 }
 
 void PlayerControls::resetMuteButton() {
+    if (!this || !muteBtn) return;
+
     muteBtn->setText("");
-    bool isMuted = m_player->mute();
+    bool isMuted = m_settings.value("Audio/Muted", false).toBool();
     muteBtn->setIcon(style()->standardIcon(isMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
 }
 
@@ -278,8 +295,9 @@ void PlayerControls::hideQualityFrame() {
 }
 
 void PlayerControls::setVolume(int volume) {
-    m_player->setVolume(volume);
+    if (m_player) m_player->setVolume(volume);
     setVolumeUi(volume);
+    m_settings.setValue("Audio/Volume", volume);
 }
 
 void PlayerControls::togglePlayback() {
@@ -288,28 +306,29 @@ void PlayerControls::togglePlayback() {
 }
 
 void PlayerControls::toggleMute() {
-    bool willBeMuted = !m_player->mute();
-    m_player->setMute(willBeMuted);
+    bool isCurrentlyMuted = m_settings.value("Audio/Muted", false).toBool();
+    bool willBeMuted = !isCurrentlyMuted;
+
+    if (m_player) m_player->setMute(willBeMuted);
+
     muteBtn->setIcon(style()->standardIcon(willBeMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
+    m_settings.setValue("Audio/Muted", willBeMuted);
 }
 
 void PlayerControls::pollVlcState() {
     if (!m_player) return;
 
-    // 1. Update Play/Pause Icon
     bool isPlaying = m_player->isPlaying();
     playPauseBtn->setIcon(style()->standardIcon(
         isPlaying ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay
     ));
 
-    // 2. Update Duration
     qint64 length = m_player->length();
     if (length > 0 && length != m_duration) {
         m_duration = length;
         positionSlider->setRange(0, static_cast<int>(m_duration));
     }
 
-    // 3. Update Position (only if user isn't currently dragging the slider)
     qint64 time = m_player->time();
     if (time >= 0 && !isUserSeeking) {
         positionSlider->blockSignals(true);
@@ -333,4 +352,41 @@ QString PlayerControls::formatTime(qint64 ms) {
     int hours = (ms / 3600000);
     QTime time(hours, minutes, seconds);
     return hours > 0 ? time.toString("h:mm:ss") : time.toString("m:ss");
+}
+
+void PlayerControls::setAvailableQualities(const QList<StreamOption>& options) {
+    if (!qualityContentFrame) return;
+
+    QLayout* layout = qualityContentFrame->layout();
+    if (!layout) return;
+
+    QLayoutItem* item;
+    while ((item = layout->takeAt(0)) != nullptr) {
+        if (QWidget* widget = item->widget()) {
+            widget->deleteLater();
+        }
+        delete item;
+    }
+
+    for (const StreamOption& opt : options) {
+        QPushButton* qb = new QPushButton(opt.label);
+        qb->setCursor(Qt::PointingHandCursor);
+        qb->setStyleSheet(
+            "QPushButton { background: transparent; color: white; border: none; font-size: 11px; font-weight: bold; border-radius: 5px; padding: 5px; }"
+            "QPushButton:hover { background: rgba(255,255,255,50); }"
+        );
+        connect(qb, &QPushButton::clicked, this, [this, id = opt.formatId]() {
+            qualityFrame->hide();
+            emit qualitySelected(id);
+            });
+        layout->addWidget(qb);
+
+        qb->show();
+    }
+
+    int newHeight = (options.size() * 30) + 20;
+    if (newHeight < 40) newHeight = 40;
+
+    qualityFrame->setFixedSize(60, newHeight);
+    qualityContentFrame->setGeometry(0, 0, 60, newHeight);
 }
