@@ -1,4 +1,5 @@
 #include "Downloads.h"
+#include "../Backend/SgYtDlp.h"
 #include <QFont>
 #include <QPixmap>
 #include <QHeaderView>
@@ -8,16 +9,20 @@
 #include <QDebug>
 #include <algorithm>
 
-Downloads::Downloads(QWidget* parent) : QWidget(parent) {
+// INJECTED: Receive backends from the Orchestrator
+Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setAlignment(Qt::AlignTop);
     layout->setSpacing(15);
     layout->setContentsMargins(50, 30, 50, 30);
 
-    downloader = new SgYtDlp(this);
-    titleResolver = new SgYtDlp(this);
-    cdnPrefetcher = new SgYtDlp(this);
+    // CHANGED: We simply store the pointers provided by Seagull. We do not instantiate them.
+    downloader = downloaderWorker;
+    titleResolver = resolverWorker;
+    cdnPrefetcher = prefetcherWorker;
+
     isProcessingQueue = false;
+    isStreamingQueue = false;
 
     banner = new QLabel();
     banner->setAlignment(Qt::AlignCenter);
@@ -57,18 +62,19 @@ Downloads::Downloads(QWidget* parent) : QWidget(parent) {
     queueBtn = new QPushButton("Add to queue");
     streamBtn = new QPushButton("Stream");
     streamQueueBtn = new QPushButton("Stream Queue");
+    clearQueueBtn = new QPushButton("Clear Queue");
 
     downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
-    processQueueBtn->hide(); streamQueueBtn->hide();
+    processQueueBtn->hide(); streamQueueBtn->hide(); clearQueueBtn->hide();
 
     downBtn->setMinimumHeight(30); processQueueBtn->setMinimumHeight(30);
     queueBtn->setMinimumHeight(30); streamBtn->setMinimumHeight(30);
-    streamQueueBtn->setMinimumHeight(30);
+    streamQueueBtn->setMinimumHeight(30); clearQueueBtn->setMinimumHeight(30);
 
     btnLayout->addStretch();
     btnLayout->addWidget(downBtn); btnLayout->addWidget(processQueueBtn);
     btnLayout->addWidget(queueBtn); btnLayout->addWidget(streamBtn);
-    btnLayout->addWidget(streamQueueBtn);
+    btnLayout->addWidget(streamQueueBtn); btnLayout->addWidget(clearQueueBtn);
     btnLayout->addStretch();
 
     queueTable = new QTableWidget(0, 3);
@@ -106,9 +112,23 @@ Downloads::Downloads(QWidget* parent) : QWidget(parent) {
     connect(downloader, &SgYtDlp::streamUrlReady, this, &Downloads::handleStreamUrlReady);
     connect(downloader, &SgYtDlp::playlistEntriesReady, this, &Downloads::handlePlaylistEntriesReady);
 
+    connect(titleResolver, &SgYtDlp::logMessage, this, &Downloads::handleLogMessage);
     connect(titleResolver, &SgYtDlp::metadataReady, this, &Downloads::handleResolverMetadataReady);
-    connect(cdnPrefetcher, &SgYtDlp::streamUrlReady, this, &Downloads::handlePrefetchedStreamUrlReady);
+    connect(titleResolver, &SgYtDlp::streamUrlReady, this, [this](const QUrl& videoUrl, const QUrl& audioUrl) {
+        if (m_currentResolvingRow >= 0 && m_currentResolvingRow < queueTable->rowCount()) {
+            QTableWidgetItem* item = queueTable->item(m_currentResolvingRow, 0);
+            if (item) {
+                QString url = item->data(Qt::UserRole).toString();
+                if (url.isEmpty()) url = item->text();
+                QString cleanUrl = stripToVideoUrl(url);
+                if (!cdnCache.contains(cleanUrl) || !isStreamUrlValid(cdnCache[cleanUrl].first)) {
+                    cdnCache[cleanUrl] = qMakePair(videoUrl, audioUrl);
+                }
+            }
+        }
+        });
 
+    connect(cdnPrefetcher, &SgYtDlp::streamUrlReady, this, &Downloads::handlePrefetchedStreamUrlReady);
     connect(debounceTimer, &QTimer::timeout, this, &Downloads::triggerMetadataFetch);
     connect(resolverTimer, &QTimer::timeout, this, &Downloads::resolveNextTitle);
     connect(urlInput, &QLineEdit::textChanged, this, &Downloads::onUrlTextChanged);
@@ -117,12 +137,9 @@ Downloads::Downloads(QWidget* parent) : QWidget(parent) {
     connect(processQueueBtn, &QPushButton::clicked, this, &Downloads::onProcessQueueClicked);
     connect(streamBtn, &QPushButton::clicked, this, &Downloads::onStreamClicked);
     connect(streamQueueBtn, &QPushButton::clicked, this, &Downloads::onStreamQueueClicked);
+    connect(clearQueueBtn, &QPushButton::clicked, this, &Downloads::onClearQueueClicked);
     connect(queueTable, &QTableWidget::customContextMenuRequested, this, &Downloads::showContextMenu);
 }
-
-// ---------------------------------------------------------------------------
-// Helpers & Expiration Validation
-// ---------------------------------------------------------------------------
 
 bool Downloads::isPlaylistUrl(const QString& url) const {
     return !QUrlQuery(QUrl(url).query()).queryItemValue("list").isEmpty();
@@ -143,10 +160,8 @@ bool Downloads::isStreamUrlValid(const QUrl& cdnUrl) const {
     QUrlQuery query(cdnUrl.query());
     QString expireStr = query.queryItemValue("expire");
     if (expireStr.isEmpty()) return false;
-
     qint64 expireTime = expireStr.toLongLong();
     qint64 currentTime = QDateTime::currentSecsSinceEpoch();
-
     return (expireTime - 300) > currentTime;
 }
 
@@ -160,17 +175,78 @@ void Downloads::offerPlaylistQueue(const QString& fullUrl) {
     if (msgBox.exec() == QMessageBox::Yes) {
         downloader->fetchPlaylistEntries(fullUrl);
     }
+    else {
+        loadingLabel->hide();
+    }
+}
+
+void Downloads::onClearQueueClicked() {
+    queueTable->setRowCount(0);
+    cdnCache.clear();
+    m_streamQueue.clear();
+    m_queuePlayIndex = -1;
+    m_waitingForCdn = false;
+    isStreamingQueue = false;
+    isProcessingQueue = false;
+    updateQueueButtonVisibility();
+}
+
+void Downloads::setStreamingQueueMode(bool active) {
+    isStreamingQueue = active;
+}
+
+void Downloads::playNextQueuedItem() {
+    if (!isStreamingQueue) return;
+    m_queuePlayIndex++;
+    playQueueIndex(m_queuePlayIndex);
+}
+
+void Downloads::playPrevQueuedItem() {
+    if (!isStreamingQueue) return;
+    m_queuePlayIndex = qMax(0, m_queuePlayIndex - 1);
+    playQueueIndex(m_queuePlayIndex);
+}
+
+void Downloads::playQueueIndex(int index) {
+    if (index < 0 || index >= m_streamQueue.size()) {
+        isStreamingQueue = false;
+        m_queuePlayIndex = -1;
+        m_waitingForCdn = false;
+        logConsole->append("Stream queue finished.");
+        return;
+    }
+
+    queueTable->selectRow(index);
+    QueueEntry& entry = m_streamQueue[index];
+
+    if (entry.cdnVideoUrl.isEmpty() || !isStreamUrlValid(entry.cdnVideoUrl)) {
+        if (cdnCache.contains(entry.rawUrl) && isStreamUrlValid(cdnCache[entry.rawUrl].first)) {
+            entry.cdnVideoUrl = cdnCache[entry.rawUrl].first;
+            entry.cdnAudioUrl = cdnCache[entry.rawUrl].second;
+        }
+    }
+
+    if (!entry.cdnVideoUrl.isEmpty() && isStreamUrlValid(entry.cdnVideoUrl)) {
+        m_waitingForCdn = false;
+        emit playMediaRequested(QUrl(entry.rawUrl), entry.cdnVideoUrl, entry.cdnAudioUrl, entry.title);
+        prefetchNextInQueue();
+    }
+    else {
+        m_waitingForCdn = true;
+        if (m_currentlyPrefetchingUrl != entry.rawUrl) {
+            m_currentlyPrefetchingUrl = entry.rawUrl;
+            logConsole->append(QString("Fetching CDN for queue item %1: %2").arg(index).arg(entry.title));
+            cdnPrefetcher->fetchMetadataAndStreamUrl(entry.rawUrl);
+        }
+    }
 }
 
 void Downloads::updateQueueButtonVisibility() {
     bool hasItems = (queueTable->rowCount() > 0);
     processQueueBtn->setVisible(hasItems);
     streamQueueBtn->setVisible(hasItems);
+    clearQueueBtn->setVisible(hasItems);
 }
-
-// ---------------------------------------------------------------------------
-// CDN Pre-Fetching & Title Resolution
-// ---------------------------------------------------------------------------
 
 void Downloads::enqueueTitleResolution(const QList<QString>& urls, int startRow) {
     for (int i = 0; i < urls.size(); ++i) m_titleQueue.append({ startRow + i, urls[i] });
@@ -191,10 +267,17 @@ void Downloads::resolveNextTitle() {
     titleResolver->fetchMetadataAndStreamUrl(url);
 }
 
-void Downloads::handleResolverMetadataReady(const QString& title, const QString&, const QString&, const QString&, const QString&, const QString&) {
+void Downloads::handleResolverMetadataReady(const QString& title, const QString&, const QString&,
+    const QString&, const QString&, const QString&) {
     if (m_currentResolvingRow >= 0 && m_currentResolvingRow < queueTable->rowCount()) {
         QTableWidgetItem* item = queueTable->item(m_currentResolvingRow, 0);
-        if (item) item->setText(title.isEmpty() ? item->data(Qt::UserRole).toString() : title);
+        if (item) {
+            QString resolved = title.isEmpty() ? item->data(Qt::UserRole).toString() : title;
+            item->setText(resolved);
+
+            if (m_currentResolvingRow < m_streamQueue.size())
+                m_streamQueue[m_currentResolvingRow].title = resolved;
+        }
     }
     m_currentResolvingRow = -1;
     if (!m_titleQueue.isEmpty()) resolverTimer->start(1500);
@@ -202,16 +285,13 @@ void Downloads::handleResolverMetadataReady(const QString& title, const QString&
 
 void Downloads::prefetchNextInQueue() {
     if (!m_currentlyPrefetchingUrl.isEmpty()) return;
-
     for (int i = 0; i < queueTable->rowCount(); ++i) {
         QString url = queueTable->item(i, 0)->data(Qt::UserRole).toString();
         if (url.isEmpty()) url = queueTable->item(i, 0)->text();
         QString cleanUrl = stripToVideoUrl(url);
-
-        // Check if we already have a valid cache for this item (checking the video link validity)
         if (!cdnCache.contains(cleanUrl) || !isStreamUrlValid(cdnCache[cleanUrl].first)) {
             m_currentlyPrefetchingUrl = cleanUrl;
-            logConsole->append("Prefetching zero-latency CDN stream link...");
+            logConsole->append(QString("Prefetching CDN link for item %1...").arg(i));
             cdnPrefetcher->fetchMetadataAndStreamUrl(cleanUrl);
             return;
         }
@@ -221,25 +301,42 @@ void Downloads::prefetchNextInQueue() {
 void Downloads::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     if (!m_currentlyPrefetchingUrl.isEmpty()) {
         cdnCache[m_currentlyPrefetchingUrl] = qMakePair(videoUrl, audioUrl);
-        logConsole->append("CDN Video & Audio Links cached and ready for instant playback.");
+        logConsole->append(QString("CDN link cached: %1").arg(m_currentlyPrefetchingUrl));
+
+        for (auto& entry : m_streamQueue) {
+            if (entry.rawUrl == m_currentlyPrefetchingUrl) {
+                entry.cdnVideoUrl = videoUrl;
+                entry.cdnAudioUrl = audioUrl;
+                break;
+            }
+        }
+
+        QString justFetched = m_currentlyPrefetchingUrl;
         m_currentlyPrefetchingUrl.clear();
+
+        if (m_waitingForCdn && isStreamingQueue
+            && m_queuePlayIndex >= 0
+            && m_queuePlayIndex < m_streamQueue.size()
+            && m_streamQueue[m_queuePlayIndex].rawUrl == justFetched) {
+            playQueueIndex(m_queuePlayIndex);
+            return;
+        }
     }
+
     QTimer::singleShot(2000, this, &Downloads::prefetchNextInQueue);
 }
-
-// ---------------------------------------------------------------------------
-// Primary Interactions
-// ---------------------------------------------------------------------------
 
 void Downloads::onUrlTextChanged(const QString& text) {
     if (text == "Bdev") { logConsole->setVisible(!logConsole->isVisible()); urlInput->clear(); return; }
     if (text.startsWith("http")) {
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
-        metadataContainer->hide(); loadingLabel->show();
+        metadataContainer->hide();
+        loadingLabel->setText("Analyzing link...");
+        loadingLabel->show();
         cachedTitle.clear();
-        isFetchingMetadata = false; m_pendingPlaylistUrl.clear();
-        if (isPlaylistUrl(text)) m_pendingPlaylistUrl = text;
-        debounceTimer->start(800);
+        isFetchingMetadata = false;
+        m_pendingPlaylistUrl = text;
+        debounceTimer->start(500);
     }
     else {
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
@@ -249,8 +346,14 @@ void Downloads::onUrlTextChanged(const QString& text) {
 
 void Downloads::triggerMetadataFetch() {
     isFetchingMetadata = true;
-    QString fetchUrl = m_pendingPlaylistUrl.isEmpty() ? urlInput->text() : stripToVideoUrl(urlInput->text());
-    downloader->fetchMetadataAndStreamUrl(fetchUrl);
+    QString fetchUrl = urlInput->text();
+
+    if (isPlaylistUrl(fetchUrl)) {
+        offerPlaylistQueue(fetchUrl);
+    }
+    else {
+        downloader->fetchMetadataAndStreamUrl(fetchUrl);
+    }
 }
 
 void Downloads::onDownloadClicked() {
@@ -262,13 +365,11 @@ void Downloads::onAddToQueueClicked() {
     if (urlInput->text().isEmpty()) return;
     int row = queueTable->rowCount();
     queueTable->insertRow(row);
-
     auto* item = new QTableWidgetItem(cachedTitle.isEmpty() ? urlInput->text() : cachedTitle);
     item->setData(Qt::UserRole, urlInput->text());
     queueTable->setItem(row, 0, item);
     queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
     queueTable->setItem(row, 2, new QTableWidgetItem("0%"));
-
     urlInput->clear(); metadataContainer->hide(); cachedTitle.clear(); m_pendingPlaylistUrl.clear();
     updateQueueButtonVisibility();
     prefetchNextInQueue();
@@ -279,6 +380,7 @@ void Downloads::onProcessQueueClicked() {
     isProcessingQueue = true;
     processQueueBtn->setEnabled(false); streamQueueBtn->setEnabled(false);
     QString url = queueTable->item(0, 0)->data(Qt::UserRole).toString();
+    if (url.isEmpty()) url = queueTable->item(0, 0)->text();
     downloader->download(url);
     progressBar->show();
 }
@@ -287,41 +389,44 @@ void Downloads::onStreamClicked() {
     if (urlInput->text().isEmpty()) return;
     QString cleanUrl = stripToVideoUrl(urlInput->text());
     QString title = cachedTitle.isEmpty() ? "Streaming..." : cachedTitle;
-
     QUrl cdnVideoUrl, cdnAudioUrl;
     if (cdnCache.contains(cleanUrl) && isStreamUrlValid(cdnCache[cleanUrl].first)) {
         cdnVideoUrl = cdnCache[cleanUrl].first;
         cdnAudioUrl = cdnCache[cleanUrl].second;
     }
-
     emit playMediaRequested(QUrl(cleanUrl), cdnVideoUrl, cdnAudioUrl, title);
 }
 
 void Downloads::onStreamQueueClicked() {
     if (queueTable->rowCount() == 0) return;
-    QString url = queueTable->item(0, 0)->data(Qt::UserRole).toString();
-    if (url.isEmpty()) url = queueTable->item(0, 0)->text();
-    QString cleanUrl = stripToVideoUrl(url);
 
-    QUrl cdnVideoUrl, cdnAudioUrl;
-    if (cdnCache.contains(cleanUrl) && isStreamUrlValid(cdnCache[cleanUrl].first)) {
-        cdnVideoUrl = cdnCache[cleanUrl].first;
-        cdnAudioUrl = cdnCache[cleanUrl].second;
+    m_streamQueue.clear();
+    for (int i = 0; i < queueTable->rowCount(); ++i) {
+        QTableWidgetItem* item = queueTable->item(i, 0);
+        QString url = item->data(Qt::UserRole).toString();
+        if (url.isEmpty()) url = item->text();
+        QString cleanUrl = stripToVideoUrl(url);
+
+        QueueEntry entry;
+        entry.rawUrl = cleanUrl;
+        entry.title = item->text();
+        if (cdnCache.contains(cleanUrl) && isStreamUrlValid(cdnCache[cleanUrl].first)) {
+            entry.cdnVideoUrl = cdnCache[cleanUrl].first;
+            entry.cdnAudioUrl = cdnCache[cleanUrl].second;
+        }
+        m_streamQueue.append(entry);
     }
 
-    emit playMediaRequested(QUrl(cleanUrl), cdnVideoUrl, cdnAudioUrl, "Streaming Queue...");
-    prefetchNextInQueue();
+    m_queuePlayIndex = 0;
+    m_waitingForCdn = false;
+    isStreamingQueue = true;
+    playQueueIndex(0);
 }
-
-// ---------------------------------------------------------------------------
-// Queue Context Menu Operations
-// ---------------------------------------------------------------------------
 
 void Downloads::showContextMenu(const QPoint& pos) {
     QModelIndex index = queueTable->indexAt(pos);
     if (index.isValid()) queueTable->setCurrentIndex(index);
     else queueTable->clearSelection();
-
     QMenu menu(this);
     if (queueTable->selectionModel()->hasSelection()) {
         menu.addAction("Play", this, &Downloads::playSelectedItem);
@@ -334,10 +439,13 @@ void Downloads::showContextMenu(const QPoint& pos) {
 void Downloads::playSelectedItem() {
     auto selected = queueTable->selectionModel()->selectedRows();
     if (selected.isEmpty()) return;
-
     int row = selected.first().row();
-    QTableWidgetItem* item = queueTable->item(row, 0);
+    if (row < 0 || row >= queueTable->rowCount()) return;
 
+    if (isStreamingQueue && row < m_streamQueue.size())
+        m_queuePlayIndex = row;
+
+    QTableWidgetItem* item = queueTable->item(row, 0);
     QString url = item->data(Qt::UserRole).toString();
     if (url.isEmpty()) url = item->text();
     QString cleanUrl = stripToVideoUrl(url);
@@ -348,7 +456,6 @@ void Downloads::playSelectedItem() {
         cdnVideoUrl = cdnCache[cleanUrl].first;
         cdnAudioUrl = cdnCache[cleanUrl].second;
     }
-
     emit playMediaRequested(QUrl(cleanUrl), cdnVideoUrl, cdnAudioUrl, title);
     prefetchNextInQueue();
 }
@@ -368,23 +475,22 @@ void Downloads::removeSelectedItems() {
     QList<int> rows;
     for (const auto& index : selected) rows.append(index.row());
     std::sort(rows.begin(), rows.end(), std::greater<int>());
-    for (int row : rows) queueTable->removeRow(row);
+    for (int row : rows) {
+        if (isStreamingQueue && row < m_queuePlayIndex)
+            m_queuePlayIndex--;
+        queueTable->removeRow(row);
+    }
     updateQueueButtonVisibility();
 }
 
-// ---------------------------------------------------------------------------
-// Callbacks and Signals
-// ---------------------------------------------------------------------------
-
 void Downloads::handleMetadataReady(const QString& t, const QString& u, const QString& d,
-    const QString& v, const QString& da, const QString& /*th*/) {
+    const QString& v, const QString& da, const QString&) {
     isFetchingMetadata = false; loadingLabel->hide();
     downBtn->setEnabled(true); queueBtn->setEnabled(true); streamBtn->setEnabled(true);
     cachedTitle = t;
     metaTitle->setText(t); metaUploader->setText(u);
     metaStats->setText(QString("Duration: %1 | Views: %2 | Uploaded: %3").arg(d, v, da));
     metadataContainer->show();
-
     if (!m_pendingPlaylistUrl.isEmpty()) {
         QString playlistUrl = m_pendingPlaylistUrl;
         m_pendingPlaylistUrl.clear();
@@ -409,13 +515,19 @@ void Downloads::handlePlaylistEntriesReady(const QList<QString>& urls) {
         queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
         queueTable->setItem(row, 2, new QTableWidgetItem("0%"));
     }
+
+    urlInput->clear();
+    m_pendingPlaylistUrl.clear();
+    isFetchingMetadata = false;
+    loadingLabel->hide();
+
     updateQueueButtonVisibility();
-    logConsole->append(QString("Added %1 playlist items. Resolving...").arg(urls.size()));
+    logConsole->append(QString("Added %1 playlist items.").arg(urls.size()));
     enqueueTitleResolution(urls, startRow);
     prefetchNextInQueue();
 }
 
-void Downloads::handleFinished(bool /*success*/) {
+void Downloads::handleFinished(bool success) {
     if (isProcessingQueue) {
         queueTable->removeRow(0);
         if (queueTable->rowCount() > 0) {

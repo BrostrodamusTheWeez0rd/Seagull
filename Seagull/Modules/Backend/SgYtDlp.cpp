@@ -1,5 +1,11 @@
 #include "SgYtDlp.h"
 #include <QCoreApplication>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QJsonDocument>
+#include <QFile>
+#include <QDir>
+#include <QFileInfo>
 #include <QSettings>
 #include <QRegularExpression>
 #include <QJsonDocument>
@@ -23,6 +29,14 @@ SgYtDlp::SgYtDlp(QObject* parent) : QObject(parent) {
             emit logMessage("CRITICAL ERROR: Could not find yt-dlp.exe!");
             emit logMessage("Looked in: " + QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe");
         }
+        });
+
+    m_nam = new QNetworkAccessManager(this);
+    connect(m_nam, &QNetworkAccessManager::finished, this, [this](QNetworkReply* reply) {
+        if (reply->property("isExeDownload").toBool())
+            onExeDownloadFinished(reply);
+        else
+            onReleaseInfoReceived(reply);
         });
 }
 
@@ -179,24 +193,26 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
     JobMode mode = currentMode;
     currentMode = JobMode::Idle;
 
-    if (exitStatus == QProcess::CrashExit) {
-        emit logMessage("Operation failed: yt-dlp crashed.");
+    if (exitStatus == QProcess::CrashExit || exitCode != 0) {
+        emit logMessage("Operation failed (yt-dlp). Code: " + QString::number(exitCode));
         emit finished(false);
         return;
     }
 
-    if (processBuffer.isEmpty()) {
-        emit logMessage("yt-dlp returned empty output.");
+    // Resilience: Search for the first '{' to ignore leading non-JSON output
+    int jsonStart = processBuffer.indexOf('{');
+    if (jsonStart == -1) {
+        emit logMessage("No valid JSON found in output.");
         emit finished(false);
         return;
     }
+    QByteArray jsonData = processBuffer.mid(jsonStart);
 
     QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(processBuffer, &err);
+    QJsonDocument doc = QJsonDocument::fromJson(jsonData, &err);
 
     if (err.error != QJsonParseError::NoError || doc.isNull()) {
         emit logMessage("JSON parse failed: " + err.errorString());
-        emit logMessage("Raw buffer (truncated): " + QString::fromUtf8(processBuffer.left(300)));
         emit finished(false);
         return;
     }
@@ -273,5 +289,120 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
     else if (mode == JobMode::Downloading) {
         emit finished(exitCode == 0);
+    }
+}
+// ---------------------------------------------------------------------------
+// yt-dlp auto-update
+// ---------------------------------------------------------------------------
+
+QString SgYtDlp::localYtDlpVersion() const {
+    QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
+    QProcess p;
+    p.start(exePath, { "--version" });
+    p.waitForFinished(5000);
+    return QString::fromLocal8Bit(p.readAllStandardOutput()).trimmed();
+}
+
+void SgYtDlp::checkForYtDlpUpdate() {
+    emit ytDlpUpdateStatus("Checking for yt-dlp update...");
+    QUrl apiUrl("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest");
+    QNetworkRequest req;
+    req.setUrl(apiUrl);
+    req.setRawHeader("User-Agent", "Seagull-Player");
+    m_nam->get(req);
+}
+
+void SgYtDlp::onReleaseInfoReceived(QNetworkReply* reply) {
+    reply->deleteLater();
+    if (reply->error() != QNetworkReply::NoError) {
+        emit ytDlpUpdateStatus("Update check failed: " + reply->errorString());
+        return;
+    }
+
+    QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    QString latestTag = doc.object()["tag_name"].toString(); // e.g. "2025.01.15"
+
+    QString localVersion = localYtDlpVersion();
+    emit ytDlpUpdateStatus("yt-dlp local: " + localVersion + "  latest: " + latestTag);
+
+    if (localVersion.isEmpty() || latestTag.isEmpty()) {
+        emit ytDlpUpdateStatus("Could not compare versions, skipping update.");
+        return;
+    }
+
+    // Tags are dates like 2025.01.15 — lexicographic compare works fine
+    if (latestTag <= localVersion) {
+        emit ytDlpUpdateStatus("yt-dlp is up to date (" + localVersion + ").");
+        return;
+    }
+
+    emit ytDlpUpdateStatus("New yt-dlp available: " + latestTag + " — downloading...");
+
+    // Find the yt-dlp.exe asset in the release
+    QJsonArray assets = doc.object()["assets"].toArray();
+    QString exeUrl;
+    for (const auto& a : assets) {
+        QJsonObject asset = a.toObject();
+        if (asset["name"].toString() == "yt-dlp.exe") {
+            exeUrl = asset["browser_download_url"].toString();
+            break;
+        }
+    }
+
+    if (exeUrl.isEmpty()) {
+        emit ytDlpUpdateStatus("Could not find yt-dlp.exe asset in release.");
+        return;
+    }
+
+    downloadNewExe(exeUrl);
+}
+
+void SgYtDlp::downloadNewExe(const QString& exeUrl) {
+    QNetworkRequest req;
+    req.setUrl(QUrl(exeUrl));
+    req.setRawHeader("User-Agent", "Seagull-Player");
+    QNetworkReply* reply = m_nam->get(req);
+    reply->setProperty("isExeDownload", true);
+    connect(reply, &QNetworkReply::downloadProgress, this, &SgYtDlp::onDownloadProgress);
+}
+
+void SgYtDlp::onDownloadProgress(qint64 received, qint64 total) {
+    if (total > 0) {
+        int pct = static_cast<int>(received * 100 / total);
+        emit ytDlpUpdateStatus("Downloading yt-dlp update: " + QString::number(pct) + "%");
+    }
+}
+
+void SgYtDlp::onExeDownloadFinished(QNetworkReply* reply) {
+    reply->deleteLater();
+    if (reply->error() != QNetworkReply::NoError) {
+        emit ytDlpUpdateStatus("yt-dlp download failed: " + reply->errorString());
+        return;
+    }
+
+    QString toolsDir = QCoreApplication::applicationDirPath() + "/tools";
+    QString exePath = toolsDir + "/yt-dlp.exe";
+    QString tmpPath = toolsDir + "/yt-dlp_new.exe";
+
+    QDir().mkpath(toolsDir);
+
+    QFile tmp(tmpPath);
+    if (!tmp.open(QIODevice::WriteOnly)) {
+        emit ytDlpUpdateStatus("Failed to write update to disk.");
+        return;
+    }
+    tmp.write(reply->readAll());
+    tmp.close();
+
+    // Swap: rename old to .bak then new to .exe
+    QFile::remove(exePath + ".bak");
+    QFile::rename(exePath, exePath + ".bak");
+    if (QFile::rename(tmpPath, exePath)) {
+        emit ytDlpUpdateStatus("yt-dlp updated successfully. Restart may be needed if a job was running.");
+    }
+    else {
+        // Roll back
+        QFile::rename(exePath + ".bak", exePath);
+        emit ytDlpUpdateStatus("Failed to replace yt-dlp.exe (file in use?). Update saved as yt-dlp_new.exe.");
     }
 }

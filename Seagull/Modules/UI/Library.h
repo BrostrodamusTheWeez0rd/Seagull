@@ -113,6 +113,10 @@ public:
 signals:
     void playMediaRequested(const QUrl& url);
 
+public slots:
+    void playNextFile();
+    void playPrevFile();
+
 private slots:
     void updateAddressBar(const QModelIndex& index);
     void createNewFolder();
@@ -153,6 +157,7 @@ private:
 
     QList<QString> history;
     int historyIndex = -1;
+    int currentPlayIndex = -1;
 };
 
 #endif

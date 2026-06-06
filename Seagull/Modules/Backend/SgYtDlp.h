@@ -7,6 +7,10 @@
 #include <QUrl>
 #include <QIODevice>
 #include <QVariantMap>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QFile>
 
 struct StreamOption {
     QString formatId;
@@ -49,6 +53,9 @@ public:
     void fetchPlaylistEntries(const QString& playlistUrl);
     void cancel();
 
+    // Call once at startup (e.g. from Seagull constructor via the downloaderWorker instance)
+    void checkForYtDlpUpdate();
+
 signals:
     void logMessage(const QString& message);
     void progressUpdated(double percentage);
@@ -58,17 +65,26 @@ signals:
     void availableQualitiesFound(const QList<StreamOption>& options);
     void streamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl = QUrl());
     void playlistEntriesReady(const QList<QString>& urls);
+    void ytDlpUpdateStatus(const QString& message);
 
 private slots:
     void handleReadyRead();
     void handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
+    void onReleaseInfoReceived(QNetworkReply* reply);
+    void onDownloadProgress(qint64 received, qint64 total);
+    void onExeDownloadFinished(QNetworkReply* reply);
 
 private:
     QProcess* m_process;
+    QNetworkAccessManager* m_nam = nullptr;
+    QString m_pendingDownloadUrl;
 
     enum class JobMode { Idle, Downloading, FetchingMetadata, Probing, FetchingPlaylist };
     JobMode currentMode = JobMode::Idle;
 
     QByteArray processBuffer;
     QStringList buildDownloadArgs(const QString& url);
+
+    QString localYtDlpVersion() const;
+    void downloadNewExe(const QString& exeUrl);
 };

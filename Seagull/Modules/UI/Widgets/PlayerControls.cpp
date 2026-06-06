@@ -13,9 +13,9 @@
 #include <QMouseEvent>
 #include <QApplication>
 #include <QHideEvent>
-#include <QDebug> 
-#include <QSettings>         
-#include <QCoreApplication>  
+#include <QDebug>
+#include <QSettings>
+#include <QCoreApplication>
 
 PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     : QWidget(parent), m_player(player), m_duration(0), isUserSeeking(false),
@@ -87,6 +87,7 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
 
     setFixedSize(500, 50);
 
+    // --- Volume popup ---
     volumeFrame = new QFrame();
     volumeFrame->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
     volumeFrame->setAttribute(Qt::WA_TranslucentBackground);
@@ -119,6 +120,7 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     volumeTextTimer->setSingleShot(true);
     connect(volumeTextTimer, &QTimer::timeout, this, &PlayerControls::resetMuteButton);
 
+    // --- Quality popup ---
     qualityFrame = new QFrame();
     qualityFrame->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
     qualityFrame->setAttribute(Qt::WA_TranslucentBackground);
@@ -139,6 +141,18 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     qualityBtn->installEventFilter(this);
     qualityFrame->installEventFilter(this);
 
+    // --- Prev / Next click timers ---
+    // A single click arms the timer; if a second click arrives before it fires
+    // the timer is cancelled and the double-click action runs instead.
+    prevClickTimer = new QTimer(this);
+    prevClickTimer->setSingleShot(true);
+    connect(prevClickTimer, &QTimer::timeout, this, &PlayerControls::onPrevSingleClick);
+
+    nextClickTimer = new QTimer(this);
+    nextClickTimer->setSingleShot(true);
+    connect(nextClickTimer, &QTimer::timeout, this, &PlayerControls::onNextSingleClick);
+
+    // --- Signal connections ---
     connect(playPauseBtn, &QPushButton::clicked, this, &PlayerControls::togglePlayback);
     connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
@@ -160,13 +174,39 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
 
 PlayerControls::~PlayerControls() {
     stopPolling();
-    if (volumeHideTimer) volumeHideTimer->stop();
-    if (volumeTextTimer) volumeTextTimer->stop();
+    if (volumeHideTimer)  volumeHideTimer->stop();
+    if (volumeTextTimer)  volumeTextTimer->stop();
     if (qualityHideTimer) qualityHideTimer->stop();
+    if (prevClickTimer)   prevClickTimer->stop();
+    if (nextClickTimer)   nextClickTimer->stop();
+}
+
+void PlayerControls::resetUiState() {
+    isUserSeeking = false;
+    m_duration = -1;  // -1 so pollVlcState always updates range when new media reports its length
+    positionSlider->blockSignals(true);
+    positionSlider->setRange(0, 0);
+    positionSlider->setValue(0);
+    positionSlider->blockSignals(false);
+    timeLabel->setText("0:00 / 0:00");
 }
 
 void PlayerControls::stopPolling() {
     if (uiPollTimer) uiPollTimer->stop();
+}
+
+// Single click on prev: seek back 5 seconds
+void PlayerControls::onPrevSingleClick() {
+    if (!m_player) return;
+    qint64 newTime = qMax(0LL, m_player->time() - 5000LL);
+    m_player->setTime(newTime);
+}
+
+// Single click on next: seek forward 5 seconds
+void PlayerControls::onNextSingleClick() {
+    if (!m_player) return;
+    qint64 newTime = qMin(m_player->length(), m_player->time() + 5000LL);
+    m_player->setTime(newTime);
 }
 
 void PlayerControls::applyAudioState() {
@@ -188,9 +228,8 @@ void PlayerControls::applyAudioState() {
     }
 
     setVolumeUi(savedVolume);
-    if (muteBtn) {
+    if (muteBtn)
         muteBtn->setIcon(style()->standardIcon(savedMute ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
-    }
 }
 
 void PlayerControls::setStreamingMode(bool isStream) {
@@ -199,9 +238,14 @@ void PlayerControls::setStreamingMode(bool isStream) {
 }
 
 void PlayerControls::hideEvent(QHideEvent* event) {
-    if (volumeFrame) volumeFrame->hide();
+    if (volumeFrame)  volumeFrame->hide();
     if (qualityFrame) qualityFrame->hide();
     QWidget::hideEvent(event);
+}
+
+void PlayerControls::moveEvent(QMoveEvent* event) {
+    QWidget::moveEvent(event);
+    updateVolumePosition();
 }
 
 void PlayerControls::updateVolumePosition() {
@@ -236,10 +280,37 @@ void PlayerControls::resetMuteButton() {
 }
 
 bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
-    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::MouseButtonDblClick) {
-        event->accept();
+    // Intercept mouse events on prev/next for single vs double-click detection.
+    // QPushButton's built-in clicked() signal cannot distinguish double-clicks,
+    // so we handle MouseButtonPress and MouseButtonDblClick ourselves here and
+    // suppress the normal event processing for those two buttons.
+    if (watched == prevBtn) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            prevClickTimer->start(QApplication::doubleClickInterval());
+            return true; // suppress so clicked() doesn't also fire
+        }
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            prevClickTimer->stop(); // cancel the pending single-click seek
+            emit skipRequested(-1);
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease) return true;
     }
 
+    if (watched == nextBtn) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            nextClickTimer->start(QApplication::doubleClickInterval());
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            nextClickTimer->stop();
+            emit skipRequested(+1);
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease) return true;
+    }
+
+    // Generic icon colour flip on hover for all buttons
     QPushButton* btn = qobject_cast<QPushButton*>(watched);
     if (btn) {
         auto* effect = static_cast<QGraphicsColorizeEffect*>(btn->graphicsEffect());
@@ -249,13 +320,13 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
         }
     }
 
+    // Volume popup hover logic
     if (watched == muteBtn || watched == volumeFrame) {
         if (event->type() == QEvent::Enter) {
             volumeHideTimer->stop();
             if (volumeFrame->isHidden()) {
                 qualityFrame->hide();
                 qualityHideTimer->stop();
-
                 QPoint globalPos = muteBtn->mapToGlobal(QPoint((muteBtn->width() - volumeFrame->width()) / 2, -volumeFrame->height() - 10));
                 volumeFrame->move(globalPos);
                 volumeFrame->show();
@@ -266,13 +337,13 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
         }
     }
 
+    // Quality popup hover logic
     if (watched == qualityBtn || watched == qualityFrame) {
         if (event->type() == QEvent::Enter) {
             qualityHideTimer->stop();
             if (qualityFrame->isHidden()) {
                 volumeFrame->hide();
                 volumeHideTimer->stop();
-
                 QPoint globalPos = qualityBtn->mapToGlobal(QPoint((qualityBtn->width() - qualityFrame->width()) / 2, -qualityFrame->height() - 10));
                 qualityFrame->move(globalPos);
                 qualityFrame->show();
@@ -340,9 +411,8 @@ void PlayerControls::pollVlcState() {
 }
 
 void PlayerControls::seek(int position) {
-    if (m_player->length() > 0) {
+    if (m_player->length() > 0)
         m_player->setTime(position);
-    }
 }
 
 QString PlayerControls::formatTime(qint64 ms) {
@@ -362,9 +432,7 @@ void PlayerControls::setAvailableQualities(const QList<StreamOption>& options) {
 
     QLayoutItem* item;
     while ((item = layout->takeAt(0)) != nullptr) {
-        if (QWidget* widget = item->widget()) {
-            widget->deleteLater();
-        }
+        if (QWidget* widget = item->widget()) widget->deleteLater();
         delete item;
     }
 
@@ -380,7 +448,6 @@ void PlayerControls::setAvailableQualities(const QList<StreamOption>& options) {
             emit qualitySelected(id);
             });
         layout->addWidget(qb);
-
         qb->show();
     }
 

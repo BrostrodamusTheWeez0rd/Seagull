@@ -161,7 +161,27 @@ void Library::onFileDoubleClicked(const QModelIndex& index) {
     if (!url.isValid() || url.isEmpty())
         return;
 
+    // Track the row in the proxy model so next/prev can navigate from it
+    currentPlayIndex = index.row();
+
     emit playMediaRequested(url);
+}
+
+void Library::playNextFile() {
+    if (currentPlayIndex < 0) return;
+    int nextRow = currentPlayIndex + 1;
+    if (nextRow >= tableFilter->rowCount(fileTable->rootIndex())) return;
+    QModelIndex proxyIdx = tableFilter->index(nextRow, 0, fileTable->rootIndex());
+    if (proxyIdx.isValid())
+        onFileDoubleClicked(proxyIdx);
+}
+
+void Library::playPrevFile() {
+    if (currentPlayIndex <= 0) return;
+    int prevRow = currentPlayIndex - 1;
+    QModelIndex proxyIdx = tableFilter->index(prevRow, 0, fileTable->rootIndex());
+    if (proxyIdx.isValid())
+        onFileDoubleClicked(proxyIdx);
 }
 
 void Library::goBack() {

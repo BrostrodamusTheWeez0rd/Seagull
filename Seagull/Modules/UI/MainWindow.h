@@ -14,19 +14,24 @@
 #include <QByteArray>
 #include <memory>
 #include <vlcpp/vlc.hpp>
-#include "Library.h"
-#include "Downloads.h"
-#include "Search.h"
-#include "Settings.h"
 #include "Widgets/PlayerControls.h"
 #include "Widgets/PlayerTitleBar.h"
-#include "../Backend/SgYtDlp.h"
+
+struct StreamOption;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+
+    void addTab(QWidget* tab, const QString& label);
+
+signals:
+    void mediaEnded();
+    void skipRequested(int delta);
+    void probeQualitiesRequested(const QString& url);
+    void streamUrlRequested(const QString& url, const QString& formatId);
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -36,10 +41,13 @@ protected:
     void moveEvent(QMoveEvent* event) override;
 
 public slots:
-    void playLocalFile(const QUrl& url); // New dedicated slot
+    void playLocalFile(const QUrl& url);
     void playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl = QUrl(), const QUrl& cdnAudioUrl = QUrl(), const QString& title = QString());
     void showOSD();
     void hideOSD();
+
+    void handleAvailableQualities(const QList<StreamOption>& options);
+    void onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl);
 
 private slots:
     void checkMouseMovement();
@@ -48,11 +56,8 @@ private slots:
     void scheduleUpdateOverlay();
     void closePlayer();
     void handleStopRequest();
-
-    // --- Stream Quality Routing ---
-    void handleAvailableQualities(const QList<StreamOption>& options);
+    void onMediaEndReached();
     void changeStreamQuality(const QString& formatId);
-    void onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl);
 
 private:
     void installFilterRecursive(QObject* obj, QObject* filter);
@@ -61,7 +66,6 @@ private:
     QTabWidget* tabs;
     QWidget* videoContainer;
 
-    // VLC Core Components
     std::shared_ptr<VLC::Instance> vlcInstance;
     std::shared_ptr<VLC::MediaPlayer> vlcPlayer;
     QFrame* videoWidget;
@@ -74,14 +78,10 @@ private:
     QTimer* updateOverlayTimer;
     QPoint lastMousePos;
 
-    // --- Stream State Management ---
-    SgYtDlp* streamBackend;
     QUrl currentBaseUrl;
     QString currentVideoTitle;
 
-    // Safety guard to prevent processing events during destruction
     bool isClosing;
-
     qint64 savedStreamTimestamp = -1;
 };
 

@@ -10,6 +10,7 @@
 #include <QTime>
 #include <QEvent>
 #include <QTimer>
+#include <QMoveEvent>
 #include <QFrame>
 #include <QGraphicsColorizeEffect>
 #include <QHideEvent>
@@ -19,10 +20,12 @@
 
 class PlayerControls : public QWidget {
     Q_OBJECT
+
 public:
     explicit PlayerControls(VLC::MediaPlayer* player, QWidget* parent = nullptr);
     ~PlayerControls();
 
+    void resetUiState(); // Added to reset seeking state on video change
     void updateVolumePosition();
     void setVolumeUi(int volume);
     void setStreamingMode(bool isStream);
@@ -37,9 +40,13 @@ signals:
     void stopRequested();
     void qualitySelected(QString formatId);
 
+    // delta = +1 for next, -1 for prev
+    void skipRequested(int delta);
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void hideEvent(QHideEvent* event) override;
+    void moveEvent(QMoveEvent* event) override;
 
 private slots:
     void pollVlcState();
@@ -50,6 +57,9 @@ private slots:
     void hideVolumeFrame();
     void hideQualityFrame();
     void resetMuteButton();
+
+    void onPrevSingleClick();
+    void onNextSingleClick();
 
 private:
     VLC::MediaPlayer* m_player;
@@ -80,6 +90,11 @@ private:
     qint64 m_duration;
     bool isUserSeeking;
 
+    // Single/double-click discrimination for prev and next buttons
+    QTimer* prevClickTimer;
+    QTimer* nextClickTimer;
+
     QString formatTime(qint64 ms);
 };
+
 #endif

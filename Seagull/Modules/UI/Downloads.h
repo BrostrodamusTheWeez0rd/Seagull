@@ -17,13 +17,22 @@
 #include <QPoint>
 #include <QPair>
 #include <QMap>
+#include <QList>
 #include <QDateTime>
-#include "../Backend/SgYtDlp.h"
+
+// Forward declaration instead of #include keeps the UI decoupled from the backend implementation
+class SgYtDlp; 
 
 class Downloads : public QWidget {
     Q_OBJECT
 public:
-    explicit Downloads(QWidget* parent = nullptr);
+    // INJECTED: The Orchestrator hands the backends to the UI
+    explicit Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent = nullptr);
+
+    // Sequential playback logic
+    void playNextQueuedItem();
+    void playPrevQueuedItem();
+    void setStreamingQueueMode(bool active);
 
 signals:
     // EMITS: Raw URL, CDN Video URL, CDN Audio URL, and Title
@@ -35,6 +44,7 @@ private slots:
     void onProcessQueueClicked();
     void onStreamClicked();
     void onStreamQueueClicked();
+    void onClearQueueClicked();
     void onUrlTextChanged(const QString& text);
     void triggerMetadataFetch();
 
@@ -67,10 +77,10 @@ private:
     bool    isPlaylistUrl(const QString& url) const;
     QString stripToVideoUrl(const QString& url) const;
     void    offerPlaylistQueue(const QString& fullUrl);
+    void    playQueueIndex(int index);
 
     // Validates the Unix timestamp token inside the YouTube CDN URL
     bool    isStreamUrlValid(const QUrl& cdnUrl) const;
-
     void    enqueueTitleResolution(const QList<QString>& urls, int startRow);
 
     // Widgets
@@ -82,6 +92,7 @@ private:
     QPushButton* streamBtn;
     QPushButton* processQueueBtn;
     QPushButton* streamQueueBtn;
+    QPushButton* clearQueueBtn;
     QWidget* metadataContainer;
     QLabel* metaTitle;
     QLabel* metaUploader;
@@ -94,7 +105,7 @@ private:
     QTimer* debounceTimer;
     QTimer* resolverTimer;
 
-    // Backends
+    // Backends (Now owned by Orchestrator, but referenced here)
     SgYtDlp* downloader;
     SgYtDlp* titleResolver;
     SgYtDlp* cdnPrefetcher;
@@ -102,15 +113,28 @@ private:
     // State
     bool    isFetchingMetadata = false;
     bool    isProcessingQueue = false;
+    bool    isStreamingQueue = false;
     QString cachedTitle;
     QString m_pendingPlaylistUrl;
 
-    // Cache state: Maps raw URL to a pair of <VideoUrl, AudioUrl>
+    // Cache state
     QMap<QString, QPair<QUrl, QUrl>> cdnCache;
     QString m_currentlyPrefetchingUrl;
 
     // Background title resolution queue
     QList<QPair<int, QString>> m_titleQueue;
     int m_currentResolvingRow = -1;
+
+    // Stream queue playback state
+    struct QueueEntry {
+        QString rawUrl;
+        QUrl    cdnVideoUrl;
+        QUrl    cdnAudioUrl;
+        QString title;
+    };
+    QList<QueueEntry> m_streamQueue;
+    int m_queuePlayIndex = -1;
+    bool m_waitingForCdn = false; // true when playQueueIndex is blocked waiting for a CDN fetch
 };
+
 #endif
