@@ -179,6 +179,10 @@ PlayerControls::~PlayerControls() {
 
 void PlayerControls::setCurrentFormat(const QString& formatId) {
     m_currentFormatId = formatId;
+    // Force a UI refresh if we have options cached
+    if (!m_lastOptions.isEmpty()) {
+        setAvailableQualities(m_lastOptions);
+    }
 }
 
 void PlayerControls::stopPolling() {
@@ -424,6 +428,7 @@ QString PlayerControls::formatTime(qint64 ms) {
 }
 
 void PlayerControls::setAvailableQualities(const QList<StreamOption>& options) {
+    m_lastOptions = options; // Cache the list
     if (!qualityContentFrame) return;
 
     QLayout* layout = qualityContentFrame->layout();

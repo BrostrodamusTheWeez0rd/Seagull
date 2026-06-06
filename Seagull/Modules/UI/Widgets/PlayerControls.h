@@ -69,6 +69,7 @@ private:
     QTimer* uiPollTimer;
     QSettings m_settings;
     QString m_currentFormatId; // Active track state
+    QList<StreamOption> m_lastOptions; // Cache the list to redraw on demand
 
     QPushButton* playPauseBtn;
     QPushButton* stopBtn;

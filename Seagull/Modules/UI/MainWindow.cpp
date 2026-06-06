@@ -320,6 +320,7 @@ void MainWindow::handleAvailableQualities(const QList<StreamOption>& options) {
 }
 
 void MainWindow::changeStreamQuality(const QString& formatId) {
+    lastRequestedFormatId = formatId;
     savedStreamTimestamp = vlcPlayer->time();
     if (vlcPlayer->isPlaying()) vlcPlayer->pause();
 
@@ -342,7 +343,10 @@ void MainWindow::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
 
     QTimer::singleShot(50, this, [this]() {
         vlcPlayer->play();
-        if (playerControls) playerControls->startPolling();
+        if (playerControls) {
+            playerControls->startPolling();
+            playerControls->setCurrentFormat(lastRequestedFormatId); // Force sync here
+        }
         });
 
     QPointer<PlayerControls> safeControls = playerControls;
