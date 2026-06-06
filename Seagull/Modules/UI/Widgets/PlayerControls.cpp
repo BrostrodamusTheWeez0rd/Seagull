@@ -141,9 +141,6 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     qualityBtn->installEventFilter(this);
     qualityFrame->installEventFilter(this);
 
-    // --- Prev / Next click timers ---
-    // A single click arms the timer; if a second click arrives before it fires
-    // the timer is cancelled and the double-click action runs instead.
     prevClickTimer = new QTimer(this);
     prevClickTimer->setSingleShot(true);
     connect(prevClickTimer, &QTimer::timeout, this, &PlayerControls::onPrevSingleClick);
@@ -152,7 +149,6 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     nextClickTimer->setSingleShot(true);
     connect(nextClickTimer, &QTimer::timeout, this, &PlayerControls::onNextSingleClick);
 
-    // --- Signal connections ---
     connect(playPauseBtn, &QPushButton::clicked, this, &PlayerControls::togglePlayback);
     connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
@@ -181,28 +177,43 @@ PlayerControls::~PlayerControls() {
     if (nextClickTimer)   nextClickTimer->stop();
 }
 
-void PlayerControls::resetUiState() {
-    isUserSeeking = false;
-    m_duration = -1;  // -1 so pollVlcState always updates range when new media reports its length
-    positionSlider->blockSignals(true);
-    positionSlider->setRange(0, 0);
-    positionSlider->setValue(0);
-    positionSlider->blockSignals(false);
-    timeLabel->setText("0:00 / 0:00");
+void PlayerControls::setCurrentFormat(const QString& formatId) {
+    m_currentFormatId = formatId;
 }
 
 void PlayerControls::stopPolling() {
     if (uiPollTimer) uiPollTimer->stop();
 }
 
-// Single click on prev: seek back 5 seconds
+void PlayerControls::startPolling() {
+    if (uiPollTimer && !uiPollTimer->isActive()) {
+        uiPollTimer->start(250);
+    }
+}
+
+void PlayerControls::resetUiState() {
+    isUserSeeking = false;
+    m_duration = -1;
+    positionSlider->blockSignals(true);
+    positionSlider->setRange(0, 0);
+    positionSlider->setValue(0);
+    positionSlider->blockSignals(false);
+    timeLabel->setText("0:00 / 0:00");
+    startPolling();
+}
+
+void PlayerControls::setStreamingMode(bool isStream) {
+    qualityBtn->setVisible(isStream);
+    if (!isStream && qualityFrame) qualityFrame->hide();
+    startPolling();
+}
+
 void PlayerControls::onPrevSingleClick() {
     if (!m_player) return;
     qint64 newTime = qMax(0LL, m_player->time() - 5000LL);
     m_player->setTime(newTime);
 }
 
-// Single click on next: seek forward 5 seconds
 void PlayerControls::onNextSingleClick() {
     if (!m_player) return;
     qint64 newTime = qMin(m_player->length(), m_player->time() + 5000LL);
@@ -230,11 +241,6 @@ void PlayerControls::applyAudioState() {
     setVolumeUi(savedVolume);
     if (muteBtn)
         muteBtn->setIcon(style()->standardIcon(savedMute ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
-}
-
-void PlayerControls::setStreamingMode(bool isStream) {
-    qualityBtn->setVisible(isStream);
-    if (!isStream && qualityFrame) qualityFrame->hide();
 }
 
 void PlayerControls::hideEvent(QHideEvent* event) {
@@ -280,17 +286,13 @@ void PlayerControls::resetMuteButton() {
 }
 
 bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
-    // Intercept mouse events on prev/next for single vs double-click detection.
-    // QPushButton's built-in clicked() signal cannot distinguish double-clicks,
-    // so we handle MouseButtonPress and MouseButtonDblClick ourselves here and
-    // suppress the normal event processing for those two buttons.
     if (watched == prevBtn) {
         if (event->type() == QEvent::MouseButtonPress) {
             prevClickTimer->start(QApplication::doubleClickInterval());
-            return true; // suppress so clicked() doesn't also fire
+            return true;
         }
         if (event->type() == QEvent::MouseButtonDblClick) {
-            prevClickTimer->stop(); // cancel the pending single-click seek
+            prevClickTimer->stop();
             emit skipRequested(-1);
             return true;
         }
@@ -310,7 +312,6 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
         if (event->type() == QEvent::MouseButtonRelease) return true;
     }
 
-    // Generic icon colour flip on hover for all buttons
     QPushButton* btn = qobject_cast<QPushButton*>(watched);
     if (btn) {
         auto* effect = static_cast<QGraphicsColorizeEffect*>(btn->graphicsEffect());
@@ -320,7 +321,6 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
         }
     }
 
-    // Volume popup hover logic
     if (watched == muteBtn || watched == volumeFrame) {
         if (event->type() == QEvent::Enter) {
             volumeHideTimer->stop();
@@ -337,7 +337,6 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
         }
     }
 
-    // Quality popup hover logic
     if (watched == qualityBtn || watched == qualityFrame) {
         if (event->type() == QEvent::Enter) {
             qualityHideTimer->stop();
@@ -395,7 +394,7 @@ void PlayerControls::pollVlcState() {
     ));
 
     qint64 length = m_player->length();
-    if (length > 0 && length != m_duration) {
+    if (length > 0 && (m_duration <= 0 || length != m_duration)) {
         m_duration = length;
         positionSlider->setRange(0, static_cast<int>(m_duration));
     }
@@ -436,15 +435,22 @@ void PlayerControls::setAvailableQualities(const QList<StreamOption>& options) {
         delete item;
     }
 
+    qualityBtn->setVisible(!options.isEmpty());
+
     for (const StreamOption& opt : options) {
-        QPushButton* qb = new QPushButton(opt.label);
+        bool isActive = (opt.formatId == m_currentFormatId);
+        QPushButton* qb = new QPushButton(isActive ? (opt.label + " ✓") : opt.label);
         qb->setCursor(Qt::PointingHandCursor);
-        qb->setStyleSheet(
-            "QPushButton { background: transparent; color: white; border: none; font-size: 11px; font-weight: bold; border-radius: 5px; padding: 5px; }"
-            "QPushButton:hover { background: rgba(255,255,255,50); }"
-        );
+
+        QString style = "QPushButton { background: transparent; color: white; border: none; font-size: 11px; ";
+        style += (isActive ? "font-weight: bold; border-left: 3px solid white; padding-left: 5px;" : "padding-left: 8px;");
+        style += " } QPushButton:hover { background: rgba(255,255,255,50); }";
+
+        qb->setStyleSheet(style);
+
         connect(qb, &QPushButton::clicked, this, [this, id = opt.formatId]() {
             qualityFrame->hide();
+            setCurrentFormat(id);
             emit qualitySelected(id);
             });
         layout->addWidget(qb);
@@ -454,6 +460,8 @@ void PlayerControls::setAvailableQualities(const QList<StreamOption>& options) {
     int newHeight = (options.size() * 30) + 20;
     if (newHeight < 40) newHeight = 40;
 
-    qualityFrame->setFixedSize(60, newHeight);
-    qualityContentFrame->setGeometry(0, 0, 60, newHeight);
+    qualityFrame->setFixedSize(80, newHeight);
+    qualityContentFrame->setGeometry(0, 0, 80, newHeight);
+
+    updateVolumePosition();
 }

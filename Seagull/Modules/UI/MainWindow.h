@@ -21,7 +21,6 @@ struct StreamOption;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
-
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
@@ -32,6 +31,7 @@ signals:
     void skipRequested(int delta);
     void probeQualitiesRequested(const QString& url);
     void streamUrlRequested(const QString& url, const QString& formatId);
+    void streamFormatChanged(const QString& formatId); // NEW: Notify orchestrator of active format
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;

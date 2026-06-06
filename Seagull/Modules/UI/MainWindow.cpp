@@ -152,6 +152,7 @@ void MainWindow::playLocalFile(const QUrl& url) {
 
     QTimer::singleShot(50, this, [this]() {
         vlcPlayer->play();
+        if (playerControls) playerControls->startPolling();
         });
 
     if (titleBar) titleBar->setTitle(QFileInfo(nativePath).completeBaseName());
@@ -162,11 +163,11 @@ void MainWindow::playLocalFile(const QUrl& url) {
 void MainWindow::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
     if (!videoWidget) return;
 
-    // Trigger the probe for the orchestrator to catch
     emit probeQualitiesRequested(rawUrl.toString());
 
     if (playerControls) {
         playerControls->resetUiState();
+        playerControls->setCurrentFormat("");
     }
 
     videoContainer->show();
@@ -321,6 +322,9 @@ void MainWindow::handleAvailableQualities(const QList<StreamOption>& options) {
 void MainWindow::changeStreamQuality(const QString& formatId) {
     savedStreamTimestamp = vlcPlayer->time();
     if (vlcPlayer->isPlaying()) vlcPlayer->pause();
+
+    if (playerControls) playerControls->setCurrentFormat(formatId);
+
     titleBar->setTitle("Buffering new quality...");
     QTimer::singleShot(200, this, [this, formatId]() { emit streamUrlRequested(currentBaseUrl.toString(), formatId); });
 }
@@ -338,6 +342,7 @@ void MainWindow::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
 
     QTimer::singleShot(50, this, [this]() {
         vlcPlayer->play();
+        if (playerControls) playerControls->startPolling();
         });
 
     QPointer<PlayerControls> safeControls = playerControls;

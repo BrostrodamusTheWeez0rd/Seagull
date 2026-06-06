@@ -142,7 +142,20 @@ Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp
 }
 
 bool Downloads::isPlaylistUrl(const QString& url) const {
-    return !QUrlQuery(QUrl(url).query()).queryItemValue("list").isEmpty();
+    QUrl qurl(url);
+    QUrlQuery query(qurl.query());
+    QString path = qurl.path();
+
+    if (query.hasQueryItem("list") || path.startsWith("/playlist")) {
+        return true;
+    }
+
+    if (path.startsWith("/@") || path.startsWith("/user/") ||
+        path.startsWith("/c/") || path.startsWith("/channel/")) {
+        return true;
+    }
+
+    return false;
 }
 
 QString Downloads::stripToVideoUrl(const QString& url) const {
@@ -168,15 +181,46 @@ bool Downloads::isStreamUrlValid(const QUrl& cdnUrl) const {
 void Downloads::offerPlaylistQueue(const QString& fullUrl) {
     QMessageBox msgBox(this);
     msgBox.setWindowTitle("Playlist Detected");
-    msgBox.setText("This URL contains a playlist.\n\nWould you like to add all playlist items to the queue?");
-    msgBox.setIcon(QMessageBox::Question);
-    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-    msgBox.setDefaultButton(QMessageBox::Yes);
-    if (msgBox.exec() == QMessageBox::Yes) {
-        downloader->fetchPlaylistEntries(fullUrl);
+
+    QUrl qurl(fullUrl);
+    QString videoId = QUrlQuery(qurl.query()).queryItemValue("v");
+
+    // FIXED: Smart differentiation for single videos wrapped in a playlist
+    if (!videoId.isEmpty()) {
+        msgBox.setText("This link is part of a playlist.\n\nWould you like to add the entire playlist to the queue?\n(Select 'No' to load just the single video)");
+        msgBox.setIcon(QMessageBox::Question);
+        msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+        msgBox.setDefaultButton(QMessageBox::Yes);
+
+        int choice = msgBox.exec();
+        if (choice == QMessageBox::Yes) {
+            downloader->fetchPlaylistEntries(fullUrl);
+        }
+        else if (choice == QMessageBox::No) {
+            loadingLabel->setText("Analyzing link...");
+            loadingLabel->show();
+            // User rejected the playlist, so strip the list parameter and fetch the single video metadata!
+            downloader->fetchMetadataAndStreamUrl(stripToVideoUrl(fullUrl));
+        }
+        else {
+            loadingLabel->hide();
+            m_pendingPlaylistUrl.clear();
+        }
     }
     else {
-        loadingLabel->hide();
+        // Pure playlists or channel links
+        msgBox.setText("This URL contains a playlist.\n\nWould you like to add all playlist items to the queue?");
+        msgBox.setIcon(QMessageBox::Question);
+        msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+        msgBox.setDefaultButton(QMessageBox::Yes);
+
+        if (msgBox.exec() == QMessageBox::Yes) {
+            downloader->fetchPlaylistEntries(fullUrl);
+        }
+        else {
+            loadingLabel->hide();
+            m_pendingPlaylistUrl.clear();
+        }
     }
 }
 
@@ -335,7 +379,8 @@ void Downloads::onUrlTextChanged(const QString& text) {
         loadingLabel->show();
         cachedTitle.clear();
         isFetchingMetadata = false;
-        m_pendingPlaylistUrl = text;
+        m_pendingPlaylistUrl.clear();
+        if (isPlaylistUrl(text)) m_pendingPlaylistUrl = text;
         debounceTimer->start(500);
     }
     else {
@@ -354,6 +399,9 @@ void Downloads::triggerMetadataFetch() {
     else {
         downloader->fetchMetadataAndStreamUrl(fetchUrl);
     }
+
+    // Safety cleanup so it never artificially fires again in handleMetadataReady
+    m_pendingPlaylistUrl.clear();
 }
 
 void Downloads::onDownloadClicked() {
@@ -491,11 +539,6 @@ void Downloads::handleMetadataReady(const QString& t, const QString& u, const QS
     metaTitle->setText(t); metaUploader->setText(u);
     metaStats->setText(QString("Duration: %1 | Views: %2 | Uploaded: %3").arg(d, v, da));
     metadataContainer->show();
-    if (!m_pendingPlaylistUrl.isEmpty()) {
-        QString playlistUrl = m_pendingPlaylistUrl;
-        m_pendingPlaylistUrl.clear();
-        offerPlaylistQueue(playlistUrl);
-    }
 }
 
 void Downloads::handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {

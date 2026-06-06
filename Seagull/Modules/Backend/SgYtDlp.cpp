@@ -8,7 +8,6 @@
 #include <QFileInfo>
 #include <QSettings>
 #include <QRegularExpression>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonParseError>
@@ -33,7 +32,8 @@ SgYtDlp::SgYtDlp(QObject* parent) : QObject(parent) {
 
     m_nam = new QNetworkAccessManager(this);
     connect(m_nam, &QNetworkAccessManager::finished, this, [this](QNetworkReply* reply) {
-        if (reply->property("isExeDownload").toBool())
+        QString type = reply->property("downloadType").toString();
+        if (type == "yt-dlp-exe" || type == "deno-zip")
             onExeDownloadFinished(reply);
         else
             onReleaseInfoReceived(reply);
@@ -199,7 +199,6 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         return;
     }
 
-    // Resilience: Search for the first '{' to ignore leading non-JSON output
     int jsonStart = processBuffer.indexOf('{');
     if (jsonStart == -1) {
         emit logMessage("No valid JSON found in output.");
@@ -291,8 +290,9 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         emit finished(exitCode == 0);
     }
 }
+
 // ---------------------------------------------------------------------------
-// yt-dlp auto-update
+// Dependency Update Checking (yt-dlp & Deno JavaScript Runtime)
 // ---------------------------------------------------------------------------
 
 QString SgYtDlp::localYtDlpVersion() const {
@@ -303,8 +303,21 @@ QString SgYtDlp::localYtDlpVersion() const {
     return QString::fromLocal8Bit(p.readAllStandardOutput()).trimmed();
 }
 
+QString SgYtDlp::localDenoVersion() const {
+    QString exePath = QCoreApplication::applicationDirPath() + "/tools/deno.exe";
+    if (!QFile::exists(exePath)) return QString();
+    QProcess p;
+    p.start(exePath, { "--version" });
+    p.waitForFinished(5000);
+    QString out = QString::fromLocal8Bit(p.readAllStandardOutput());
+    QRegularExpression rx("deno\\s+([0-9.]+)");
+    QRegularExpressionMatch match = rx.match(out);
+    if (match.hasMatch()) return "v" + match.captured(1);
+    return QString();
+}
+
 void SgYtDlp::checkForYtDlpUpdate() {
-    emit ytDlpUpdateStatus("Checking for yt-dlp update...");
+    emit ytDlpUpdateStatus("Checking for updates...");
     QUrl apiUrl("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest");
     QNetworkRequest req;
     req.setUrl(apiUrl);
@@ -313,6 +326,7 @@ void SgYtDlp::checkForYtDlpUpdate() {
 }
 
 void SgYtDlp::onReleaseInfoReceived(QNetworkReply* reply) {
+    QUrl url = reply->url();
     reply->deleteLater();
     if (reply->error() != QNetworkReply::NoError) {
         emit ytDlpUpdateStatus("Update check failed: " + reply->errorString());
@@ -320,41 +334,71 @@ void SgYtDlp::onReleaseInfoReceived(QNetworkReply* reply) {
     }
 
     QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-    QString latestTag = doc.object()["tag_name"].toString(); // e.g. "2025.01.15"
+    QString latestTag = doc.object()["tag_name"].toString();
 
-    QString localVersion = localYtDlpVersion();
-    emit ytDlpUpdateStatus("yt-dlp local: " + localVersion + "  latest: " + latestTag);
+    if (url.toString().contains("yt-dlp/yt-dlp")) {
+        QString localVersion = localYtDlpVersion();
+        emit ytDlpUpdateStatus("yt-dlp local: " + localVersion + " | latest: " + latestTag);
 
-    if (localVersion.isEmpty() || latestTag.isEmpty()) {
-        emit ytDlpUpdateStatus("Could not compare versions, skipping update.");
-        return;
-    }
+        bool needsUpdate = localVersion.isEmpty() || latestTag.isEmpty() || (latestTag > localVersion);
 
-    // Tags are dates like 2025.01.15 — lexicographic compare works fine
-    if (latestTag <= localVersion) {
-        emit ytDlpUpdateStatus("yt-dlp is up to date (" + localVersion + ").");
-        return;
-    }
-
-    emit ytDlpUpdateStatus("New yt-dlp available: " + latestTag + " — downloading...");
-
-    // Find the yt-dlp.exe asset in the release
-    QJsonArray assets = doc.object()["assets"].toArray();
-    QString exeUrl;
-    for (const auto& a : assets) {
-        QJsonObject asset = a.toObject();
-        if (asset["name"].toString() == "yt-dlp.exe") {
-            exeUrl = asset["browser_download_url"].toString();
-            break;
+        if (!needsUpdate) {
+            emit ytDlpUpdateStatus("yt-dlp is up to date. Verifying Deno engine environment...");
+            QUrl denoApiUrl("https://api.github.com/repos/denoland/deno/releases/latest");
+            QNetworkRequest req(denoApiUrl);
+            req.setRawHeader("User-Agent", "Seagull-Player");
+            m_nam->get(req);
+            return;
         }
-    }
 
-    if (exeUrl.isEmpty()) {
-        emit ytDlpUpdateStatus("Could not find yt-dlp.exe asset in release.");
-        return;
-    }
+        emit ytDlpUpdateStatus("New yt-dlp version detected: " + latestTag + " - downloading...");
+        QJsonArray assets = doc.object()["assets"].toArray();
+        QString exeUrl;
+        for (const auto& a : assets) {
+            QJsonObject asset = a.toObject();
+            if (asset["name"].toString() == "yt-dlp.exe") {
+                exeUrl = asset["browser_download_url"].toString();
+                break;
+            }
+        }
 
-    downloadNewExe(exeUrl);
+        if (exeUrl.isEmpty()) {
+            emit ytDlpUpdateStatus("Could not locate yt-dlp.exe asset link.");
+            return;
+        }
+        downloadNewExe(exeUrl);
+    }
+    else if (url.toString().contains("denoland/deno")) {
+        QString localVersion = localDenoVersion();
+        if (localVersion.isEmpty()) {
+            emit ytDlpUpdateStatus("Deno JS engine not found. Unpacking companion binary to tools...");
+        }
+        else {
+            emit ytDlpUpdateStatus("Deno local: " + localVersion + " | latest: " + latestTag);
+        }
+
+        if (!localVersion.isEmpty() && latestTag <= localVersion) {
+            emit ytDlpUpdateStatus("Deno JS environment is up to date.");
+            return;
+        }
+
+        emit ytDlpUpdateStatus("New Deno version detected: " + latestTag + " - downloading payload archive...");
+        QJsonArray assets = doc.object()["assets"].toArray();
+        QString zipUrl;
+        for (const auto& a : assets) {
+            QJsonObject asset = a.toObject();
+            if (asset["name"].toString() == "deno-x86_64-pc-windows-msvc.zip") {
+                zipUrl = asset["browser_download_url"].toString();
+                break;
+            }
+        }
+
+        if (zipUrl.isEmpty()) {
+            emit ytDlpUpdateStatus("Failed to resolve compatible Deno runtime bundle target.");
+            return;
+        }
+        downloadNewDeno(zipUrl);
+    }
 }
 
 void SgYtDlp::downloadNewExe(const QString& exeUrl) {
@@ -362,47 +406,114 @@ void SgYtDlp::downloadNewExe(const QString& exeUrl) {
     req.setUrl(QUrl(exeUrl));
     req.setRawHeader("User-Agent", "Seagull-Player");
     QNetworkReply* reply = m_nam->get(req);
-    reply->setProperty("isExeDownload", true);
+    reply->setProperty("downloadType", "yt-dlp-exe");
+    connect(reply, &QNetworkReply::downloadProgress, this, &SgYtDlp::onDownloadProgress);
+}
+
+void SgYtDlp::downloadNewDeno(const QString& zipUrl) {
+    QNetworkRequest req;
+    req.setUrl(QUrl(zipUrl));
+    req.setRawHeader("User-Agent", "Seagull-Player");
+    QNetworkReply* reply = m_nam->get(req);
+    reply->setProperty("downloadType", "deno-zip");
     connect(reply, &QNetworkReply::downloadProgress, this, &SgYtDlp::onDownloadProgress);
 }
 
 void SgYtDlp::onDownloadProgress(qint64 received, qint64 total) {
     if (total > 0) {
+        QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
+        QString prefix = "Processing asset package";
+        if (reply) {
+            QString type = reply->property("downloadType").toString();
+            if (type == "yt-dlp-exe") prefix = "Downloading yt-dlp build";
+            if (type == "deno-zip") prefix = "Downloading Deno runtime package";
+        }
         int pct = static_cast<int>(received * 100 / total);
-        emit ytDlpUpdateStatus("Downloading yt-dlp update: " + QString::number(pct) + "%");
+        emit ytDlpUpdateStatus(prefix + ": " + QString::number(pct) + "%");
     }
 }
 
+bool SgYtDlp::extractDenoZip(const QString& zipPath, const QString& targetDir) {
+    QProcess process;
+    QStringList args;
+    args << "-NoProfile" << "-Command"
+        << QString("Expand-Archive -Path '%1' -DestinationPath '%2' -Force").arg(zipPath, targetDir);
+
+    process.start("powershell.exe", args);
+    return process.waitForFinished(30000) && (process.exitCode() == 0);
+}
+
 void SgYtDlp::onExeDownloadFinished(QNetworkReply* reply) {
+    QString downloadType = reply->property("downloadType").toString();
+    QByteArray fileData = reply->readAll();
     reply->deleteLater();
+
     if (reply->error() != QNetworkReply::NoError) {
-        emit ytDlpUpdateStatus("yt-dlp download failed: " + reply->errorString());
+        emit ytDlpUpdateStatus("Asset download failed: " + reply->errorString());
         return;
     }
 
     QString toolsDir = QCoreApplication::applicationDirPath() + "/tools";
-    QString exePath = toolsDir + "/yt-dlp.exe";
-    QString tmpPath = toolsDir + "/yt-dlp_new.exe";
-
     QDir().mkpath(toolsDir);
 
-    QFile tmp(tmpPath);
-    if (!tmp.open(QIODevice::WriteOnly)) {
-        emit ytDlpUpdateStatus("Failed to write update to disk.");
-        return;
-    }
-    tmp.write(reply->readAll());
-    tmp.close();
+    if (downloadType == "yt-dlp-exe") {
+        QString exePath = toolsDir + "/yt-dlp.exe";
+        QString tmpPath = toolsDir + "/yt-dlp_new.exe";
 
-    // Swap: rename old to .bak then new to .exe
-    QFile::remove(exePath + ".bak");
-    QFile::rename(exePath, exePath + ".bak");
-    if (QFile::rename(tmpPath, exePath)) {
-        emit ytDlpUpdateStatus("yt-dlp updated successfully. Restart may be needed if a job was running.");
+        QFile tmp(tmpPath);
+        if (!tmp.open(QIODevice::WriteOnly)) {
+            emit ytDlpUpdateStatus("Failed to open staging location for streaming data.");
+            return;
+        }
+        tmp.write(fileData);
+        tmp.close();
+
+        QFile::remove(exePath + ".bak");
+        QFile::rename(exePath, exePath + ".bak");
+        if (QFile::rename(tmpPath, exePath)) {
+            emit ytDlpUpdateStatus("yt-dlp binary updated successfully.");
+        }
+        else {
+            QFile::rename(exePath + ".bak", exePath);
+            emit ytDlpUpdateStatus("File update failed (permissions error). Preserving old runtime snapshot.");
+        }
+
+        // Forward execution straight to verifying runtime engines
+        QUrl denoApiUrl("https://api.github.com/repos/denoland/deno/releases/latest");
+        QNetworkRequest req(denoApiUrl);
+        req.setRawHeader("User-Agent", "Seagull-Player");
+        m_nam->get(req);
     }
-    else {
-        // Roll back
-        QFile::rename(exePath + ".bak", exePath);
-        emit ytDlpUpdateStatus("Failed to replace yt-dlp.exe (file in use?). Update saved as yt-dlp_new.exe.");
+    else if (downloadType == "deno-zip") {
+        QString zipPath = toolsDir + "/deno_temp.zip";
+        QString exePath = toolsDir + "/deno.exe";
+
+        QFile file(zipPath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            emit ytDlpUpdateStatus("Failed to save runtime archive bundle.");
+            return;
+        }
+        file.write(fileData);
+        file.close();
+
+        emit ytDlpUpdateStatus("Decompressing memory buffer and isolating executable target...");
+
+        QFile::remove(exePath + ".bak");
+        if (QFile::exists(exePath)) {
+            QFile::rename(exePath, exePath + ".bak");
+        }
+
+        if (extractDenoZip(zipPath, toolsDir)) {
+            emit ytDlpUpdateStatus("Deno JavaScript engine successfully unpacked to local companion toolchain directory.");
+            QFile::remove(zipPath);
+            QFile::remove(exePath + ".bak");
+        }
+        else {
+            emit ytDlpUpdateStatus("Unpacking runtime executable failed. Rolling back local changes.");
+            QFile::remove(zipPath);
+            if (QFile::exists(exePath + ".bak")) {
+                QFile::rename(exePath + ".bak", exePath);
+            }
+        }
     }
 }

@@ -27,10 +27,11 @@ private:
     Settings* settingsModule;
     ActiveSource activeSource = ActiveSource::None;
 
-    // Orchestrator now owns the backend workers
+    // Orchestrator now owns all backend workers
     SgYtDlp* downloaderWorker;
     SgYtDlp* resolverWorker;
     SgYtDlp* prefetcherWorker;
+    SgYtDlp* playerWorker; // Added for dedicated player signal routing
 };
 
 #endif

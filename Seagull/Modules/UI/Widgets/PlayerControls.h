@@ -25,12 +25,15 @@ public:
     explicit PlayerControls(VLC::MediaPlayer* player, QWidget* parent = nullptr);
     ~PlayerControls();
 
-    void resetUiState(); // Added to reset seeking state on video change
+    void resetUiState();
     void updateVolumePosition();
     void setVolumeUi(int volume);
     void setStreamingMode(bool isStream);
     void applyAudioState();
+
     void stopPolling();
+    void startPolling();
+    void setCurrentFormat(const QString& formatId); // Track active selection
 
 public slots:
     void setAvailableQualities(const QList<StreamOption>& options);
@@ -65,6 +68,7 @@ private:
     VLC::MediaPlayer* m_player;
     QTimer* uiPollTimer;
     QSettings m_settings;
+    QString m_currentFormatId; // Active track state
 
     QPushButton* playPauseBtn;
     QPushButton* stopBtn;
@@ -90,7 +94,6 @@ private:
     qint64 m_duration;
     bool isUserSeeking;
 
-    // Single/double-click discrimination for prev and next buttons
     QTimer* prevClickTimer;
     QTimer* nextClickTimer;
 

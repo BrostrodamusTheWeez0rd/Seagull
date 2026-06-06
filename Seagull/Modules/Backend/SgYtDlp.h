@@ -87,4 +87,9 @@ private:
 
     QString localYtDlpVersion() const;
     void downloadNewExe(const QString& exeUrl);
+
+    // Deno runtime check & download components
+    QString localDenoVersion() const;
+    void downloadNewDeno(const QString& zipUrl);
+    bool extractDenoZip(const QString& zipPath, const QString& targetDir);
 };

@@ -6,12 +6,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // 1. Instantiate the UI Shell
     mainWindow = new MainWindow();
 
-    // 2. Instantiate the three backend workers for the Downloads module
+    // 2. Instantiate the backend workers
     downloaderWorker = new SgYtDlp(this);
     resolverWorker = new SgYtDlp(this);
     prefetcherWorker = new SgYtDlp(this);
+    playerWorker = new SgYtDlp(this); // Now a member property
 
-    // 3. Instantiate modules, injecting the backend workers into Downloads
+    // 3. Instantiate modules
     libraryModule = new Library();
     downloadsModule = new Downloads(downloaderWorker, resolverWorker, prefetcherWorker);
     searchModule = new Search();
@@ -35,11 +36,12 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             mainWindow->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
         });
 
-    // 6. Cross-module events
+    // 6. Cross-module playback sequence events
     connect(mainWindow, &MainWindow::mediaEnded, this, [this]() {
         if (activeSource == ActiveSource::Library)        libraryModule->playNextFile();
         else if (activeSource == ActiveSource::Downloads) downloadsModule->playNextQueuedItem();
         });
+
     connect(mainWindow, &MainWindow::skipRequested, this, [this](int delta) {
         if (activeSource == ActiveSource::Library) {
             if (delta > 0) libraryModule->playNextFile();
@@ -51,23 +53,18 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         }
         });
 
-    // 7. Backend resolution routing
-    // FIX: Probe is now routed to resolverWorker so it doesn't collide with the downloader
-    connect(mainWindow, &MainWindow::probeQualitiesRequested, resolverWorker, &SgYtDlp::probeAvailableQualities);
+    // 7. Player-exclusive backend resolution routing (The Orchestrator Path)
+    connect(mainWindow, &MainWindow::probeQualitiesRequested, playerWorker, &SgYtDlp::probeAvailableQualities);
 
-    connect(mainWindow, &MainWindow::streamUrlRequested, downloaderWorker, [this](const QString& url, const QString& formatId) {
-        downloaderWorker->fetchMetadataAndStreamUrl(url, formatId);
+    connect(mainWindow, &MainWindow::streamUrlRequested, playerWorker, [this](const QString& url, const QString& formatId) {
+        playerWorker->fetchMetadataAndStreamUrl(url, formatId);
         });
 
-    // Feed backend results back to the UI shell
-    // FIX: Add connection for the resolver worker to update the UI
-    connect(resolverWorker, &SgYtDlp::availableQualitiesFound, mainWindow, &MainWindow::handleAvailableQualities, Qt::QueuedConnection);
-    connect(downloaderWorker, &SgYtDlp::availableQualitiesFound, mainWindow, &MainWindow::handleAvailableQualities, Qt::QueuedConnection);
+    // Safely return results to the UI Shell
+    connect(playerWorker, &SgYtDlp::availableQualitiesFound, mainWindow, &MainWindow::handleAvailableQualities, Qt::QueuedConnection);
+    connect(playerWorker, &SgYtDlp::streamUrlReady, mainWindow, &MainWindow::onStreamUrlReady, Qt::QueuedConnection);
 
-    // REMOVED: Global signal leak removed below
-    // connect(downloaderWorker, &SgYtDlp::streamUrlReady, mainWindow, &MainWindow::onStreamUrlReady);
-
-    // yt-dlp auto-update on startup — routed through logMessage so Downloads log shows it
+    // 8. yt-dlp auto-update
     connect(downloaderWorker, &SgYtDlp::ytDlpUpdateStatus, downloaderWorker, &SgYtDlp::logMessage);
     QTimer::singleShot(3000, downloaderWorker, &SgYtDlp::checkForYtDlpUpdate);
 }
@@ -82,9 +79,7 @@ void Seagull::run() {
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-
     Seagull orchestrator;
     orchestrator.run();
-
     return app.exec();
 }
