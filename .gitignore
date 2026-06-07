@@ -20,3 +20,8 @@ CMakeUserPresets.json
 /Seagull/Tools/ffmpeg.exe
 /.vs
 /Seagull/out
+# Ignore everything inside the Tools folder
+Seagull/Tools/*
+
+# But keep the .gitkeep file so the folder itself stays in Git
+!Seagull/Tools/.gitkeep

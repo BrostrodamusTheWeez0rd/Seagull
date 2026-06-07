@@ -53,8 +53,10 @@ public:
     void fetchPlaylistEntries(const QString& playlistUrl);
     void cancel();
 
-    // Call once at startup (e.g. from Seagull constructor via the downloaderWorker instance)
+    // Call once at startup — chains yt-dlp -> Deno -> ffmpeg
     void checkForYtDlpUpdate();
+    void checkForDenoUpdate();
+    void checkForFfmpegUpdate();
 
 signals:
     void logMessage(const QString& message);
@@ -77,7 +79,6 @@ private slots:
 private:
     QProcess* m_process;
     QNetworkAccessManager* m_nam = nullptr;
-    QString m_pendingDownloadUrl;
 
     enum class JobMode { Idle, Downloading, FetchingMetadata, Probing, FetchingPlaylist };
     JobMode currentMode = JobMode::Idle;
@@ -85,11 +86,14 @@ private:
     QByteArray processBuffer;
     QStringList buildDownloadArgs(const QString& url);
 
+    void resolveLatestVersion(const QString& latestReleaseUrl, const QString& kind);
+    QString computeFileSha256(const QString& filePath) const;
+    QString fetchRemoteText(const QString& url) const;
+    bool verifyHash(const QString& filePath, const QString& expectedHash, const QString& label);
     QString localYtDlpVersion() const;
-    void downloadNewExe(const QString& exeUrl);
-
-    // Deno runtime check & download components
     QString localDenoVersion() const;
+    QString localFfmpegVersion() const;
+    void downloadNewExe(const QString& exeUrl);
     void downloadNewDeno(const QString& zipUrl);
     bool extractDenoZip(const QString& zipPath, const QString& targetDir);
 };
