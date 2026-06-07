@@ -160,6 +160,7 @@ QStringList SgYtDlp::buildDownloadArgs(const QString& url) {
         QCoreApplication::applicationDirPath() + "/Downloads").toString();
 
     args << "--newline"
+        << "--no-playlist"
         << "-o" << dlFolder + "/%(title)s.%(ext)s";
 
     if (format == "mp3" || format == "m4a") {
@@ -486,7 +487,7 @@ void SgYtDlp::checkForFfmpegUpdate() {
         // The .sha256 file contains "<hash> *ffmpeg-release-essentials.zip"
         emit ytDlpUpdateStatus("Verifying ffmpeg zip hash...");
         QString shaLine = fetchRemoteText("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256");
-        QString expected = extractSha256(shaLine);
+        QString expected = shaLine.section(' ', 0, 0).trimmed();
         if (!verifyHash(zipPath, expected, "ffmpeg zip")) {
             QFile::remove(zipPath);
             return;
@@ -662,17 +663,6 @@ QString SgYtDlp::fetchRemoteText(const QString& url) const {
 
 // Verifies a local file against an expected SHA256 (case-insensitive hex).
 // Returns true if they match. Logs the outcome.
-// Pulls the first 64-character hex SHA-256 string out of an arbitrary checksum
-// file body. Robust to all the formats publishers use:
-//   "<hash>  filename"                       (GNU sha256sum / yt-dlp / gyan)
-//   "Algorithm   Hash\nSHA256   <hash>"       (Deno's two-column format)
-//   "<hash>"                                  (bare hash)
-QString SgYtDlp::extractSha256(const QString& text) {
-    QRegularExpression re("\\b[0-9a-fA-F]{64}\\b");
-    QRegularExpressionMatch m = re.match(text);
-    return m.hasMatch() ? m.captured(0) : QString();
-}
-
 bool SgYtDlp::verifyHash(const QString& filePath, const QString& expectedHash, const QString& label) {
     if (expectedHash.isEmpty()) {
         emit ytDlpUpdateStatus(label + ": no published hash available — skipping verification.");
@@ -740,7 +730,7 @@ void SgYtDlp::onExeDownloadFinished(QNetworkReply* reply) {
         for (const QString& line : sums.split('\n')) {
             QString trimmed = line.trimmed();
             if (trimmed.endsWith("yt-dlp.exe")) {
-                expected = extractSha256(trimmed);
+                expected = trimmed.section(' ', 0, 0).trimmed();
                 break;
             }
         }
@@ -779,8 +769,8 @@ void SgYtDlp::onExeDownloadFinished(QNetworkReply* reply) {
 
         // Verify zip against Deno's published .sha256sum (format: "hash  filename")
         emit ytDlpUpdateStatus("Verifying Deno hash...");
-        QString sumText = fetchRemoteText("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum");
-        QString expected = extractSha256(sumText);
+        QString sumLine = fetchRemoteText("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum");
+        QString expected = sumLine.section(' ', 0, 0).trimmed();
         if (!verifyHash(zipPath, expected, "Deno")) {
             QFile::remove(zipPath);
             checkForFfmpegUpdate();

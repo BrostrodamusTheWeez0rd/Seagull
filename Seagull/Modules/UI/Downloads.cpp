@@ -225,13 +225,23 @@ void Downloads::offerPlaylistQueue(const QString& fullUrl) {
 }
 
 void Downloads::onClearQueueClicked() {
+    // Clear state flags FIRST so that killing an in-flight download doesn't
+    // trigger queue advancement in handleFinished (which checks isProcessingQueue).
+    isStreamingQueue = false;
+    isProcessingQueue = false;
+    m_waitingForCdn = false;
+    m_queuePlayIndex = -1;
+
+    // Stop any download/fetch currently running on the worker.
+    downloader->cancel();
+
     queueTable->setRowCount(0);
     cdnCache.clear();
     m_streamQueue.clear();
-    m_queuePlayIndex = -1;
-    m_waitingForCdn = false;
-    isStreamingQueue = false;
-    isProcessingQueue = false;
+
+    processQueueBtn->setEnabled(true);
+    streamQueueBtn->setEnabled(true);
+    progressBar->hide();
     updateQueueButtonVisibility();
 }
 
@@ -406,7 +416,9 @@ void Downloads::triggerMetadataFetch() {
 
 void Downloads::onDownloadClicked() {
     isProcessingQueue = false; progressBar->show(); logConsole->clear();
-    downloader->download(urlInput->text());
+    // Single-download button: always download just the one video, never the
+    // whole playlist, even when the URL carries a &list= parameter.
+    downloader->download(stripToVideoUrl(urlInput->text()));
 }
 
 void Downloads::onAddToQueueClicked() {
