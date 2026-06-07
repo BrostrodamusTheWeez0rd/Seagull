@@ -5,6 +5,7 @@
 #include <QFileDialog>
 #include <QCoreApplication>
 #include <QGroupBox>
+#include <QPushButton>
 
 Settings::Settings(QWidget* parent) : QWidget(parent) {
     // Force QSettings to create a "config.ini" right next to your .exe
@@ -13,12 +14,6 @@ Settings::Settings(QWidget* parent) : QWidget(parent) {
 
     setupUI();
     loadSettings();
-
-    // Auto-save whenever a dropdown value changes
-    connect(themeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
-    connect(formatCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
-    connect(dlQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
-    connect(streamQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
 }
 
 Settings::~Settings() {
@@ -26,7 +21,9 @@ Settings::~Settings() {
 }
 
 void Settings::setupUI() {
-    auto* mainLayout = new QHBoxLayout(this);
+    auto* outerLayout = new QVBoxLayout(this);
+    auto* mainLayout = new QHBoxLayout();
+    outerLayout->addLayout(mainLayout);
 
     // --- 1. Left Sidebar ---
     sidebar = new QListWidget(this);
@@ -98,7 +95,7 @@ void Settings::setupUI() {
     dlFolderLayout->addWidget(dlFolderEdit);
     dlFolderLayout->addWidget(dlBtn);
 
-    dlLayout->addRow("Default Format:", formatCombo);
+    dlLayout->addRow("Download Format:", formatCombo);
     dlLayout->addRow("Download Quality:", dlQualityCombo);
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
     dlLayout->addRow("Home Directory:", homeLayout);
@@ -117,6 +114,19 @@ void Settings::setupUI() {
     connect(homeBtn, &QPushButton::clicked, this, &Settings::browseHomeFolder);
     connect(dlBtn, &QPushButton::clicked, this, &Settings::browseDownloadFolder);
 
+    // --- Bottom button bar: Reset to Default + Apply, right-aligned ---
+    auto* buttonBar = new QHBoxLayout();
+    buttonBar->setContentsMargins(0, 10, 10, 10);
+    resetBtn = new QPushButton("Reset to Default");
+    applyBtn = new QPushButton("Apply");
+    buttonBar->addStretch();
+    buttonBar->addWidget(resetBtn);
+    buttonBar->addWidget(applyBtn);
+    outerLayout->addLayout(buttonBar);
+
+    connect(applyBtn, &QPushButton::clicked, this, &Settings::saveSettings);
+    connect(resetBtn, &QPushButton::clicked, this, &Settings::resetDefaults);
+
     // Set default tab
     sidebar->setCurrentRow(0);
 }
@@ -125,7 +135,6 @@ void Settings::browseHomeFolder() {
     QString dir = QFileDialog::getExistingDirectory(this, "Select Home Folder", homeFolderEdit->text());
     if (!dir.isEmpty()) {
         homeFolderEdit->setText(dir);
-        saveSettings();
     }
 }
 
@@ -133,7 +142,6 @@ void Settings::browseDownloadFolder() {
     QString dir = QFileDialog::getExistingDirectory(this, "Select Download Folder", dlFolderEdit->text());
     if (!dir.isEmpty()) {
         dlFolderEdit->setText(dir);
-        saveSettings();
     }
 }
 
@@ -159,4 +167,14 @@ void Settings::saveSettings() {
 
     // Force write to disk immediately rather than waiting for OS garbage collection
     iniSettings->sync();
+}
+
+void Settings::resetDefaults() {
+    themeCombo->setCurrentText("Seagull");
+    formatCombo->setCurrentText("Best Available");
+    dlQualityCombo->setCurrentText("Best Available");
+    streamQualityCombo->setCurrentText("Best Available");
+    homeFolderEdit->setText(QCoreApplication::applicationDirPath());
+    dlFolderEdit->setText(QCoreApplication::applicationDirPath() + "/Downloads");
+    saveSettings();
 }

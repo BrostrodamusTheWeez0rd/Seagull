@@ -20,6 +20,7 @@ private slots:
     void browseDownloadFolder();
     void saveSettings();
     void loadSettings();
+    void resetDefaults();
 
 private:
     void setupUI();
@@ -37,6 +38,9 @@ private:
     QComboBox* streamQualityCombo;
     QLineEdit* homeFolderEdit;
     QLineEdit* dlFolderEdit;
+
+    QPushButton* applyBtn;
+    QPushButton* resetBtn;
 
     // The INI file handler
     QSettings* iniSettings;

@@ -76,15 +76,36 @@ void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& forma
     QStringList args;
     args << "-J" << "--quiet" << "--no-warnings";
 
-    if (formatId.isEmpty())
-        args << "-f" << "bestvideo+bestaudio/best";
+    QString chosenFormat;
+    if (!formatId.isEmpty())
+        chosenFormat = QString("%1+bestaudio/best").arg(formatId);  // user picked from quality menu
     else
-        args << "-f" << QString("%1+bestaudio/best").arg(formatId);
+        chosenFormat = defaultStreamFormat();                        // honor default Stream Quality setting
+    args << "-f" << chosenFormat;
 
     args << url;
 
-    emit logMessage("Fetching metadata for: " + url);
+    emit logMessage("Fetching metadata for: " + url + "  [format: " + chosenFormat + "]");
     m_process->start(exePath, args);
+}
+
+// Translates the "Streaming/Quality" config label into a yt-dlp format string.
+// "Best Available" (or unset) -> bestvideo+bestaudio/best
+// "1080p" / "2160p (4K)" etc.  -> height-capped selection with graceful fallback
+QString SgYtDlp::defaultStreamFormat() const {
+    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QString quality = settings.value("Streaming/Quality", "Best Available").toString();
+
+    if (quality.isEmpty() || quality == "Best Available")
+        return "bestvideo+bestaudio/best";
+
+    QRegularExpression re("(\\d+)");
+    QRegularExpressionMatch m = re.match(quality);
+    if (!m.hasMatch())
+        return "bestvideo+bestaudio/best";
+
+    QString height = m.captured(1);
+    return QString("bestvideo[height<=%1]+bestaudio/best[height<=%1]/best").arg(height);
 }
 
 void SgYtDlp::probeAvailableQualities(const QString& url) {

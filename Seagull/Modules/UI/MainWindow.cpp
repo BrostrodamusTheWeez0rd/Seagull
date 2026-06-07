@@ -11,6 +11,9 @@
 #include <winuser.h>
 #include <QPointer>
 #include <QDir>
+#include <QSettings>
+#include <QCoreApplication>
+#include <QRegularExpression>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowIcon(QIcon(":/Assets/Icon.ico"));
@@ -316,6 +319,32 @@ void MainWindow::checkMouseMovement() {
 }
 
 void MainWindow::handleAvailableQualities(const QList<StreamOption>& options) {
+    // If the user hasn't manually picked a quality this session, highlight the
+    // option matching the default Stream Quality setting so the OSD reflects reality.
+    if (lastRequestedFormatId.isEmpty()) {
+        QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QString defaultLabel = settings.value("Streaming/Quality", "Best Available").toString();
+
+        if (!defaultLabel.isEmpty() && defaultLabel != "Best Available") {
+            QRegularExpression re("(\\d+)");
+            int wantHeight = re.match(defaultLabel).captured(1).toInt();
+
+            QString bestMatchId;
+            int bestMatchHeight = -1;
+            for (const StreamOption& opt : options) {
+                QString h = re.match(opt.label).captured(1);
+                if (h.isEmpty()) continue;          // skip "Auto"
+                int oh = h.toInt();
+                if (oh <= wantHeight && oh > bestMatchHeight) {
+                    bestMatchHeight = oh;
+                    bestMatchId = opt.formatId;
+                }
+            }
+            if (!bestMatchId.isEmpty() && playerControls)
+                playerControls->setCurrentFormat(bestMatchId);
+        }
+    }
+
     playerControls->setAvailableQualities(options);
 }
 

@@ -85,6 +85,7 @@ private:
 
     QByteArray processBuffer;
     QStringList buildDownloadArgs(const QString& url);
+    QString defaultStreamFormat() const;
 
     void resolveLatestVersion(const QString& latestReleaseUrl, const QString& kind);
     QString computeFileSha256(const QString& filePath) const;
