@@ -374,7 +374,7 @@ void MainWindow::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
         vlcPlayer->play();
         if (playerControls) {
             playerControls->startPolling();
-            playerControls->setCurrentFormat(lastRequestedFormatId); // Force sync here
+            playerControls->setCurrentFormat(lastRequestedFormatId); // make sure the menu shows the right one
         }
         });
 

@@ -9,14 +9,14 @@
 #include <QDebug>
 #include <algorithm>
 
-// INJECTED: Receive backends from the Orchestrator
+// The workers are owned by the orchestrator and handed in here — we just hold
+// the pointers, we don't create or destroy them.
 Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setAlignment(Qt::AlignTop);
     layout->setSpacing(15);
     layout->setContentsMargins(50, 30, 50, 30);
 
-    // CHANGED: We simply store the pointers provided by Seagull. We do not instantiate them.
     downloader = downloaderWorker;
     titleResolver = resolverWorker;
     cdnPrefetcher = prefetcherWorker;
@@ -185,7 +185,8 @@ void Downloads::offerPlaylistQueue(const QString& fullUrl) {
     QUrl qurl(fullUrl);
     QString videoId = QUrlQuery(qurl.query()).queryItemValue("v");
 
-    // FIXED: Smart differentiation for single videos wrapped in a playlist
+    // A URL with a "v=" param is a single video that happens to live in a
+    // playlist, so let the user pick: the whole list, or just this one video.
     if (!videoId.isEmpty()) {
         msgBox.setText("This link is part of a playlist.\n\nWould you like to add the entire playlist to the queue?\n(Select 'No' to load just the single video)");
         msgBox.setIcon(QMessageBox::Question);
@@ -199,7 +200,7 @@ void Downloads::offerPlaylistQueue(const QString& fullUrl) {
         else if (choice == QMessageBox::No) {
             loadingLabel->setText("Analyzing link...");
             loadingLabel->show();
-            // User rejected the playlist, so strip the list parameter and fetch the single video metadata!
+            // Just the one video — drop the list param so yt-dlp doesn't grab the rest.
             downloader->fetchMetadataAndStreamUrl(stripToVideoUrl(fullUrl));
         }
         else {
@@ -208,7 +209,7 @@ void Downloads::offerPlaylistQueue(const QString& fullUrl) {
         }
     }
     else {
-        // Pure playlists or channel links
+        // No "v=" — this is a pure playlist or channel link.
         msgBox.setText("This URL contains a playlist.\n\nWould you like to add all playlist items to the queue?");
         msgBox.setIcon(QMessageBox::Question);
         msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
@@ -410,7 +411,7 @@ void Downloads::triggerMetadataFetch() {
         downloader->fetchMetadataAndStreamUrl(fetchUrl);
     }
 
-    // Safety cleanup so it never artificially fires again in handleMetadataReady
+    // Clear this so a stale value can't make handleMetadataReady fire again.
     m_pendingPlaylistUrl.clear();
 }
 

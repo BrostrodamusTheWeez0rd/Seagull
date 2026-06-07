@@ -21,12 +21,12 @@
 #include <QDateTime>
 
 // Forward declaration instead of #include keeps the UI decoupled from the backend implementation
-class SgYtDlp; 
+class SgYtDlp;
 
 class Downloads : public QWidget {
     Q_OBJECT
 public:
-    // INJECTED: The Orchestrator hands the backends to the UI
+    // The orchestrator passes the shared backend workers in through the constructor.
     explicit Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent = nullptr);
 
     // Sequential playback logic

@@ -2,6 +2,7 @@
 #define SEAGULL_H
 
 #include <QObject>
+#include <QThread>
 #include "Modules/UI/MainWindow.h"
 #include "Modules/UI/Downloads.h"
 #include "Modules/UI/Library.h"
@@ -27,11 +28,16 @@ private:
     Settings* settingsModule;
     ActiveSource activeSource = ActiveSource::None;
 
-    // Orchestrator now owns all backend workers
+    // The orchestrator owns every backend worker and hands them out to modules.
     SgYtDlp* downloaderWorker;
     SgYtDlp* resolverWorker;
     SgYtDlp* prefetcherWorker;
-    SgYtDlp* playerWorker; // Added for dedicated player signal routing
+    SgYtDlp* playerWorker;     // dedicated to the player's probe/stream-url traffic
+
+    // The tool updater does slow, blocking work (network fetches, hashing, unzip),
+    // so it gets its own thread to keep startup and the UI snappy.
+    SgYtDlp* updaterWorker;
+    QThread* updaterThread;
 };
 
 #endif
