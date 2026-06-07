@@ -91,6 +91,7 @@ private:
     QString computeFileSha256(const QString& filePath) const;
     QString fetchRemoteText(const QString& url) const;
     bool verifyHash(const QString& filePath, const QString& expectedHash, const QString& label);
+    static QString extractSha256(const QString& text);
     QString localYtDlpVersion() const;
     QString localDenoVersion() const;
     QString localFfmpegVersion() const;
