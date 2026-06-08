@@ -76,7 +76,6 @@ private:
     // pulled from the themed palette and refreshed on every palette change.
     QIcon  tintIcon(const QIcon& src, const QColor& col) const;          // flat-tint helper
     QColor iconColorFor(QPushButton* btn) const;                        // idle/hover tint for a button
-    QIcon  makeIcon(QStyle::StandardPixmap sp, QPushButton* btn) const; // tinted standard glyph
     QIcon  makeIcon(const QString& resourcePath, QPushButton* btn) const; // tinted SVG/resource glyph
     void   retintIcon(QPushButton* btn, const QColor& col);             // recolour current glyph
     void   refreshIconTints();

@@ -25,6 +25,7 @@
 
 // Forward declaration instead of #include keeps the UI decoupled from the backend implementation
 class SgYtDlp;
+class QMovie;
 
 class Queue : public QWidget {
     Q_OBJECT
@@ -86,12 +87,16 @@ private:
     bool    isStreamUrlValid(const QUrl& cdnUrl) const;
     void    enqueueTitleResolution(const QList<QString>& urls, int startRow);
     void    resetHeroToBanner();  // restore the big banner, hide the thumbnail hero
+    void    showLoading(const QString& text); // show the fetching message + seagull spinner
+    void    hideLoading();                     // hide the message and stop the spinner
 
     // Widgets
     QLabel* banner;
     QLabel* heroThumb;       // big thumbnail shown in the banner's spot once metadata loads
     QLabel* bannerWatermark; // shrunk banner overlaid on the thumbnail's bottom-left
     QLabel* loadingLabel;
+    QLabel* m_loadingSpinner;  // shows the animated seagull beside loadingLabel
+    QMovie* m_loadingMovie;    // the SeagullAnim.gif driving m_loadingSpinner
     QLineEdit* urlInput;
     QPushButton* downBtn;
     QPushButton* queueBtn;

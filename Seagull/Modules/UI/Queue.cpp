@@ -8,6 +8,7 @@
 #include <QUrlQuery>
 #include <QNetworkRequest>
 #include <QGraphicsOpacityEffect>
+#include <QMovie>
 #include <QDebug>
 #include <algorithm>
 
@@ -51,6 +52,18 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     loadingLabel->setAlignment(Qt::AlignCenter);
     loadingLabel->setStyleSheet("font-style: italic;"); // colour comes from the theme palette
     loadingLabel->hide();
+
+    // Animated seagull shown beside the fetching message. Scaled by height so the
+    // landscape gif keeps its aspect ratio.
+    m_loadingMovie = new QMovie(":/Assets/SeagullAnim.gif", QByteArray(), this);
+    m_loadingMovie->jumpToFrame(0);
+    const QSize frame = m_loadingMovie->currentPixmap().size();
+    const int spinH = 24;
+    const int spinW = frame.height() > 0 ? frame.width() * spinH / frame.height() : spinH;
+    m_loadingMovie->setScaledSize(QSize(spinW, spinH));
+    m_loadingSpinner = new QLabel();
+    m_loadingSpinner->setMovie(m_loadingMovie);
+    m_loadingSpinner->hide();
 
     metadataContainer = new QWidget();
     auto* metaLayout = new QVBoxLayout(metadataContainer);
@@ -119,9 +132,18 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     logConsole->setMinimumHeight(150);
     logConsole->hide();
 
+    auto* loadingRow = new QWidget();
+    auto* loadingRowLayout = new QHBoxLayout(loadingRow);
+    loadingRowLayout->setContentsMargins(0, 0, 0, 0);
+    loadingRowLayout->setSpacing(8);
+    loadingRowLayout->addStretch();
+    loadingRowLayout->addWidget(m_loadingSpinner);
+    loadingRowLayout->addWidget(loadingLabel);
+    loadingRowLayout->addStretch();
+
     layout->addWidget(banner);
     layout->addWidget(heroThumb, 0, Qt::AlignHCenter);
-    layout->addWidget(loadingLabel);
+    layout->addWidget(loadingRow);
     layout->addWidget(metadataContainer); layout->addWidget(urlInput);
     layout->addLayout(btnLayout); layout->addWidget(queueTable);
     layout->addWidget(progressBar); layout->addWidget(logConsole);
@@ -224,13 +246,12 @@ void Queue::offerPlaylistQueue(const QString& fullUrl) {
             downloader->fetchPlaylistEntries(fullUrl);
         }
         else if (choice == QMessageBox::No) {
-            loadingLabel->setText("Analyzing link...");
-            loadingLabel->show();
+            showLoading("Analyzing link...");
             // Just the one video — drop the list param so yt-dlp doesn't grab the rest.
             downloader->fetchMetadataAndStreamUrl(stripToVideoUrl(fullUrl));
         }
         else {
-            loadingLabel->hide();
+            hideLoading();
             m_pendingPlaylistUrl.clear();
         }
     }
@@ -245,7 +266,7 @@ void Queue::offerPlaylistQueue(const QString& fullUrl) {
             downloader->fetchPlaylistEntries(fullUrl);
         }
         else {
-            loadingLabel->hide();
+            hideLoading();
             m_pendingPlaylistUrl.clear();
         }
     }
@@ -416,9 +437,7 @@ void Queue::onUrlTextChanged(const QString& text) {
     if (text.startsWith("http")) {
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
         metadataContainer->hide();
-        loadingLabel->setStyleSheet("font-style: italic;"); // clear any error styling (colour from palette)
-        loadingLabel->setText("Analyzing link...");
-        loadingLabel->show();
+        showLoading("Analyzing link...");
         cachedTitle.clear();
         isFetchingMetadata = false;
         m_pendingPlaylistUrl.clear();
@@ -428,7 +447,7 @@ void Queue::onUrlTextChanged(const QString& text) {
     else {
         // Empty / non-URL input: clear the preview entirely (label + thumbnail).
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
-        loadingLabel->hide();
+        hideLoading();
         metadataContainer->hide();
         cachedTitle.clear();
         isFetchingMetadata = false;
@@ -582,7 +601,7 @@ void Queue::removeSelectedItems() {
 
 void Queue::handleMetadataReady(const QString& t, const QString& u, const QString& d,
     const QString& v, const QString& da, const QString& thumbUrl) {
-    isFetchingMetadata = false; loadingLabel->hide();
+    isFetchingMetadata = false; hideLoading();
     downBtn->setEnabled(true); queueBtn->setEnabled(true); streamBtn->setEnabled(true);
     cachedTitle = t;
     metaTitle->setText(t); metaUploader->setText(u);
@@ -618,6 +637,20 @@ void Queue::resetHeroToBanner() {
     if (banner) banner->show();
 }
 
+void Queue::showLoading(const QString& text) {
+    loadingLabel->setStyleSheet("font-style: italic;"); // normal styling (colour from palette)
+    loadingLabel->setText(text);
+    loadingLabel->show();
+    if (m_loadingSpinner) m_loadingSpinner->show();
+    if (m_loadingMovie) m_loadingMovie->start();
+}
+
+void Queue::hideLoading() {
+    loadingLabel->hide();
+    if (m_loadingSpinner) m_loadingSpinner->hide();
+    if (m_loadingMovie) m_loadingMovie->stop();
+}
+
 void Queue::handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     if (!urlInput->text().isEmpty()) {
         cdnCache[stripToVideoUrl(urlInput->text())] = qMakePair(videoUrl, audioUrl);
@@ -639,7 +672,7 @@ void Queue::handlePlaylistEntriesReady(const QList<QString>& urls) {
     urlInput->clear();
     m_pendingPlaylistUrl.clear();
     isFetchingMetadata = false;
-    loadingLabel->hide();
+    hideLoading();
 
     updateQueueButtonVisibility();
     logConsole->append(QString("Added %1 playlist items.").arg(urls.size()));
@@ -655,6 +688,9 @@ void Queue::handleFinished(bool success) {
         metadataContainer->hide();
         resetHeroToBanner();
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
+        // Error is a resting state, not a loading one — show the message, stop the seagull.
+        if (m_loadingSpinner) m_loadingSpinner->hide();
+        if (m_loadingMovie) m_loadingMovie->stop();
         loadingLabel->setStyleSheet("color: #ff6b6b; font-style: italic;");
         loadingLabel->setText("Couldn't fetch link info — check the URL or your connection.");
         loadingLabel->show();

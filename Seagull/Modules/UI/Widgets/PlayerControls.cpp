@@ -21,22 +21,32 @@
 #include <QPalette>
 
 namespace {
-// A horizontal slider that jumps to the click position (and lets you keep
-// dragging from there), instead of QSlider's default page-step on groove clicks.
-class SeekSlider : public QSlider {
+// A slider that jumps to the click position (and lets you keep dragging from
+// there), instead of QSlider's default page-step on groove clicks. Works for the
+// horizontal seeker and the vertical volume bar (top = max via upsideDown).
+class ClickSlider : public QSlider {
 public:
     using QSlider::QSlider;
 protected:
     void mousePressEvent(QMouseEvent* e) override {
         if (e->button() == Qt::LeftButton && maximum() > minimum()) {
+            const bool vertical = orientation() == Qt::Vertical;
+            const int pos  = vertical ? e->pos().y() : e->pos().x();
+            const int span = vertical ? height() : width();
             const int v = QStyle::sliderValueFromPosition(
-                minimum(), maximum(), e->pos().x(), width());
+                minimum(), maximum(), pos, span, vertical);
             setValue(v); // moves the handle under the cursor so the base class
             // then enters its normal drag, giving click-then-drag scrubbing.
         }
         QSlider::mousePressEvent(e);
     }
 };
+
+// MDI6 volume glyph for the current mute state.
+QString volumeIconPath(bool muted) {
+    return muted ? QStringLiteral(":/Assets/icons/volume-off.svg")
+                 : QStringLiteral(":/Assets/icons/volume-high.svg");
+}
 }
 
 PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
@@ -64,7 +74,7 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     timeLabel->setObjectName("playerTimeLabel"); // styled by Theme::apply
     timeLabel->setMinimumWidth(50);
 
-    positionSlider = new SeekSlider(Qt::Horizontal);
+    positionSlider = new ClickSlider(Qt::Horizontal);
     positionSlider->setObjectName("playerSeekSlider"); // styled by Theme::apply
     positionSlider->setCursor(Qt::PointingHandCursor);
 
@@ -75,7 +85,7 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     muteBtn = new QPushButton();
     qualityBtn = new QPushButton();
     qualityBtn->hide();
-    fullscreenBtn = new QPushButton("⛶");
+    fullscreenBtn = new QPushButton();
 
     QSize iconSize(20, 20);
     m_iconButtons = { prevBtn, playPauseBtn, stopBtn, nextBtn, muteBtn, qualityBtn, fullscreenBtn };
@@ -88,11 +98,12 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
 
     // Icons are tinted to the theme text colour (the glyph only — the border and
     // hover fill come from the stylesheet, so they stay accent-coloured).
-    prevBtn->setIcon(makeIcon(QStyle::SP_MediaSkipBackward, prevBtn));
-    playPauseBtn->setIcon(makeIcon(QStyle::SP_MediaPlay, playPauseBtn));
-    stopBtn->setIcon(makeIcon(QStyle::SP_MediaStop, stopBtn));
-    nextBtn->setIcon(makeIcon(QStyle::SP_MediaSkipForward, nextBtn));
+    prevBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/skip-previous.svg"), prevBtn));
+    playPauseBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/play.svg"), playPauseBtn));
+    stopBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/stop.svg"), stopBtn));
+    nextBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/skip-next.svg"), nextBtn));
     qualityBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/cog.svg"), qualityBtn)); // MDI cog, themed like the rest
+    fullscreenBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/fullscreen.svg"), fullscreenBtn)); // MDI fullscreen
 
     mainLayout->addWidget(prevBtn);
     mainLayout->addWidget(playPauseBtn);
@@ -119,7 +130,7 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     auto* volLayout = new QVBoxLayout(contentFrame);
     volLayout->setContentsMargins(10, 15, 10, 15);
 
-    volumeSlider = new QSlider(Qt::Vertical);
+    volumeSlider = new ClickSlider(Qt::Vertical);
     volumeSlider->setObjectName("volumeSlider"); // styled by Theme::apply
     volumeSlider->setRange(0, 100);
     volumeSlider->setCursor(Qt::PointingHandCursor);
@@ -268,7 +279,7 @@ void PlayerControls::applyAudioState() {
 
     setVolumeUi(savedVolume);
     if (muteBtn)
-        muteBtn->setIcon(makeIcon(savedMute ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume, muteBtn));
+        muteBtn->setIcon(makeIcon(volumeIconPath(savedMute), muteBtn));
 }
 
 bool PlayerControls::hasOpenPopup() const {
@@ -325,17 +336,13 @@ QColor PlayerControls::iconColorFor(QPushButton* btn) const {
     return (btn && btn->underMouse()) ? m_iconHover : m_iconIdle;
 }
 
-QIcon PlayerControls::makeIcon(QStyle::StandardPixmap sp, QPushButton* btn) const {
-    return tintIcon(style()->standardIcon(sp), iconColorFor(btn));
-}
-
 QIcon PlayerControls::makeIcon(const QString& resourcePath, QPushButton* btn) const {
     return tintIcon(QIcon(resourcePath), iconColorFor(btn));
 }
 
 void PlayerControls::retintIcon(QPushButton* btn, const QColor& col) {
     // Recolour whatever glyph the button currently shows (preserves its shape).
-    if (btn->icon().isNull()) return; // text-only buttons (fullscreen) are themed by QSS
+    if (btn->icon().isNull()) return; // e.g. the mute button while it shows "75%" text
     btn->setIcon(tintIcon(btn->icon(), col));
 }
 
@@ -357,7 +364,7 @@ void PlayerControls::resetMuteButton() {
 
     muteBtn->setText("");
     bool isMuted = m_settings.value("Audio/Muted", false).toBool();
-    muteBtn->setIcon(makeIcon(isMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume, muteBtn));
+    muteBtn->setIcon(makeIcon(volumeIconPath(isMuted), muteBtn));
 }
 
 bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
@@ -463,7 +470,7 @@ void PlayerControls::toggleMute() {
 
     if (m_player) m_player->setMute(willBeMuted);
 
-    muteBtn->setIcon(makeIcon(willBeMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume, muteBtn));
+    muteBtn->setIcon(makeIcon(volumeIconPath(willBeMuted), muteBtn));
     m_settings.setValue("Audio/Muted", willBeMuted);
 }
 
@@ -476,12 +483,13 @@ void PlayerControls::pollVlcState() {
     // Once the stream has ended, freeze the seeker/timestamp where they are and
     // turn the play button into a replay button. (onEndReached sets m_endedMode.)
     if (m_endedMode) {
-        playPauseBtn->setIcon(makeIcon(QStyle::SP_BrowserReload, playPauseBtn));
+        playPauseBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/restart.svg"), playPauseBtn));
         return;
     }
 
     playPauseBtn->setIcon(makeIcon(
-        isPlaying ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay, playPauseBtn
+        isPlaying ? QStringLiteral(":/Assets/icons/pause.svg") : QStringLiteral(":/Assets/icons/play.svg"),
+        playPauseBtn
     ));
 
     // time()/length() are only trustworthy while actually playing or paused.

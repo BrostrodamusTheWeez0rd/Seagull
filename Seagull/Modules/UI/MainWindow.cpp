@@ -74,7 +74,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         QMetaObject::invokeMethod(this, [this]() { showPosterOverlay(); }, Qt::QueuedConnection);
         });
     vlcPlayer->eventManager().onPlaying([this]() {
-        QMetaObject::invokeMethod(this, [this]() { hidePosterOverlay(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, [this]() {
+            hidePosterOverlay();
+            if (titleBar) titleBar->setLoading(false); // playback started — stop the seagull
+        }, Qt::QueuedConnection);
         });
     vlcPlayer->eventManager().onEncounteredError([this]() {
         QMetaObject::invokeMethod(this, [this]() { onPlaybackError(); }, Qt::QueuedConnection);
@@ -206,7 +209,7 @@ void MainWindow::playLocalFile(const QUrl& url) {
         if (playerControls) playerControls->startPolling();
         });
 
-    if (titleBar) titleBar->setTitle(QFileInfo(nativePath).completeBaseName());
+    if (titleBar) { titleBar->setTitle(QFileInfo(nativePath).completeBaseName()); titleBar->setLoading(false); }
     if (playerControls) playerControls->setStreamingMode(false);
     showOSD();
 }
@@ -238,6 +241,7 @@ void MainWindow::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QU
     if (titleBar) {
         if (!title.isEmpty()) titleBar->setTitle(title);
         else titleBar->setTitle((cdnVideoUrl.isValid() && !cdnVideoUrl.isEmpty()) ? "Starting stream..." : "Probing stream...");
+        titleBar->setLoading(true); // seagull spins until onPlaying fires
     }
 
     if (playerControls) playerControls->setStreamingMode(true);
@@ -291,7 +295,7 @@ void MainWindow::onPlaybackError() {
     // into ended mode so the play button becomes a replay button (re-uses
     // m_lastMedia), and keep the controls/title pinned so the message stays put.
     osdTimer->stop();
-    if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->show(); titleBar->raise(); }
+    if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->setLoading(false); titleBar->show(); titleBar->raise(); }
     if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); playerControls->raise(); }
     updateOverlayPosition();
 }
@@ -481,6 +485,7 @@ void MainWindow::changeStreamQuality(const QString& formatId) {
     if (playerControls) playerControls->setCurrentFormat(formatId);
 
     titleBar->setTitle("Buffering new quality...");
+    if (titleBar) titleBar->setLoading(true); // spins until the new quality starts playing
     QTimer::singleShot(200, this, [this, formatId]() { emit streamUrlRequested(currentBaseUrl.toString(), formatId); });
 }
 
