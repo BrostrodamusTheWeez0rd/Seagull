@@ -9,14 +9,7 @@ PlayerTitleBar::PlayerTitleBar(QWidget* parent) : QWidget(parent)
     layout->setContentsMargins(0, 0, 0, 0);
 
     auto* pillFrame = new QFrame(this);
-    pillFrame->setObjectName("pillFrame");
-    pillFrame->setStyleSheet(
-        "#pillFrame {"
-        "background-color: rgba(25, 25, 25, 215);"
-        "border-radius: 20px;"
-        "border: 1px solid white;"
-        "}"
-    );
+    pillFrame->setObjectName("pillFrame"); // styled by Theme::apply's global sheet
 
     layout->addWidget(pillFrame);
 
@@ -24,17 +17,8 @@ PlayerTitleBar::PlayerTitleBar(QWidget* parent) : QWidget(parent)
     frameLayout->setContentsMargins(20, 5, 20, 5);
 
     titleLabel = new QLabel("", pillFrame);
+    titleLabel->setObjectName("playerTitleLabel"); // styled by Theme::apply
     titleLabel->setAlignment(Qt::AlignCenter);
-    titleLabel->setStyleSheet(
-        "QLabel {"
-        "color: white;"
-        "font-family: 'Segoe UI';"
-        "font-size: 14px;"
-        "font-weight: bold;"
-        "background-color: transparent;"
-        "border: none;"
-        "}"
-    );
 
     frameLayout->addWidget(titleLabel);
 

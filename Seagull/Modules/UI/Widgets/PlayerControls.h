@@ -12,9 +12,12 @@
 #include <QTimer>
 #include <QMoveEvent>
 #include <QFrame>
-#include <QGraphicsColorizeEffect>
+#include <QIcon>
+#include <QStyle>
 #include <QHideEvent>
 #include <QSettings>
+#include <QColor>
+#include <QList>
 #include <vlcpp/vlc.hpp>
 #include "../../Backend/SgYtDlp.h"
 
@@ -53,6 +56,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     void moveEvent(QMoveEvent* event) override;
+    void changeEvent(QEvent* event) override; // re-tint icons on theme/palette change
 
 private slots:
     void pollVlcState();
@@ -68,11 +72,24 @@ private slots:
     void onNextSingleClick();
 
 private:
+    // The glyph tint on the round buttons can't be set via stylesheet, so it's
+    // pulled from the themed palette and refreshed on every palette change.
+    QIcon  tintIcon(const QIcon& src, const QColor& col) const;          // flat-tint helper
+    QColor iconColorFor(QPushButton* btn) const;                        // idle/hover tint for a button
+    QIcon  makeIcon(QStyle::StandardPixmap sp, QPushButton* btn) const; // tinted standard glyph
+    QIcon  makeIcon(const QString& resourcePath, QPushButton* btn) const; // tinted SVG/resource glyph
+    void   retintIcon(QPushButton* btn, const QColor& col);             // recolour current glyph
+    void   refreshIconTints();
+
     VLC::MediaPlayer* m_player;
     QTimer* uiPollTimer;
     QSettings m_settings;
     QString m_currentFormatId; // Active track state
     QList<StreamOption> m_lastOptions; // Cache the list to redraw on demand
+
+    QList<QPushButton*> m_iconButtons; // the round buttons sharing the colorize tint
+    QColor m_iconIdle;  // tint when not hovered (palette WindowText)
+    QColor m_iconHover; // tint when hovered (palette HighlightedText)
 
     QPushButton* playPauseBtn;
     QPushButton* stopBtn;

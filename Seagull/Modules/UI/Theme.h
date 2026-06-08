@@ -19,6 +19,8 @@ namespace Theme {
         QColor accent;      // selection / highlight / progress
         QColor accentText;  // text drawn on top of the accent
         QColor border;      // lines and borders
+        QColor overlayFg;   // player-overlay outline + hover-highlight: white on dark
+                            // themes, inverted (dark) on light — distinct from accent
     };
 
     Colors  colorsFor(const QString& name);   // "Seagull" | "Dark" | "Light"

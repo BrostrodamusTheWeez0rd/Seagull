@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_PREFIX_PATH "C:/Qt/6.11.1/msvc2022_64")
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Svg)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
@@ -53,9 +53,10 @@ endif()
 
 # 5. Link libraries
 target_link_libraries(Seagull PRIVATE 
-    Qt6::Widgets 
-    Qt6::Multimedia 
+    Qt6::Widgets
+    Qt6::Multimedia
     Qt6::MultimediaWidgets
+    Qt6::Svg
     ${LIBVLC_LIB} 
     ${LIBVLCCORE_LIB}
 )

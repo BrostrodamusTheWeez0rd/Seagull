@@ -2,5 +2,6 @@
     <qresource prefix="/">
         <file>Assets/Icon.ico</file>
         <file>Assets/Banner.png</file>
+        <file>Assets/icons/cog.svg</file>
     </qresource>
 </RCC>

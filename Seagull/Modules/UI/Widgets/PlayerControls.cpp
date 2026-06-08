@@ -2,7 +2,8 @@
 #include <QFrame>
 #include <QStyle>
 #include <QIcon>
-#include <QGraphicsColorizeEffect>
+#include <QPixmap>
+#include <QPainter>
 #include <QTimer>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -17,6 +18,26 @@
 #include <QDebug>
 #include <QSettings>
 #include <QCoreApplication>
+#include <QPalette>
+
+namespace {
+// A horizontal slider that jumps to the click position (and lets you keep
+// dragging from there), instead of QSlider's default page-step on groove clicks.
+class SeekSlider : public QSlider {
+public:
+    using QSlider::QSlider;
+protected:
+    void mousePressEvent(QMouseEvent* e) override {
+        if (e->button() == Qt::LeftButton && maximum() > minimum()) {
+            const int v = QStyle::sliderValueFromPosition(
+                minimum(), maximum(), e->pos().x(), width());
+            setValue(v); // moves the handle under the cursor so the base class
+            // then enters its normal drag, giving click-then-drag scrubbing.
+        }
+        QSlider::mousePressEvent(e);
+    }
+};
+}
 
 PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     : QWidget(parent), m_player(player), m_duration(0), isUserSeeking(false),
@@ -25,9 +46,14 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     auto* windowLayout = new QVBoxLayout(this);
     windowLayout->setContentsMargins(0, 0, 0, 0);
 
+    // Icon tints come from the themed palette (see makeIcon/refreshIconTints).
+    // Idle = overlay foreground (BrightText: white on dark themes, dark on light);
+    // hover = the inverse window colour so the glyph reads against the fill.
+    m_iconIdle  = palette().color(QPalette::BrightText);
+    m_iconHover = palette().color(QPalette::Window);
+
     auto* pillFrame = new QFrame(this);
-    pillFrame->setObjectName("PillFrame");
-    pillFrame->setStyleSheet("QFrame#PillFrame { background-color: rgba(25, 25, 25, 215); border-radius: 25px; border: 1px solid white; }");
+    pillFrame->setObjectName("PillFrame"); // styled by Theme::apply's global sheet
     windowLayout->addWidget(pillFrame);
 
     auto* mainLayout = new QHBoxLayout(pillFrame);
@@ -35,46 +61,38 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     mainLayout->setSpacing(2);
 
     timeLabel = new QLabel("0:00 / 0:00");
-    timeLabel->setStyleSheet("color: white; font-family: Segoe UI; font-size: 11px;");
+    timeLabel->setObjectName("playerTimeLabel"); // styled by Theme::apply
     timeLabel->setMinimumWidth(50);
 
-    positionSlider = new QSlider(Qt::Horizontal);
+    positionSlider = new SeekSlider(Qt::Horizontal);
+    positionSlider->setObjectName("playerSeekSlider"); // styled by Theme::apply
     positionSlider->setCursor(Qt::PointingHandCursor);
-    positionSlider->setStyleSheet(
-        "QSlider::groove:horizontal { border: none; height: 6px; background: #111; border-radius: 3px; }"
-        "QSlider::sub-page:horizontal { background: white; border-radius: 3px; }"
-        "QSlider::handle:horizontal { background: white; width: 12px; margin: -3px 0; border-radius: 6px; border: none; }"
-    );
 
     prevBtn = new QPushButton();
     playPauseBtn = new QPushButton();
     stopBtn = new QPushButton();
     nextBtn = new QPushButton();
     muteBtn = new QPushButton();
-    qualityBtn = new QPushButton("⚙");
+    qualityBtn = new QPushButton();
     qualityBtn->hide();
     fullscreenBtn = new QPushButton("⛶");
 
-    prevBtn->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
-    playPauseBtn->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    stopBtn->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
-    nextBtn->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
-
     QSize iconSize(20, 20);
-    QList<QPushButton*> btns = { prevBtn, playPauseBtn, stopBtn, nextBtn, muteBtn, qualityBtn, fullscreenBtn };
+    m_iconButtons = { prevBtn, playPauseBtn, stopBtn, nextBtn, muteBtn, qualityBtn, fullscreenBtn };
 
-    QString btnStyle = "QPushButton { background-color: transparent; border: 1px solid white; border-radius: 15px; min-width: 30px; min-height: 30px; font-size: 16px; color: white; } "
-        "QPushButton:hover { background-color: white; color: black; border: 1px solid white; }";
-
-    for (auto* btn : btns) {
+    for (auto* btn : m_iconButtons) {
+        btn->setObjectName("playerCtlButton"); // styled by Theme::apply
         btn->setIconSize(iconSize);
-        btn->setStyleSheet(btnStyle);
-        auto* effect = new QGraphicsColorizeEffect(btn);
-        effect->setColor(Qt::white);
-        effect->setStrength(1.0);
-        btn->setGraphicsEffect(effect);
         btn->installEventFilter(this);
     }
+
+    // Icons are tinted to the theme text colour (the glyph only — the border and
+    // hover fill come from the stylesheet, so they stay accent-coloured).
+    prevBtn->setIcon(makeIcon(QStyle::SP_MediaSkipBackward, prevBtn));
+    playPauseBtn->setIcon(makeIcon(QStyle::SP_MediaPlay, playPauseBtn));
+    stopBtn->setIcon(makeIcon(QStyle::SP_MediaStop, stopBtn));
+    nextBtn->setIcon(makeIcon(QStyle::SP_MediaSkipForward, nextBtn));
+    qualityBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/cog.svg"), qualityBtn)); // MDI cog, themed like the rest
 
     mainLayout->addWidget(prevBtn);
     mainLayout->addWidget(playPauseBtn);
@@ -95,22 +113,16 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     volumeFrame->setFixedSize(40, 140);
 
     contentFrame = new QFrame(volumeFrame);
+    contentFrame->setObjectName("volumePopup"); // styled by Theme::apply
     contentFrame->setGeometry(0, 0, 40, 140);
-    contentFrame->setStyleSheet("background: rgba(25, 25, 25, 215); border-radius: 20px; border: 1px solid white;");
 
     auto* volLayout = new QVBoxLayout(contentFrame);
     volLayout->setContentsMargins(10, 15, 10, 15);
 
     volumeSlider = new QSlider(Qt::Vertical);
+    volumeSlider->setObjectName("volumeSlider"); // styled by Theme::apply
     volumeSlider->setRange(0, 100);
     volumeSlider->setCursor(Qt::PointingHandCursor);
-    volumeSlider->setStyleSheet(
-        "QSlider { background: transparent; border: none; }"
-        "QSlider::groove:vertical { border: none; background: #111; width: 6px; border-radius: 3px; }"
-        "QSlider::add-page:vertical { border: none; background: white; border-radius: 3px; }"
-        "QSlider::sub-page:vertical { border: none; background: #333; border-radius: 3px; }"
-        "QSlider::handle:vertical { border: none; background: white; height: 10px; margin: 0 -3px; border-radius: 5px; }"
-    );
     volLayout->addWidget(volumeSlider);
 
     volumeHideTimer = new QTimer(this);
@@ -127,7 +139,7 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     qualityFrame->setAttribute(Qt::WA_TranslucentBackground);
 
     qualityContentFrame = new QFrame(qualityFrame);
-    qualityContentFrame->setStyleSheet("background: rgba(25, 25, 25, 215); border-radius: 20px; border: 1px solid white;");
+    qualityContentFrame->setObjectName("qualityPopup"); // styled by Theme::apply
 
     auto* qualLayout = new QVBoxLayout(qualityContentFrame);
     qualLayout->setContentsMargins(5, 10, 5, 10);
@@ -155,7 +167,13 @@ PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
     connect(fullscreenBtn, &QPushButton::clicked, this, &PlayerControls::fullscreenRequested);
 
-    connect(positionSlider, &QSlider::sliderPressed, this, [this]() { isUserSeeking = true; });
+    connect(positionSlider, &QSlider::sliderPressed, this, [this]() {
+        isUserSeeking = true;
+        seek(positionSlider->value()); // jump to a clicked position immediately
+        });
+    connect(positionSlider, &QSlider::sliderMoved, this, [this](int value) {
+        seek(value); // live scrub while dragging
+        });
     connect(positionSlider, &QSlider::sliderReleased, this, [this]() {
         isUserSeeking = false;
         seek(positionSlider->value());
@@ -250,7 +268,7 @@ void PlayerControls::applyAudioState() {
 
     setVolumeUi(savedVolume);
     if (muteBtn)
-        muteBtn->setIcon(style()->standardIcon(savedMute ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
+        muteBtn->setIcon(makeIcon(savedMute ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume, muteBtn));
 }
 
 bool PlayerControls::hasOpenPopup() const {
@@ -291,12 +309,55 @@ void PlayerControls::setVolumeUi(int volume) {
     volumeTextTimer->start(2000);
 }
 
+QIcon PlayerControls::tintIcon(const QIcon& src, const QColor& col) const {
+    // A stylesheet can't recolour a QIcon, so flat-tint it by painting the colour
+    // over the glyph's alpha. Works for standard glyphs and SVG/resource icons.
+    QPixmap pm = src.pixmap(QSize(20, 20));
+    if (pm.isNull()) return src;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), col);
+    p.end();
+    return QIcon(pm);
+}
+
+QColor PlayerControls::iconColorFor(QPushButton* btn) const {
+    return (btn && btn->underMouse()) ? m_iconHover : m_iconIdle;
+}
+
+QIcon PlayerControls::makeIcon(QStyle::StandardPixmap sp, QPushButton* btn) const {
+    return tintIcon(style()->standardIcon(sp), iconColorFor(btn));
+}
+
+QIcon PlayerControls::makeIcon(const QString& resourcePath, QPushButton* btn) const {
+    return tintIcon(QIcon(resourcePath), iconColorFor(btn));
+}
+
+void PlayerControls::retintIcon(QPushButton* btn, const QColor& col) {
+    // Recolour whatever glyph the button currently shows (preserves its shape).
+    if (btn->icon().isNull()) return; // text-only buttons (fullscreen) are themed by QSS
+    btn->setIcon(tintIcon(btn->icon(), col));
+}
+
+void PlayerControls::refreshIconTints() {
+    m_iconIdle  = palette().color(QPalette::BrightText);
+    m_iconHover = palette().color(QPalette::Window);
+    for (auto* btn : m_iconButtons)
+        retintIcon(btn, btn->underMouse() ? m_iconHover : m_iconIdle);
+}
+
+void PlayerControls::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    // Theme::apply sets a new app palette; re-tint the glyphs to match.
+    if (event->type() == QEvent::PaletteChange) refreshIconTints();
+}
+
 void PlayerControls::resetMuteButton() {
     if (!this || !muteBtn) return;
 
     muteBtn->setText("");
     bool isMuted = m_settings.value("Audio/Muted", false).toBool();
-    muteBtn->setIcon(style()->standardIcon(isMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
+    muteBtn->setIcon(makeIcon(isMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume, muteBtn));
 }
 
 bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
@@ -327,12 +388,10 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
     }
 
     QPushButton* btn = qobject_cast<QPushButton*>(watched);
-    if (btn) {
-        auto* effect = static_cast<QGraphicsColorizeEffect*>(btn->graphicsEffect());
-        if (effect) {
-            if (event->type() == QEvent::Enter) effect->setColor(Qt::black);
-            else if (event->type() == QEvent::Leave) effect->setColor(Qt::white);
-        }
+    if (btn && (event->type() == QEvent::Enter || event->type() == QEvent::Leave)) {
+        // Re-tint the glyph for hover: idle uses the text colour, hover uses the
+        // on-accent colour to read against the accent fill the stylesheet paints.
+        retintIcon(btn, event->type() == QEvent::Enter ? m_iconHover : m_iconIdle);
     }
 
     if (watched == muteBtn || watched == volumeFrame) {
@@ -404,7 +463,7 @@ void PlayerControls::toggleMute() {
 
     if (m_player) m_player->setMute(willBeMuted);
 
-    muteBtn->setIcon(style()->standardIcon(willBeMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
+    muteBtn->setIcon(makeIcon(willBeMuted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume, muteBtn));
     m_settings.setValue("Audio/Muted", willBeMuted);
 }
 
@@ -417,12 +476,12 @@ void PlayerControls::pollVlcState() {
     // Once the stream has ended, freeze the seeker/timestamp where they are and
     // turn the play button into a replay button. (onEndReached sets m_endedMode.)
     if (m_endedMode) {
-        playPauseBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+        playPauseBtn->setIcon(makeIcon(QStyle::SP_BrowserReload, playPauseBtn));
         return;
     }
 
-    playPauseBtn->setIcon(style()->standardIcon(
-        isPlaying ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay
+    playPauseBtn->setIcon(makeIcon(
+        isPlaying ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay, playPauseBtn
     ));
 
     // time()/length() are only trustworthy while actually playing or paused.
@@ -478,13 +537,9 @@ void PlayerControls::setAvailableQualities(const QList<StreamOption>& options) {
     for (const StreamOption& opt : options) {
         bool isActive = (opt.formatId == m_currentFormatId);
         QPushButton* qb = new QPushButton(isActive ? (opt.label + " ✓") : opt.label);
+        qb->setObjectName("qualityItem");      // styled by Theme::apply
+        qb->setProperty("active", isActive);   // drives the [active="true"] rule
         qb->setCursor(Qt::PointingHandCursor);
-
-        QString style = "QPushButton { background: transparent; color: white; border: none; font-size: 11px; ";
-        style += (isActive ? "font-weight: bold; border-left: 3px solid white; padding-left: 5px;" : "padding-left: 8px;");
-        style += " } QPushButton:hover { background: rgba(255,255,255,50); }";
-
-        qb->setStyleSheet(style);
 
         connect(qb, &QPushButton::clicked, this, [this, id = opt.formatId]() {
             qualityFrame->hide();
