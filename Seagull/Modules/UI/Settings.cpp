@@ -56,19 +56,30 @@ void Settings::setupUI() {
     auto* dlLayout = new QFormLayout(dlWidget);
     dlLayout->setContentsMargins(20, 20, 20, 20);
 
+    // Download Type toggle (Video | Audio) — drives which formats are offered.
+    typeVideoBtn = new QPushButton("Video");
+    typeAudioBtn = new QPushButton("Audio");
+    QString segStyle =
+        "QPushButton { padding: 6px 18px; }"
+        "QPushButton:checked { background-color: palette(highlight); color: palette(highlighted-text); }";
+    for (auto* b : { typeVideoBtn, typeAudioBtn }) { b->setCheckable(true); b->setStyleSheet(segStyle); }
+    typeVideoBtn->setChecked(true);
+    typeGroup = new QButtonGroup(this);
+    typeGroup->setExclusive(true);
+    typeGroup->addButton(typeVideoBtn);
+    typeGroup->addButton(typeAudioBtn);
+    auto* typeRow = new QHBoxLayout();
+    typeRow->setContentsMargins(0, 0, 0, 0);
+    typeRow->addWidget(typeVideoBtn);
+    typeRow->addWidget(typeAudioBtn);
+    typeRow->addStretch();
+
     formatCombo = new QComboBox();
-    // Comprehensive list of video and audio formats handled by yt-dlp
-    formatCombo->addItems({
-        "Best Available",
-        "mp4", "mkv", "webm", "avi", "flv", "mov",
-        "mp3", "m4a", "flac", "wav", "opus", "aac", "vorbis"
-        });
-    // Force a scrollbar after 8 items are shown
     formatCombo->setMaxVisibleItems(8);
+    // Format + quality lists are populated from the Download Type below.
+    updateDownloadFormatOptions();
 
     dlQualityCombo = new QComboBox();
-    // Populated by updateDownloadQualityOptions() to match the selected format
-    // (resolutions for video formats, bitrates for audio formats).
     dlQualityCombo->setMaxVisibleItems(8);
     updateDownloadQualityOptions();
 
@@ -93,6 +104,7 @@ void Settings::setupUI() {
     dlFolderLayout->addWidget(dlFolderEdit);
     dlFolderLayout->addWidget(dlBtn);
 
+    dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
     dlLayout->addRow("Download Quality:", dlQualityCombo);
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
@@ -124,10 +136,10 @@ void Settings::setupUI() {
 
     // Auto-apply: every control change writes config and applies immediately.
     connect(themeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
-    connect(formatCombo, &QComboBox::currentTextChanged, this, [this]() {
-        updateDownloadQualityOptions(); // resolutions vs bitrates for this format
-        saveSettings();
+    connect(typeGroup, &QButtonGroup::buttonClicked, this, [this](QAbstractButton*) {
+        onDownloadTypeChanged(); // refresh format + quality lists, then save
         });
+    connect(formatCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(dlQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(streamQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(homeFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
@@ -137,21 +149,35 @@ void Settings::setupUI() {
     sidebar->setCurrentRow(0);
 }
 
+QString Settings::currentDownloadType() const {
+    return typeAudioBtn->isChecked() ? "Audio" : "Video";
+}
+
+void Settings::updateDownloadFormatOptions() {
+    const QString prev = formatCombo->currentText();
+    formatCombo->blockSignals(true);
+    formatCombo->clear();
+    if (currentDownloadType() == "Audio")
+        formatCombo->addItems({ "Best Available", "mp3", "m4a", "flac", "wav", "opus", "aac", "vorbis" });
+    else
+        formatCombo->addItems({ "Best Available", "mp4", "mkv", "webm", "avi", "flv", "mov" });
+    int idx = formatCombo->findText(prev);
+    formatCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    formatCombo->blockSignals(false);
+}
+
 void Settings::updateDownloadQualityOptions() {
-    static const QStringList audioFormats = {
-        "mp3", "m4a", "flac", "wav", "opus", "aac", "vorbis"
-    };
-    const QString fmt = formatCombo->currentText();
+    const bool audio = (currentDownloadType() == "Audio");
     const QString prev = dlQualityCombo->currentText();
 
     dlQualityCombo->blockSignals(true);
     dlQualityCombo->clear();
-    if (audioFormats.contains(fmt)) {
+    if (audio) {
         dlQualityCombo->addItems({
             "Best Available", "320 kbps", "256 kbps", "192 kbps", "128 kbps", "96 kbps"
             });
     }
-    else { // video formats and "Best Available"
+    else {
         dlQualityCombo->addItems({
             "Best Available", "4320p (8K)", "2160p (4K)", "1440p (2K)", "1080p", "720p", "480p", "360p"
             });
@@ -160,6 +186,12 @@ void Settings::updateDownloadQualityOptions() {
     int idx = dlQualityCombo->findText(prev);
     dlQualityCombo->setCurrentIndex(idx >= 0 ? idx : 0);
     dlQualityCombo->blockSignals(false);
+}
+
+void Settings::onDownloadTypeChanged() {
+    updateDownloadFormatOptions();
+    updateDownloadQualityOptions();
+    saveSettings();
 }
 
 void Settings::browseHomeFolder() {
@@ -182,8 +214,18 @@ void Settings::loadSettings() {
 
     themeCombo->setCurrentText(iniSettings->value("Display/Theme", "Seagull").toString());
 
-    // Format first, then build the matching quality list, then select the saved quality.
-    formatCombo->setCurrentText(iniSettings->value("Download/Format", "Best Available").toString());
+    // Type -> Format -> Quality cascade: set the type, build its format list, pick
+    // the saved format, build the matching quality list, pick the saved quality.
+    QString savedFormat = iniSettings->value("Download/Format", "Best Available").toString();
+    QString type = iniSettings->value("Download/Type").toString();
+    if (type.isEmpty()) {
+        // Migrate older configs that only stored a format: infer the type from it.
+        static const QStringList audioFmts = { "mp3", "m4a", "flac", "wav", "opus", "aac", "vorbis" };
+        type = audioFmts.contains(savedFormat) ? "Audio" : "Video";
+    }
+    (type == "Audio" ? typeAudioBtn : typeVideoBtn)->setChecked(true);
+    updateDownloadFormatOptions();
+    formatCombo->setCurrentText(savedFormat);
     updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText(iniSettings->value("Download/Quality", "Best Available").toString());
 
@@ -200,6 +242,7 @@ void Settings::saveSettings() {
 
     // Write values to INI groups
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
+    iniSettings->setValue("Download/Type", currentDownloadType());
     iniSettings->setValue("Download/Format", formatCombo->currentText());
     iniSettings->setValue("Download/Quality", dlQualityCombo->currentText());
     iniSettings->setValue("Streaming/Quality", streamQualityCombo->currentText());
@@ -217,6 +260,8 @@ void Settings::resetDefaults() {
     // Set everything quietly, then write + apply once.
     m_loading = true;
     themeCombo->setCurrentText("Seagull");
+    typeVideoBtn->setChecked(true);
+    updateDownloadFormatOptions();
     formatCombo->setCurrentText("Best Available");
     updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText("Best Available");

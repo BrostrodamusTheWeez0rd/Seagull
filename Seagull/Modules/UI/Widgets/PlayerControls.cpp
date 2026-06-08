@@ -12,6 +12,7 @@
 #include <QTime>
 #include <QMouseEvent>
 #include <QApplication>
+#include <QCursor>
 #include <QHideEvent>
 #include <QDebug>
 #include <QSettings>
@@ -252,6 +253,10 @@ void PlayerControls::applyAudioState() {
         muteBtn->setIcon(style()->standardIcon(savedMute ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
 }
 
+bool PlayerControls::hasOpenPopup() const {
+    return (volumeFrame && volumeFrame->isVisible()) || (qualityFrame && qualityFrame->isVisible());
+}
+
 void PlayerControls::hideEvent(QHideEvent* event) {
     if (volumeFrame)  volumeFrame->hide();
     if (qualityFrame) qualityFrame->hide();
@@ -366,11 +371,18 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void PlayerControls::hideVolumeFrame() {
-    if (!muteBtn->underMouse() && !volumeFrame->underMouse()) volumeFrame->hide();
+    // Use the popup's global geometry so hovering the slider (a child of the
+    // frame) still counts as "over the popup" — underMouse() on the parent is
+    // false while a child has the cursor, which would hide it mid-use.
+    const QPoint gp = QCursor::pos();
+    const bool overMute = muteBtn->rect().contains(muteBtn->mapFromGlobal(gp));
+    if (!overMute && !volumeFrame->geometry().contains(gp)) volumeFrame->hide();
 }
 
 void PlayerControls::hideQualityFrame() {
-    if (!qualityBtn->underMouse() && !qualityFrame->underMouse()) qualityFrame->hide();
+    const QPoint gp = QCursor::pos();
+    const bool overBtn = qualityBtn->rect().contains(qualityBtn->mapFromGlobal(gp));
+    if (!overBtn && !qualityFrame->geometry().contains(gp)) qualityFrame->hide();
 }
 
 void PlayerControls::setVolume(int volume) {

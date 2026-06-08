@@ -30,6 +30,7 @@ public:
     void setVolumeUi(int volume);
     void setStreamingMode(bool isStream);
     void applyAudioState();
+    bool hasOpenPopup() const; // true while the volume or quality popup is showing
 
     void stopPolling();
     void startPolling();

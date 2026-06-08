@@ -7,6 +7,7 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QButtonGroup>
 
 class Settings : public QWidget {
     Q_OBJECT
@@ -24,7 +25,10 @@ private slots:
 
 private:
     void setupUI();
-    void updateDownloadQualityOptions(); // repopulate quality list from the chosen format
+    void updateDownloadFormatOptions();  // repopulate format list from the Download Type toggle
+    void updateDownloadQualityOptions(); // repopulate quality list (resolutions vs bitrates)
+    void onDownloadTypeChanged();        // type toggle -> refresh formats + qualities + save
+    QString currentDownloadType() const; // "Video" or "Audio"
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
@@ -36,6 +40,9 @@ private:
     QComboBox* themeCombo;
 
     // Download & Streaming Tab elements
+    QButtonGroup* typeGroup;     // Video | Audio toggle
+    QPushButton* typeVideoBtn;
+    QPushButton* typeAudioBtn;
     QComboBox* formatCombo;
     QComboBox* dlQualityCombo;
     QComboBox* streamQualityCombo;

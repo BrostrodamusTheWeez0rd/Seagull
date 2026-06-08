@@ -408,14 +408,25 @@ void MainWindow::updateOverlayPosition() {
 }
 
 void MainWindow::showOSD() {
-    // raise() keeps the controls/title above the poster overlay when both show.
-    if (playerControls) { playerControls->show(); playerControls->raise(); }
-    if (titleBar) { titleBar->show(); titleBar->raise(); }
+    if (playerControls) playerControls->show();
+    if (titleBar) titleBar->show();
+    // Only re-stack above the poster when it's actually showing (paused / EOF).
+    // Raising on every mouse-move otherwise buries the volume/quality popups.
+    if (posterOverlay && posterOverlay->isVisible()) {
+        if (playerControls) playerControls->raise();
+        if (titleBar) titleBar->raise();
+    }
     updateOverlayPosition();
     osdTimer->start(3000);
 }
 
 void MainWindow::hideOSD() {
+    // Keep the OSD up while a volume/quality popup is open, otherwise hiding the
+    // controls also tears down the popup the user is interacting with.
+    if (playerControls && playerControls->hasOpenPopup()) {
+        osdTimer->start(3000); // re-arm so it hides once the popup closes
+        return;
+    }
     if (vlcPlayer && vlcPlayer->isPlaying()) {
         if (playerControls) playerControls->hide();
         if (titleBar) titleBar->hide();
