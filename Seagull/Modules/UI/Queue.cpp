@@ -1,4 +1,4 @@
-#include "Downloads.h"
+#include "Queue.h"
 #include "../Backend/SgYtDlp.h"
 #include <QFont>
 #include <QPixmap>
@@ -13,7 +13,7 @@
 
 // The workers are owned by the orchestrator and handed in here — we just hold
 // the pointers, we don't create or destroy them.
-Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent) : QWidget(parent) {
+Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setAlignment(Qt::AlignTop);
     layout->setSpacing(15);
@@ -126,15 +126,15 @@ Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp
     resolverTimer = new QTimer(this);
     resolverTimer->setSingleShot(true);
 
-    connect(downloader, &SgYtDlp::logMessage, this, &Downloads::handleLogMessage);
-    connect(downloader, &SgYtDlp::progressUpdated, this, &Downloads::handleProgress);
-    connect(downloader, &SgYtDlp::finished, this, &Downloads::handleFinished);
-    connect(downloader, &SgYtDlp::metadataReady, this, &Downloads::handleMetadataReady);
-    connect(downloader, &SgYtDlp::streamUrlReady, this, &Downloads::handleStreamUrlReady);
-    connect(downloader, &SgYtDlp::playlistEntriesReady, this, &Downloads::handlePlaylistEntriesReady);
+    connect(downloader, &SgYtDlp::logMessage, this, &Queue::handleLogMessage);
+    connect(downloader, &SgYtDlp::progressUpdated, this, &Queue::handleProgress);
+    connect(downloader, &SgYtDlp::finished, this, &Queue::handleFinished);
+    connect(downloader, &SgYtDlp::metadataReady, this, &Queue::handleMetadataReady);
+    connect(downloader, &SgYtDlp::streamUrlReady, this, &Queue::handleStreamUrlReady);
+    connect(downloader, &SgYtDlp::playlistEntriesReady, this, &Queue::handlePlaylistEntriesReady);
 
-    connect(titleResolver, &SgYtDlp::logMessage, this, &Downloads::handleLogMessage);
-    connect(titleResolver, &SgYtDlp::metadataReady, this, &Downloads::handleResolverMetadataReady);
+    connect(titleResolver, &SgYtDlp::logMessage, this, &Queue::handleLogMessage);
+    connect(titleResolver, &SgYtDlp::metadataReady, this, &Queue::handleResolverMetadataReady);
     connect(titleResolver, &SgYtDlp::streamUrlReady, this, [this](const QUrl& videoUrl, const QUrl& audioUrl) {
         if (m_currentResolvingRow >= 0 && m_currentResolvingRow < queueTable->rowCount()) {
             QTableWidgetItem* item = queueTable->item(m_currentResolvingRow, 0);
@@ -149,20 +149,20 @@ Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp
         }
         });
 
-    connect(cdnPrefetcher, &SgYtDlp::streamUrlReady, this, &Downloads::handlePrefetchedStreamUrlReady);
-    connect(debounceTimer, &QTimer::timeout, this, &Downloads::triggerMetadataFetch);
-    connect(resolverTimer, &QTimer::timeout, this, &Downloads::resolveNextTitle);
-    connect(urlInput, &QLineEdit::textChanged, this, &Downloads::onUrlTextChanged);
-    connect(downBtn, &QPushButton::clicked, this, &Downloads::onDownloadClicked);
-    connect(queueBtn, &QPushButton::clicked, this, &Downloads::onAddToQueueClicked);
-    connect(processQueueBtn, &QPushButton::clicked, this, &Downloads::onProcessQueueClicked);
-    connect(streamBtn, &QPushButton::clicked, this, &Downloads::onStreamClicked);
-    connect(streamQueueBtn, &QPushButton::clicked, this, &Downloads::onStreamQueueClicked);
-    connect(clearQueueBtn, &QPushButton::clicked, this, &Downloads::onClearQueueClicked);
-    connect(queueTable, &QTableWidget::customContextMenuRequested, this, &Downloads::showContextMenu);
+    connect(cdnPrefetcher, &SgYtDlp::streamUrlReady, this, &Queue::handlePrefetchedStreamUrlReady);
+    connect(debounceTimer, &QTimer::timeout, this, &Queue::triggerMetadataFetch);
+    connect(resolverTimer, &QTimer::timeout, this, &Queue::resolveNextTitle);
+    connect(urlInput, &QLineEdit::textChanged, this, &Queue::onUrlTextChanged);
+    connect(downBtn, &QPushButton::clicked, this, &Queue::onDownloadClicked);
+    connect(queueBtn, &QPushButton::clicked, this, &Queue::onAddToQueueClicked);
+    connect(processQueueBtn, &QPushButton::clicked, this, &Queue::onProcessQueueClicked);
+    connect(streamBtn, &QPushButton::clicked, this, &Queue::onStreamClicked);
+    connect(streamQueueBtn, &QPushButton::clicked, this, &Queue::onStreamQueueClicked);
+    connect(clearQueueBtn, &QPushButton::clicked, this, &Queue::onClearQueueClicked);
+    connect(queueTable, &QTableWidget::customContextMenuRequested, this, &Queue::showContextMenu);
 }
 
-bool Downloads::isPlaylistUrl(const QString& url) const {
+bool Queue::isPlaylistUrl(const QString& url) const {
     QUrl qurl(url);
     QUrlQuery query(qurl.query());
     QString path = qurl.path();
@@ -179,7 +179,7 @@ bool Downloads::isPlaylistUrl(const QString& url) const {
     return false;
 }
 
-QString Downloads::stripToVideoUrl(const QString& url) const {
+QString Queue::stripToVideoUrl(const QString& url) const {
     QUrl qurl(url);
     QString videoId = QUrlQuery(qurl.query()).queryItemValue("v");
     if (videoId.isEmpty()) return url;
@@ -189,7 +189,7 @@ QString Downloads::stripToVideoUrl(const QString& url) const {
     return qurl.toString();
 }
 
-bool Downloads::isStreamUrlValid(const QUrl& cdnUrl) const {
+bool Queue::isStreamUrlValid(const QUrl& cdnUrl) const {
     if (cdnUrl.isEmpty()) return false;
     QUrlQuery query(cdnUrl.query());
     QString expireStr = query.queryItemValue("expire");
@@ -199,7 +199,7 @@ bool Downloads::isStreamUrlValid(const QUrl& cdnUrl) const {
     return (expireTime - 300) > currentTime;
 }
 
-void Downloads::offerPlaylistQueue(const QString& fullUrl) {
+void Queue::offerPlaylistQueue(const QString& fullUrl) {
     QMessageBox msgBox(this);
     msgBox.setWindowTitle("Playlist Detected");
 
@@ -246,7 +246,7 @@ void Downloads::offerPlaylistQueue(const QString& fullUrl) {
     }
 }
 
-void Downloads::onClearQueueClicked() {
+void Queue::onClearQueueClicked() {
     // Clear state flags FIRST so that killing an in-flight download doesn't
     // trigger queue advancement in handleFinished (which checks isProcessingQueue).
     isStreamingQueue = false;
@@ -267,23 +267,23 @@ void Downloads::onClearQueueClicked() {
     updateQueueButtonVisibility();
 }
 
-void Downloads::setStreamingQueueMode(bool active) {
+void Queue::setStreamingQueueMode(bool active) {
     isStreamingQueue = active;
 }
 
-void Downloads::playNextQueuedItem() {
+void Queue::playNextQueuedItem() {
     if (!isStreamingQueue) return;
     m_queuePlayIndex++;
     playQueueIndex(m_queuePlayIndex);
 }
 
-void Downloads::playPrevQueuedItem() {
+void Queue::playPrevQueuedItem() {
     if (!isStreamingQueue) return;
     m_queuePlayIndex = qMax(0, m_queuePlayIndex - 1);
     playQueueIndex(m_queuePlayIndex);
 }
 
-void Downloads::playQueueIndex(int index) {
+void Queue::playQueueIndex(int index) {
     if (index < 0 || index >= m_streamQueue.size()) {
         isStreamingQueue = false;
         m_queuePlayIndex = -1;
@@ -317,19 +317,19 @@ void Downloads::playQueueIndex(int index) {
     }
 }
 
-void Downloads::updateQueueButtonVisibility() {
+void Queue::updateQueueButtonVisibility() {
     bool hasItems = (queueTable->rowCount() > 0);
     processQueueBtn->setVisible(hasItems);
     streamQueueBtn->setVisible(hasItems);
     clearQueueBtn->setVisible(hasItems);
 }
 
-void Downloads::enqueueTitleResolution(const QList<QString>& urls, int startRow) {
+void Queue::enqueueTitleResolution(const QList<QString>& urls, int startRow) {
     for (int i = 0; i < urls.size(); ++i) m_titleQueue.append({ startRow + i, urls[i] });
     if (m_currentResolvingRow == -1) resolverTimer->start(0);
 }
 
-void Downloads::resolveNextTitle() {
+void Queue::resolveNextTitle() {
     if (m_titleQueue.isEmpty()) {
         m_currentResolvingRow = -1;
         return;
@@ -343,7 +343,7 @@ void Downloads::resolveNextTitle() {
     titleResolver->fetchMetadataAndStreamUrl(url);
 }
 
-void Downloads::handleResolverMetadataReady(const QString& title, const QString&, const QString&,
+void Queue::handleResolverMetadataReady(const QString& title, const QString&, const QString&,
     const QString&, const QString&, const QString&) {
     if (m_currentResolvingRow >= 0 && m_currentResolvingRow < queueTable->rowCount()) {
         QTableWidgetItem* item = queueTable->item(m_currentResolvingRow, 0);
@@ -359,7 +359,7 @@ void Downloads::handleResolverMetadataReady(const QString& title, const QString&
     if (!m_titleQueue.isEmpty()) resolverTimer->start(1500);
 }
 
-void Downloads::prefetchNextInQueue() {
+void Queue::prefetchNextInQueue() {
     if (!m_currentlyPrefetchingUrl.isEmpty()) return;
     for (int i = 0; i < queueTable->rowCount(); ++i) {
         QString url = queueTable->item(i, 0)->data(Qt::UserRole).toString();
@@ -374,7 +374,7 @@ void Downloads::prefetchNextInQueue() {
     }
 }
 
-void Downloads::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
+void Queue::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     if (!m_currentlyPrefetchingUrl.isEmpty()) {
         cdnCache[m_currentlyPrefetchingUrl] = qMakePair(videoUrl, audioUrl);
         logConsole->append(QString("CDN link cached: %1").arg(m_currentlyPrefetchingUrl));
@@ -399,10 +399,10 @@ void Downloads::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl&
         }
     }
 
-    QTimer::singleShot(2000, this, &Downloads::prefetchNextInQueue);
+    QTimer::singleShot(2000, this, &Queue::prefetchNextInQueue);
 }
 
-void Downloads::onUrlTextChanged(const QString& text) {
+void Queue::onUrlTextChanged(const QString& text) {
     if (text == "Bdev") { logConsole->setVisible(!logConsole->isVisible()); urlInput->clear(); return; }
     // Any edit invalidates a still-loading thumbnail from the previous link and
     // restores the banner until a new thumbnail is fetched.
@@ -431,7 +431,7 @@ void Downloads::onUrlTextChanged(const QString& text) {
     }
 }
 
-void Downloads::triggerMetadataFetch() {
+void Queue::triggerMetadataFetch() {
     isFetchingMetadata = true;
     QString fetchUrl = urlInput->text();
 
@@ -446,14 +446,14 @@ void Downloads::triggerMetadataFetch() {
     m_pendingPlaylistUrl.clear();
 }
 
-void Downloads::onDownloadClicked() {
+void Queue::onDownloadClicked() {
     isProcessingQueue = false; progressBar->show(); logConsole->clear();
     // Single-download button: always download just the one video, never the
     // whole playlist, even when the URL carries a &list= parameter.
     downloader->download(stripToVideoUrl(urlInput->text()));
 }
 
-void Downloads::onAddToQueueClicked() {
+void Queue::onAddToQueueClicked() {
     if (urlInput->text().isEmpty()) return;
     int row = queueTable->rowCount();
     queueTable->insertRow(row);
@@ -467,7 +467,7 @@ void Downloads::onAddToQueueClicked() {
     prefetchNextInQueue();
 }
 
-void Downloads::onProcessQueueClicked() {
+void Queue::onProcessQueueClicked() {
     if (queueTable->rowCount() == 0) return;
     isProcessingQueue = true;
     processQueueBtn->setEnabled(false); streamQueueBtn->setEnabled(false);
@@ -477,7 +477,7 @@ void Downloads::onProcessQueueClicked() {
     progressBar->show();
 }
 
-void Downloads::onStreamClicked() {
+void Queue::onStreamClicked() {
     if (urlInput->text().isEmpty()) return;
     QString cleanUrl = stripToVideoUrl(urlInput->text());
     QString title = cachedTitle.isEmpty() ? "Streaming..." : cachedTitle;
@@ -489,7 +489,7 @@ void Downloads::onStreamClicked() {
     emit playMediaRequested(QUrl(cleanUrl), cdnVideoUrl, cdnAudioUrl, title);
 }
 
-void Downloads::onStreamQueueClicked() {
+void Queue::onStreamQueueClicked() {
     if (queueTable->rowCount() == 0) return;
 
     m_streamQueue.clear();
@@ -515,20 +515,20 @@ void Downloads::onStreamQueueClicked() {
     playQueueIndex(0);
 }
 
-void Downloads::showContextMenu(const QPoint& pos) {
+void Queue::showContextMenu(const QPoint& pos) {
     QModelIndex index = queueTable->indexAt(pos);
     if (index.isValid()) queueTable->setCurrentIndex(index);
     else queueTable->clearSelection();
     QMenu menu(this);
     if (queueTable->selectionModel()->hasSelection()) {
-        menu.addAction("Play", this, &Downloads::playSelectedItem);
-        menu.addAction("Download", this, &Downloads::downloadSelectedItems);
-        menu.addAction("Remove", this, &Downloads::removeSelectedItems);
+        menu.addAction("Play", this, &Queue::playSelectedItem);
+        menu.addAction("Download", this, &Queue::downloadSelectedItems);
+        menu.addAction("Remove", this, &Queue::removeSelectedItems);
     }
     menu.exec(queueTable->mapToGlobal(pos));
 }
 
-void Downloads::playSelectedItem() {
+void Queue::playSelectedItem() {
     auto selected = queueTable->selectionModel()->selectedRows();
     if (selected.isEmpty()) return;
     int row = selected.first().row();
@@ -552,7 +552,7 @@ void Downloads::playSelectedItem() {
     prefetchNextInQueue();
 }
 
-void Downloads::downloadSelectedItems() {
+void Queue::downloadSelectedItems() {
     auto selected = queueTable->selectionModel()->selectedRows();
     for (const auto& index : selected) {
         QTableWidgetItem* item = queueTable->item(index.row(), 0);
@@ -562,7 +562,7 @@ void Downloads::downloadSelectedItems() {
     }
 }
 
-void Downloads::removeSelectedItems() {
+void Queue::removeSelectedItems() {
     auto selected = queueTable->selectionModel()->selectedRows();
     QList<int> rows;
     for (const auto& index : selected) rows.append(index.row());
@@ -575,7 +575,7 @@ void Downloads::removeSelectedItems() {
     updateQueueButtonVisibility();
 }
 
-void Downloads::handleMetadataReady(const QString& t, const QString& u, const QString& d,
+void Queue::handleMetadataReady(const QString& t, const QString& u, const QString& d,
     const QString& v, const QString& da, const QString& thumbUrl) {
     isFetchingMetadata = false; loadingLabel->hide();
     downBtn->setEnabled(true); queueBtn->setEnabled(true); streamBtn->setEnabled(true);
@@ -607,19 +607,19 @@ void Downloads::handleMetadataReady(const QString& t, const QString& u, const QS
     metadataContainer->show();
 }
 
-void Downloads::resetHeroToBanner() {
+void Queue::resetHeroToBanner() {
     if (heroThumb) heroThumb->hide();
     if (bannerWatermark) bannerWatermark->hide();
     if (banner) banner->show();
 }
 
-void Downloads::handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
+void Queue::handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     if (!urlInput->text().isEmpty()) {
         cdnCache[stripToVideoUrl(urlInput->text())] = qMakePair(videoUrl, audioUrl);
     }
 }
 
-void Downloads::handlePlaylistEntriesReady(const QList<QString>& urls) {
+void Queue::handlePlaylistEntriesReady(const QList<QString>& urls) {
     int startRow = queueTable->rowCount();
     for (const QString& url : urls) {
         int row = queueTable->rowCount();
@@ -642,7 +642,7 @@ void Downloads::handlePlaylistEntriesReady(const QList<QString>& urls) {
     prefetchNextInQueue();
 }
 
-void Downloads::handleFinished(bool success) {
+void Queue::handleFinished(bool success) {
     // A failure while still fetching the preview metadata means the link couldn't
     // be resolved — surface that instead of leaving "Analyzing link..." forever.
     if (!success && isFetchingMetadata) {
@@ -673,14 +673,14 @@ void Downloads::handleFinished(bool success) {
     else { progressBar->hide(); }
 }
 
-void Downloads::handleLogMessage(const QString& m) {
+void Queue::handleLogMessage(const QString& m) {
     logConsole->append(m);
     QTextCursor c = logConsole->textCursor();
     c.movePosition(QTextCursor::End);
     logConsole->setTextCursor(c);
 }
 
-void Downloads::handleProgress(double p) {
+void Queue::handleProgress(double p) {
     progressBar->setValue(static_cast<int>(p));
     if (isProcessingQueue && queueTable->rowCount() > 0) {
         queueTable->setItem(0, 2, new QTableWidgetItem(QString::number(p, 'f', 1) + "%"));

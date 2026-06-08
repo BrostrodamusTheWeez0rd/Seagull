@@ -1,5 +1,5 @@
-#ifndef DOWNLOADS_H
-#define DOWNLOADS_H
+#ifndef QUEUE_H
+#define QUEUE_H
 
 #include <QWidget>
 #include <QVBoxLayout>
@@ -26,11 +26,11 @@
 // Forward declaration instead of #include keeps the UI decoupled from the backend implementation
 class SgYtDlp;
 
-class Downloads : public QWidget {
+class Queue : public QWidget {
     Q_OBJECT
 public:
     // The orchestrator passes the shared backend workers in through the constructor.
-    explicit Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent = nullptr);
+    explicit Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefetcherWorker, QWidget* parent = nullptr);
 
     // Sequential playback logic
     void playNextQueuedItem();

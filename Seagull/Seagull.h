@@ -4,7 +4,7 @@
 #include <QObject>
 #include <QThread>
 #include "Modules/UI/MainWindow.h"
-#include "Modules/UI/Downloads.h"
+#include "Modules/UI/Queue.h"
 #include "Modules/UI/Library.h"
 #include "Modules/UI/Search.h"
 #include "Modules/UI/Settings.h"
@@ -19,10 +19,10 @@ public:
     void run();
 
 private:
-    enum class ActiveSource { None, Library, Downloads };
+    enum class ActiveSource { None, Library, Queue };
 
     MainWindow* mainWindow;
-    Downloads* downloadsModule;
+    Queue* queueModule;
     Library* libraryModule;
     Search* searchModule;
     Settings* settingsModule;

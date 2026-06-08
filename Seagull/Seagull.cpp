@@ -15,12 +15,12 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     // The tab modules.
     libraryModule = new Library();
-    downloadsModule = new Downloads(downloaderWorker, resolverWorker, prefetcherWorker);
+    queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);
     searchModule = new Search();
     settingsModule = new Settings();
 
     mainWindow->addTab(libraryModule, "Library");
-    mainWindow->addTab(downloadsModule, "Downloads");
+    mainWindow->addTab(queueModule, "Queue");
     mainWindow->addTab(searchModule, "Search");
     mainWindow->addTab(settingsModule, "Settings");
 
@@ -31,16 +31,16 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         mainWindow->playLocalFile(url);
         });
 
-    connect(downloadsModule, &Downloads::playMediaRequested, mainWindow,
+    connect(queueModule, &Queue::playMediaRequested, mainWindow,
         [this](const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
-            activeSource = ActiveSource::Downloads;
+            activeSource = ActiveSource::Queue;
             mainWindow->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
         });
 
     // A finished video rolls into the next one from whichever source is active.
     connect(mainWindow, &MainWindow::mediaEnded, this, [this]() {
         if (activeSource == ActiveSource::Library)        libraryModule->playNextFile();
-        else if (activeSource == ActiveSource::Downloads) downloadsModule->playNextQueuedItem();
+        else if (activeSource == ActiveSource::Queue) queueModule->playNextQueuedItem();
         });
 
     // The skip buttons (single-click = nudge, double-click = jump tracks) land here.
@@ -49,9 +49,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             if (delta > 0) libraryModule->playNextFile();
             else           libraryModule->playPrevFile();
         }
-        else if (activeSource == ActiveSource::Downloads) {
-            if (delta > 0) downloadsModule->playNextQueuedItem();
-            else           downloadsModule->playPrevQueuedItem();
+        else if (activeSource == ActiveSource::Queue) {
+            if (delta > 0) queueModule->playNextQueuedItem();
+            else           queueModule->playPrevQueuedItem();
         }
         });
 
@@ -77,7 +77,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     updaterWorker = new SgYtDlp(nullptr);
     updaterWorker->moveToThread(updaterThread);
 
-    // Status lines still show up in the Downloads log, hopping back to the UI thread.
+    // Status lines still show up in the Queue log, hopping back to the UI thread.
     connect(updaterWorker, &SgYtDlp::ytDlpUpdateStatus, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
 
     // Tear the worker down with its thread.
