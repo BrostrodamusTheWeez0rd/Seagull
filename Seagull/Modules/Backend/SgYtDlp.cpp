@@ -357,9 +357,26 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
     }
 
     else if (mode == JobMode::Probing) {
-        QJsonArray formats = doc.object()["formats"].toArray();
+        QJsonObject root = doc.object();
+        QJsonArray formats = root["formats"].toArray();
         QList<StreamOption> options;
         QList<int> seenHeights;
+
+        // The probe runs on every play, so surface the poster thumbnail here too.
+        // Prefer a JP'G variant (QPixmap loads it without the webp image plugin).
+        QString thumb;
+        const QJsonArray thumbs = root["thumbnails"].toArray();
+        int bestW = -1;
+        for (const auto& it : thumbs) {
+            QJsonObject t = it.toObject();
+            QString u = t["url"].toString();
+            if (u.isEmpty()) continue;
+            if (!u.contains(".jpg", Qt::CaseInsensitive)) continue;
+            int w = t["width"].toInt();
+            if (w > bestW) { bestW = w; thumb = u; }
+        }
+        if (thumb.isEmpty()) thumb = root["thumbnail"].toString();
+        emit thumbnailResolved(thumb);
 
         options.append({ "", "Auto", false });
 

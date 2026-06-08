@@ -67,6 +67,7 @@ signals:
     void metadataReady(const QString& title, const QString& uploader, const QString& duration,
         const QString& viewCount, const QString& uploadDate, const QString& thumbUrl);
     void availableQualitiesFound(const QList<StreamOption>& options);
+    void thumbnailResolved(const QString& thumbUrl);
     void streamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl = QUrl());
     void playlistEntriesReady(const QList<QString>& urls);
     void ytDlpUpdateStatus(const QString& message);

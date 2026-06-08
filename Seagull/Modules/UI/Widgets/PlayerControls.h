@@ -42,6 +42,7 @@ public slots:
 signals:
     void fullscreenRequested();
     void stopRequested();
+    void replayRequested();
     void qualitySelected(QString formatId);
 
     // delta = +1 for next, -1 for prev

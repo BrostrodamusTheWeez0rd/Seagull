@@ -64,6 +64,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     // Results come back on queued connections so they always land on the UI thread.
     connect(playerWorker, &SgYtDlp::availableQualitiesFound, mainWindow, &MainWindow::handleAvailableQualities, Qt::QueuedConnection);
+    connect(playerWorker, &SgYtDlp::thumbnailResolved, mainWindow, &MainWindow::onThumbnailResolved, Qt::QueuedConnection);
     connect(playerWorker, &SgYtDlp::streamUrlReady, mainWindow, &MainWindow::onStreamUrlReady, Qt::QueuedConnection);
 
     // --- Tool auto-update, off the main thread ---

@@ -12,6 +12,9 @@
 #include <QPoint>
 #include <QKeyEvent>
 #include <QByteArray>
+#include <QLabel>
+#include <QPixmap>
+#include <QNetworkAccessManager>
 #include <memory>
 #include <vlcpp/vlc.hpp>
 #include "Widgets/PlayerControls.h"
@@ -47,6 +50,7 @@ public slots:
     void hideOSD();
 
     void handleAvailableQualities(const QList<StreamOption>& options);
+    void onThumbnailResolved(const QString& thumbUrl);
     void onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl);
 
 private slots:
@@ -57,10 +61,13 @@ private slots:
     void closePlayer();
     void handleStopRequest();
     void onMediaEndReached();
+    void handleReplay();
     void changeStreamQuality(const QString& formatId);
 
 private:
     void installFilterRecursive(QObject* obj, QObject* filter);
+    void showPosterOverlay();
+    void hidePosterOverlay();
 
     QSplitter* mainSplitter;
     QTabWidget* tabs;
@@ -72,6 +79,14 @@ private:
 
     PlayerControls* playerControls;
     PlayerTitleBar* titleBar;
+
+    // Poster shown over the video when paused / at end-of-stream. It's a separate
+    // top-level window (like the other overlays) because the VLC HWND draws over
+    // child widgets; click-through so play/pause on the video still works.
+    QLabel* posterOverlay;
+    QPixmap m_posterPixmap;
+    QNetworkAccessManager* m_thumbNam;
+    std::shared_ptr<VLC::Media> m_lastMedia; // for replay-from-start at EOF
     QTimer* osdTimer;
     QTimer* mouseTrackerTimer;
     QTimer* clickTimer;

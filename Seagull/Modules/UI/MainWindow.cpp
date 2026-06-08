@@ -14,6 +14,8 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QRegularExpression>
+#include <QNetworkRequest>
+#include <QNetworkReply>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowIcon(QIcon(":/Assets/Icon.ico"));
@@ -66,6 +68,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         QMetaObject::invokeMethod(this, "onMediaEndReached", Qt::QueuedConnection);
         });
 
+    // Discrete state transitions (safe — not the high-frequency time callbacks):
+    // show the poster thumbnail when paused, hide it when playback resumes.
+    vlcPlayer->eventManager().onPaused([this]() {
+        QMetaObject::invokeMethod(this, [this]() { showPosterOverlay(); }, Qt::QueuedConnection);
+        });
+    vlcPlayer->eventManager().onPlaying([this]() {
+        QMetaObject::invokeMethod(this, [this]() { hidePosterOverlay(); }, Qt::QueuedConnection);
+        });
+
     mainSplitter->addWidget(videoContainer);
     mainSplitter->setCollapsible(0, false);
 
@@ -82,6 +93,20 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     titleBar = new PlayerTitleBar(this);
     titleBar->setWindowFlags(overlayFlags);
     titleBar->setAttribute(Qt::WA_TranslucentBackground);
+
+    // Poster overlay: opaque image window that covers the video frame. Mouse
+    // events pass straight through so clicking the video still toggles playback.
+    posterOverlay = new QLabel(this);
+    // WindowTransparentForInput makes the OS pass clicks through to the video
+    // window behind it, so play/pause-on-click and double-click-fullscreen work.
+    posterOverlay->setWindowFlags(overlayFlags | Qt::WindowTransparentForInput);
+    posterOverlay->setAttribute(Qt::WA_TransparentForMouseEvents);
+    posterOverlay->setStyleSheet("background-color: black;");
+    posterOverlay->setAlignment(Qt::AlignCenter);
+    posterOverlay->setScaledContents(false);
+    posterOverlay->hide();
+
+    m_thumbNam = new QNetworkAccessManager(this);
 
     osdTimer = new QTimer(this);
     osdTimer->setSingleShot(true);
@@ -100,6 +125,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     connect(playerControls, &PlayerControls::qualitySelected, this, &MainWindow::changeStreamQuality);
     connect(playerControls, &PlayerControls::stopRequested, this, &MainWindow::handleStopRequest);
+    connect(playerControls, &PlayerControls::replayRequested, this, &MainWindow::handleReplay);
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
 
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() {
@@ -139,7 +165,16 @@ void MainWindow::onMediaEndReached() {
     // VLC drains the decoder. startPolling() clears this when the next item plays.
     if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); }
     if (titleBar) titleBar->show();
+
+    // Cover the final (often black) frame with the poster, controls on top.
+    showPosterOverlay();
+    if (playerControls) playerControls->raise();
+    if (titleBar) titleBar->raise();
+
     updateOverlayPosition();
+
+    // If a next item exists, the auto-advance below replaces the poster/replay;
+    // on the last item nothing advances, so the poster + replay button persist.
     emit mediaEnded();
 }
 
@@ -155,9 +190,13 @@ void MainWindow::playLocalFile(const QUrl& url) {
 
     mouseTrackerTimer->start(100);
 
+    // New media — drop any old poster (local files have no thumbnail to fetch).
+    m_posterPixmap = QPixmap();
+    hidePosterOverlay();
+
     QString nativePath = QDir::toNativeSeparators(url.toLocalFile());
-    VLC::Media media(*vlcInstance, nativePath.toUtf8().constData(), VLC::Media::FromPath);
-    vlcPlayer->setMedia(media);
+    m_lastMedia = std::make_shared<VLC::Media>(*vlcInstance, nativePath.toUtf8().constData(), VLC::Media::FromPath);
+    vlcPlayer->setMedia(*m_lastMedia);
 
     QTimer::singleShot(50, this, [this]() {
         vlcPlayer->play();
@@ -173,6 +212,10 @@ void MainWindow::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QU
     if (!videoWidget) return;
 
     emit probeQualitiesRequested(rawUrl.toString());
+
+    // New media — clear the old poster; the probe will resolve a fresh thumbnail.
+    m_posterPixmap = QPixmap();
+    hidePosterOverlay();
 
     if (playerControls) {
         playerControls->resetUiState();
@@ -209,6 +252,50 @@ void MainWindow::handleStopRequest() {
     closePlayer();
 }
 
+void MainWindow::onThumbnailResolved(const QString& thumbUrl) {
+    if (thumbUrl.isEmpty()) return;
+    QNetworkRequest req((QUrl(thumbUrl)));
+    req.setRawHeader("User-Agent", "Seagull-Player");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = m_thumbNam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) return;
+        QPixmap pm;
+        if (!pm.loadFromData(reply->readAll())) return; // e.g. webp w/o plugin
+        m_posterPixmap = pm;
+        // If we're already sitting paused/ended, paint it in now.
+        if (posterOverlay && posterOverlay->isVisible())
+            updateOverlayPosition();
+        });
+}
+
+void MainWindow::showPosterOverlay() {
+    if (!posterOverlay || m_posterPixmap.isNull()) return;
+    if (!videoContainer->isVisible()) return;
+    posterOverlay->show();
+    updateOverlayPosition();          // sizes + paints the scaled pixmap
+    if (playerControls) playerControls->raise();
+    if (titleBar) titleBar->raise();
+}
+
+void MainWindow::hidePosterOverlay() {
+    if (posterOverlay) posterOverlay->hide();
+}
+
+void MainWindow::handleReplay() {
+    if (!vlcPlayer || !m_lastMedia) return;
+    if (playerControls) playerControls->setEndedMode(false);
+    hidePosterOverlay();
+    vlcPlayer->stop();
+    vlcPlayer->setMedia(*m_lastMedia);
+    QTimer::singleShot(50, this, [this]() {
+        vlcPlayer->play();
+        if (playerControls) { playerControls->resetUiState(); playerControls->startPolling(); }
+        });
+    showOSD();
+}
+
 void MainWindow::closePlayer() {
     if (!vlcPlayer) return;
     mouseTrackerTimer->stop();
@@ -216,7 +303,9 @@ void MainWindow::closePlayer() {
     clickTimer->stop();
     updateOverlayTimer->stop();
     if (playerControls) playerControls->stopPolling();
+    if (playerControls) playerControls->setEndedMode(false);
     vlcPlayer->stop();
+    hidePosterOverlay();
     videoContainer->hide();
     playerControls->hide();
     titleBar->hide();
@@ -292,6 +381,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 void MainWindow::updateOverlayPosition() {
     if (!videoWidget || !videoWidget->isVisible()) return;
     QPoint globalPos = videoWidget->mapToGlobal(QPoint(0, 0));
+    if (posterOverlay && posterOverlay->isVisible()) {
+        posterOverlay->setGeometry(globalPos.x(), globalPos.y(), videoWidget->width(), videoWidget->height());
+        if (!m_posterPixmap.isNull())
+            posterOverlay->setPixmap(m_posterPixmap.scaled(videoWidget->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
     if (titleBar) { titleBar->setFixedWidth(videoWidget->width()); titleBar->move(globalPos.x(), globalPos.y() + 5); }
     if (playerControls && playerControls->isVisible()) {
         int controlX = globalPos.x() + (videoWidget->width() - playerControls->width()) / 2;
@@ -301,8 +395,9 @@ void MainWindow::updateOverlayPosition() {
 }
 
 void MainWindow::showOSD() {
-    if (playerControls) playerControls->show();
-    if (titleBar) titleBar->show();
+    // raise() keeps the controls/title above the poster overlay when both show.
+    if (playerControls) { playerControls->show(); playerControls->raise(); }
+    if (titleBar) { titleBar->show(); titleBar->raise(); }
     updateOverlayPosition();
     osdTimer->start(3000);
 }
@@ -367,23 +462,23 @@ void MainWindow::changeStreamQuality(const QString& formatId) {
 
 void MainWindow::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     if (titleBar) titleBar->setTitle(currentVideoTitle.isEmpty() ? "Streaming..." : currentVideoTitle);
-    VLC::Media media(*vlcInstance, videoUrl.toString().toUtf8().constData(), VLC::Media::FromLocation);
+    m_lastMedia = std::make_shared<VLC::Media>(*vlcInstance, videoUrl.toString().toUtf8().constData(), VLC::Media::FromLocation);
 
     // Use libavformat's demuxer (avoids VLC's native mp4 frag-sequence bugs),
     // pick the highest adaptive rendition, and auto-reconnect dropped HTTP
     // connections so the audio track doesn't go silent mid-stream.
-    media.addOption(":demux=avformat");
-    media.addOption(":network-caching=300");
-    media.addOption(":adaptive-logic=highest");
-    media.addOption(":http-reconnect=true");
+    m_lastMedia->addOption(":demux=avformat");
+    m_lastMedia->addOption(":network-caching=300");
+    m_lastMedia->addOption(":adaptive-logic=highest");
+    m_lastMedia->addOption(":http-reconnect=true");
 
     if (audioUrl.isValid() && !audioUrl.isEmpty())
-        media.addOption(QString(":input-slave=" + audioUrl.toString()).toUtf8().constData());
+        m_lastMedia->addOption(QString(":input-slave=" + audioUrl.toString()).toUtf8().constData());
     if (savedStreamTimestamp > 0) {
-        media.addOption(QString(":start-time=%1").arg(savedStreamTimestamp / 1000.0).toUtf8().constData());
+        m_lastMedia->addOption(QString(":start-time=%1").arg(savedStreamTimestamp / 1000.0).toUtf8().constData());
         savedStreamTimestamp = -1;
     }
-    vlcPlayer->setMedia(media);
+    vlcPlayer->setMedia(*m_lastMedia);
 
     QTimer::singleShot(50, this, [this]() {
         vlcPlayer->play();

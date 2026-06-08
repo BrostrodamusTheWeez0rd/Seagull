@@ -380,6 +380,8 @@ void PlayerControls::setVolume(int volume) {
 }
 
 void PlayerControls::togglePlayback() {
+    // After EOF the play button is a replay button — restart from the top.
+    if (m_endedMode) { emit replayRequested(); return; }
     if (m_player->isPlaying()) m_player->pause();
     else m_player->play();
 }
@@ -399,13 +401,17 @@ void PlayerControls::pollVlcState() {
 
     libvlc_state_t st = m_player->state();
     bool isPlaying = (st == libvlc_Playing);
+
+    // Once the stream has ended, freeze the seeker/timestamp where they are and
+    // turn the play button into a replay button. (onEndReached sets m_endedMode.)
+    if (m_endedMode) {
+        playPauseBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+        return;
+    }
+
     playPauseBtn->setIcon(style()->standardIcon(
         isPlaying ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay
     ));
-
-    // Once the stream has ended, freeze the seeker/timestamp where they are.
-    // (onEndReached sets this.) Otherwise a stale time()==0 snaps them back.
-    if (m_endedMode) return;
 
     // time()/length() are only trustworthy while actually playing or paused.
     // During Opening/Buffering/Ended they read 0 or stale, which is what makes
