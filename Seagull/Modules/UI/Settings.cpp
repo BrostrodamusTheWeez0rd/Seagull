@@ -1,4 +1,5 @@
 #include "Settings.h"
+#include "Theme.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -34,7 +35,7 @@ void Settings::setupUI() {
     sidebar->setStyleSheet(
         "QListWidget { border: none; background-color: transparent; outline: none; }"
         "QListWidget::item { padding: 10px; border-radius: 5px; }"
-        "QListWidget::item:selected { background-color: rgba(255, 255, 255, 30); }"
+        "QListWidget::item:selected { background-color: palette(highlight); color: palette(highlighted-text); }"
     );
 
     // --- 2. Right Content Area ---
@@ -167,6 +168,9 @@ void Settings::saveSettings() {
 
     // Force write to disk immediately rather than waiting for OS garbage collection
     iniSettings->sync();
+
+    // Apply the chosen theme across the whole app immediately.
+    Theme::apply(themeCombo->currentText());
 }
 
 void Settings::resetDefaults() {

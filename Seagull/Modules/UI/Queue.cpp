@@ -49,21 +49,25 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
 
     loadingLabel = new QLabel("Fetching metadata...");
     loadingLabel->setAlignment(Qt::AlignCenter);
-    loadingLabel->setStyleSheet("color: #aaaaaa; font-style: italic;");
+    loadingLabel->setStyleSheet("font-style: italic;"); // colour comes from the theme palette
     loadingLabel->hide();
 
     metadataContainer = new QWidget();
     auto* metaLayout = new QVBoxLayout(metadataContainer);
     metaLayout->setContentsMargins(0, 0, 0, 0);
+    // Colours come from the theme: metaTitle uses the palette text colour; the
+    // dimmer uploader/stats are coloured by object-name rules in Theme::apply.
     metaTitle = new QLabel("Video Title");
     metaTitle->setAlignment(Qt::AlignCenter);
-    metaTitle->setStyleSheet("font-size: 16px; font-weight: bold; color: white;");
+    metaTitle->setStyleSheet("font-size: 16px; font-weight: bold;");
     metaUploader = new QLabel("Uploader Name");
+    metaUploader->setObjectName("metaUploader");
     metaUploader->setAlignment(Qt::AlignCenter);
-    metaUploader->setStyleSheet("font-size: 14px; color: #aaaaaa;");
+    metaUploader->setStyleSheet("font-size: 14px;");
     metaStats = new QLabel("Duration: -- | Views: -- | Date: --");
+    metaStats->setObjectName("metaStats");
     metaStats->setAlignment(Qt::AlignCenter);
-    metaStats->setStyleSheet("font-size: 12px; color: #888888;");
+    metaStats->setStyleSheet("font-size: 12px;");
     metaLayout->addWidget(metaTitle);
     metaLayout->addWidget(metaUploader);
     metaLayout->addWidget(metaStats);
@@ -110,7 +114,8 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
 
     logConsole = new QTextEdit();
     logConsole->setReadOnly(true);
-    logConsole->setStyleSheet("background-color: #1e1e1e; color: #a9a9a9; font-family: monospace;");
+    logConsole->setObjectName("logConsole"); // background/foreground set by Theme::apply
+    logConsole->setStyleSheet("font-family: monospace;");
     logConsole->setMinimumHeight(150);
     logConsole->hide();
 
@@ -411,7 +416,7 @@ void Queue::onUrlTextChanged(const QString& text) {
     if (text.startsWith("http")) {
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
         metadataContainer->hide();
-        loadingLabel->setStyleSheet("color: #aaaaaa; font-style: italic;"); // clear any error styling
+        loadingLabel->setStyleSheet("font-style: italic;"); // clear any error styling (colour from palette)
         loadingLabel->setText("Analyzing link...");
         loadingLabel->show();
         cachedTitle.clear();

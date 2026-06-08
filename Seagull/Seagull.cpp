@@ -1,5 +1,8 @@
 ﻿#include "Seagull.h"
+#include "Modules/UI/Theme.h"
 #include <QApplication>
+#include <QSettings>
+#include <QCoreApplication>
 #include <QTimer>
 
 Seagull::Seagull(QObject* parent) : QObject(parent) {
@@ -107,6 +110,11 @@ void Seagull::run() {
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
+
+    // Apply the saved theme before any widgets are built so the whole UI is themed.
+    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    Theme::apply(settings.value("Display/Theme", "Seagull").toString());
+
     Seagull orchestrator;
     orchestrator.run();
     return app.exec();

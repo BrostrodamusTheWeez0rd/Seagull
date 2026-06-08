@@ -28,6 +28,8 @@ add_executable(Seagull
     Modules/UI/Library.h
     Modules/UI/Queue.cpp
     Modules/UI/Queue.h
+    Modules/UI/Theme.cpp
+    Modules/UI/Theme.h
     Modules/UI/Search.h
     Modules/UI/Settings.h
     Modules/UI/Settings.cpp
