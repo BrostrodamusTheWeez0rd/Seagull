@@ -24,6 +24,9 @@ private slots:
 
 private:
     void setupUI();
+    void updateDownloadQualityOptions(); // repopulate quality list from the chosen format
+
+    bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
     // Side tab layout components
     QListWidget* sidebar;
@@ -39,7 +42,6 @@ private:
     QLineEdit* homeFolderEdit;
     QLineEdit* dlFolderEdit;
 
-    QPushButton* applyBtn;
     QPushButton* resetBtn;
 
     // The INI file handler

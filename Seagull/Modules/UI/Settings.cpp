@@ -67,13 +67,10 @@ void Settings::setupUI() {
     formatCombo->setMaxVisibleItems(8);
 
     dlQualityCombo = new QComboBox();
-    // Unified quality list starting with Best Available
-    dlQualityCombo->addItems({
-        "Best Available",
-        "4320p (8K)", "2160p (4K)", "1440p (2K)", "1080p", "720p", "480p", "360p",
-        "320 kbps", "256 kbps", "192 kbps", "128 kbps", "96 kbps"
-        });
+    // Populated by updateDownloadQualityOptions() to match the selected format
+    // (resolutions for video formats, bitrates for audio formats).
     dlQualityCombo->setMaxVisibleItems(8);
+    updateDownloadQualityOptions();
 
     streamQualityCombo = new QComboBox();
     streamQualityCombo->addItems({
@@ -115,21 +112,54 @@ void Settings::setupUI() {
     connect(homeBtn, &QPushButton::clicked, this, &Settings::browseHomeFolder);
     connect(dlBtn, &QPushButton::clicked, this, &Settings::browseDownloadFolder);
 
-    // --- Bottom button bar: Reset to Default + Apply, right-aligned ---
+    // --- Bottom button bar: Reset to Default only (settings auto-apply) ---
     auto* buttonBar = new QHBoxLayout();
     buttonBar->setContentsMargins(0, 10, 10, 10);
     resetBtn = new QPushButton("Reset to Default");
-    applyBtn = new QPushButton("Apply");
     buttonBar->addStretch();
     buttonBar->addWidget(resetBtn);
-    buttonBar->addWidget(applyBtn);
     outerLayout->addLayout(buttonBar);
 
-    connect(applyBtn, &QPushButton::clicked, this, &Settings::saveSettings);
     connect(resetBtn, &QPushButton::clicked, this, &Settings::resetDefaults);
+
+    // Auto-apply: every control change writes config and applies immediately.
+    connect(themeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(formatCombo, &QComboBox::currentTextChanged, this, [this]() {
+        updateDownloadQualityOptions(); // resolutions vs bitrates for this format
+        saveSettings();
+        });
+    connect(dlQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(streamQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(homeFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
+    connect(dlFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
 
     // Set default tab
     sidebar->setCurrentRow(0);
+}
+
+void Settings::updateDownloadQualityOptions() {
+    static const QStringList audioFormats = {
+        "mp3", "m4a", "flac", "wav", "opus", "aac", "vorbis"
+    };
+    const QString fmt = formatCombo->currentText();
+    const QString prev = dlQualityCombo->currentText();
+
+    dlQualityCombo->blockSignals(true);
+    dlQualityCombo->clear();
+    if (audioFormats.contains(fmt)) {
+        dlQualityCombo->addItems({
+            "Best Available", "320 kbps", "256 kbps", "192 kbps", "128 kbps", "96 kbps"
+            });
+    }
+    else { // video formats and "Best Available"
+        dlQualityCombo->addItems({
+            "Best Available", "4320p (8K)", "2160p (4K)", "1440p (2K)", "1080p", "720p", "480p", "360p"
+            });
+    }
+    // Keep the previous choice if it's still valid, otherwise fall back to Best.
+    int idx = dlQualityCombo->findText(prev);
+    dlQualityCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    dlQualityCombo->blockSignals(false);
 }
 
 void Settings::browseHomeFolder() {
@@ -147,17 +177,27 @@ void Settings::browseDownloadFolder() {
 }
 
 void Settings::loadSettings() {
-    // Read from INI, apply fallback defaults if the key doesn't exist yet
+    // Populate controls without each change auto-saving back to disk.
+    m_loading = true;
+
     themeCombo->setCurrentText(iniSettings->value("Display/Theme", "Seagull").toString());
+
+    // Format first, then build the matching quality list, then select the saved quality.
     formatCombo->setCurrentText(iniSettings->value("Download/Format", "Best Available").toString());
+    updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText(iniSettings->value("Download/Quality", "Best Available").toString());
+
     streamQualityCombo->setCurrentText(iniSettings->value("Streaming/Quality", "Best Available").toString());
 
     homeFolderEdit->setText(iniSettings->value("Paths/HomeFolder", QCoreApplication::applicationDirPath()).toString());
     dlFolderEdit->setText(iniSettings->value("Paths/DownloadFolder", QCoreApplication::applicationDirPath() + "/Downloads").toString());
+
+    m_loading = false;
 }
 
 void Settings::saveSettings() {
+    if (m_loading) return; // ignore the change signals fired while loading
+
     // Write values to INI groups
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
     iniSettings->setValue("Download/Format", formatCombo->currentText());
@@ -174,11 +214,15 @@ void Settings::saveSettings() {
 }
 
 void Settings::resetDefaults() {
+    // Set everything quietly, then write + apply once.
+    m_loading = true;
     themeCombo->setCurrentText("Seagull");
     formatCombo->setCurrentText("Best Available");
+    updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText("Best Available");
     streamQualityCombo->setCurrentText("Best Available");
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());
     dlFolderEdit->setText(QCoreApplication::applicationDirPath() + "/Downloads");
+    m_loading = false;
     saveSettings();
 }

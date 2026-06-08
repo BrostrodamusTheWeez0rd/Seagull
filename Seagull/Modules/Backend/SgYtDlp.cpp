@@ -411,7 +411,11 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         QString uploader = obj["uploader"].toString();
         QString duration = obj["duration_string"].toString();
         QString viewCount = QLocale(QLocale::English).toString(obj["view_count"].toInt());
+        // yt-dlp gives upload_date as a bare "YYYYMMDD" string — make it readable.
         QString uploadDate = obj["upload_date"].toString();
+        QDate parsedDate = QDate::fromString(uploadDate, "yyyyMMdd");
+        if (parsedDate.isValid())
+            uploadDate = parsedDate.toString("MMM d, yyyy");
         QString thumb = pickThumbnail(obj);
 
         emit metadataReady(title, uploader, duration, viewCount, uploadDate, thumb);

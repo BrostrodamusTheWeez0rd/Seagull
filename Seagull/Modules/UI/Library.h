@@ -20,6 +20,9 @@
 #include <QAction>
 #include <QTimer>
 #include <QFileInfo>
+#include <QLabel>
+#include <QTableWidget>
+#include <QProcess>
 
 // -------------------------
 // Folder-only filter
@@ -129,10 +132,17 @@ private slots:
     void goUp();
     void showContextMenu(const QPoint& pos);
     void updateSearch(const QString& text);
+    void onFileSelectionChanged(const QModelIndex& current, const QModelIndex& previous);
 
 private:
     void navigateTo(const QString& path, bool recordHistory = true);
     void setTableRootSafe(const QModelIndex& sourceIndex);
+
+    // File-details panel (cover/thumbnail + metadata) to the right of the file table.
+    void showDetailsFor(const QString& path);
+    void clearDetails();
+    void addDetailRow(const QString& key, const QString& value);
+    void setCover(const QPixmap& pm);
 
 private:
     QVBoxLayout* mainLayout = nullptr;
@@ -150,6 +160,14 @@ private:
     QSplitter* mainSplitter = nullptr;
     QTreeView* folderTree = nullptr;
     QTableView* fileTable = nullptr;
+
+    // Details panel widgets + the async tools that feed them
+    QWidget* detailsPanel = nullptr;
+    QLabel* coverLabel = nullptr;
+    QTableWidget* detailsTable = nullptr;
+    QProcess* probeProc = nullptr;   // ffprobe — metadata
+    QProcess* coverProc = nullptr;   // ffmpeg — cover/thumbnail
+    QString m_detailPath;            // file currently shown (guards stale async results)
 
     QFileSystemModel* fileModel = nullptr;
     FolderOnlyFilter* treeFilter = nullptr;

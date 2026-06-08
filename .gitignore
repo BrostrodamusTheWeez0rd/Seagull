@@ -25,3 +25,4 @@ Seagull/Tools/*
 
 # But keep the .gitkeep file so the folder itself stays in Git
 !Seagull/Tools/.gitkeep
+/CLAUDE.md

@@ -5,6 +5,16 @@
 #include <QDir>
 #include <QRegularExpression>
 #include <QFileInfo>
+#include <QSettings>
+#include <QCoreApplication>
+#include <QHeaderView>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QPixmap>
+#include <QFile>
+#include <QMap>
+#include <QItemSelectionModel>
 
 Library::Library(QWidget* parent) : QWidget(parent) {
     mainLayout = new QVBoxLayout(this);
@@ -60,12 +70,40 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     fileTable = new QTableView();
     fileTable->setModel(tableFilter);
     fileTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    fileTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+
+    // --- File details panel (cover/thumbnail + metadata), right of the file table ---
+    detailsPanel = new QWidget();
+    auto* detailsLayout = new QVBoxLayout(detailsPanel);
+    detailsLayout->setContentsMargins(8, 8, 8, 8);
+
+    coverLabel = new QLabel();
+    coverLabel->setAlignment(Qt::AlignCenter);
+    coverLabel->setMinimumHeight(160);
+    detailsLayout->addWidget(coverLabel);
+
+    detailsTable = new QTableWidget(0, 2);
+    detailsTable->horizontalHeader()->setVisible(false);
+    detailsTable->verticalHeader()->setVisible(false);
+    detailsTable->setShowGrid(false);
+    detailsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    detailsTable->setSelectionMode(QAbstractItemView::NoSelection);
+    detailsTable->setFocusPolicy(Qt::NoFocus);
+    detailsTable->setWordWrap(true);
+    detailsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    detailsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    detailsLayout->addWidget(detailsTable);
 
     mainSplitter->addWidget(folderTree);
     mainSplitter->addWidget(fileTable);
-    mainSplitter->setSizes({ 250, 750 });
+    mainSplitter->addWidget(detailsPanel);
+    mainSplitter->setSizes({ 250, 500, 250 });
 
     mainLayout->addWidget(mainSplitter);
+
+    // ffprobe (metadata) + ffmpeg (cover) run asynchronously per selection.
+    probeProc = new QProcess(this);
+    coverProc = new QProcess(this);
 
     historyIndex = -1;
 
@@ -80,9 +118,72 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     connect(folderTree, &QTreeView::doubleClicked, this, &Library::onTreeDoubleClicked);
     connect(fileTable, &QTableView::doubleClicked, this, &Library::onFileDoubleClicked);
     connect(fileTable, &QTableView::customContextMenuRequested, this, &Library::showContextMenu);
+    connect(fileTable->selectionModel(), &QItemSelectionModel::currentRowChanged,
+        this, &Library::onFileSelectionChanged);
+
+    // ffmpeg cover/thumbnail finished -> load it (ignoring results for a stale selection).
+    connect(coverProc, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
+        if (coverProc->property("path").toString() != m_detailPath) return;
+        QPixmap pm(QDir::tempPath() + "/seagull_cover.jpg");
+        if (!pm.isNull()) setCover(pm);
+        else { coverLabel->setPixmap(QPixmap()); coverLabel->setText("No preview"); }
+        });
+
+    // ffprobe metadata finished -> append the rich rows.
+    connect(probeProc, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
+        if (probeProc->property("path").toString() != m_detailPath) return;
+        QJsonDocument doc = QJsonDocument::fromJson(probeProc->readAllStandardOutput());
+        if (!doc.isObject()) return;
+        QJsonObject root = doc.object();
+        QJsonObject fmt = root["format"].toObject();
+
+        double dur = fmt["duration"].toString().toDouble();
+        if (dur > 0) {
+            int total = static_cast<int>(dur);
+            int h = total / 3600, m = (total % 3600) / 60, s = total % 60;
+            addDetailRow("Duration", h > 0
+                ? QString("%1:%2:%3").arg(h).arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'))
+                : QString("%1:%2").arg(m).arg(s, 2, 10, QChar('0')));
+        }
+
+        // Tag keys vary in case by container — fold them to lower case.
+        QMap<QString, QString> tags;
+        QJsonObject rawTags = fmt["tags"].toObject();
+        for (auto it = rawTags.begin(); it != rawTags.end(); ++it)
+            tags[it.key().toLower()] = it.value().toString();
+        addDetailRow("Title", tags.value("title"));
+        addDetailRow("Artist", tags.value("artist"));
+        addDetailRow("Album", tags.value("album"));
+        addDetailRow("Genre", tags.value("genre"));
+        addDetailRow("Year", tags.value("date"));
+
+        QString vcodec, acodec, res;
+        for (const auto& sv : root["streams"].toArray()) {
+            QJsonObject s = sv.toObject();
+            QString type = s["codec_type"].toString();
+            if (type == "video" && vcodec.isEmpty()) {
+                vcodec = s["codec_name"].toString();
+                int w = s["width"].toInt(), hgt = s["height"].toInt();
+                if (w > 0 && hgt > 0) res = QString("%1 x %2").arg(w).arg(hgt);
+            }
+            else if (type == "audio" && acodec.isEmpty()) {
+                acodec = s["codec_name"].toString();
+            }
+        }
+        addDetailRow("Resolution", res);
+        addDetailRow("Video", vcodec.toUpper());
+        addDetailRow("Audio", acodec.toUpper());
+
+        qint64 br = fmt["bit_rate"].toString().toLongLong();
+        if (br > 0) addDetailRow("Bitrate", QString::number(br / 1000) + " kbps");
+        });
 
     QTimer::singleShot(0, this, [this]() {
-        navigateTo(QDir::homePath());
+        // Start at the configured Home Folder (Settings), falling back to the OS home.
+        QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QString home = settings.value("Paths/HomeFolder", QDir::homePath()).toString();
+        if (home.isEmpty() || !QDir(home).exists()) home = QDir::homePath();
+        navigateTo(home);
         });
 }
 
@@ -257,4 +358,94 @@ void Library::updateAddressBar(const QModelIndex& index) {
         return;
 
     addressBar->setText(fileModel->filePath(srcIdx));
+}
+
+// ---------------------------------------------------------------------------
+// File details panel
+// ---------------------------------------------------------------------------
+
+void Library::onFileSelectionChanged(const QModelIndex& current, const QModelIndex&) {
+    if (!current.isValid()) { clearDetails(); m_detailPath.clear(); return; }
+    QModelIndex src = tableFilter->mapToSource(current);
+    if (!src.isValid()) { clearDetails(); m_detailPath.clear(); return; }
+
+    QString path = fileModel->filePath(src);
+    QFileInfo info(path);
+    if (!info.isFile()) { clearDetails(); m_detailPath.clear(); return; }
+
+    showDetailsFor(path);
+}
+
+void Library::showDetailsFor(const QString& path) {
+    m_detailPath = path;
+    clearDetails();
+
+    QFileInfo info(path);
+    addDetailRow("Name", info.fileName());
+    addDetailRow("Type", info.suffix().toUpper());
+    addDetailRow("Size", QString::number(info.size() / 1048576.0, 'f', 2) + " MB");
+
+    const QString ext = info.suffix().toLower();
+    static const QStringList imageExts = { "jpg", "jpeg", "png", "bmp", "gif", "webp" };
+    static const QStringList audioExts = { "mp3", "flac", "m4a", "wav", "aac", "opus", "ogg" };
+
+    // --- Cover / thumbnail ---
+    coverLabel->setPixmap(QPixmap());
+    coverLabel->setText("Loading…");
+    if (imageExts.contains(ext)) {
+        QPixmap pm(path);
+        if (!pm.isNull()) setCover(pm);
+        else coverLabel->setText("No preview");
+    }
+    else {
+        const QString ffmpeg = QCoreApplication::applicationDirPath() + "/tools/ffmpeg.exe";
+        const QString coverOut = QDir::tempPath() + "/seagull_cover.jpg";
+        QFile::remove(coverOut);
+
+        const bool isAudio = audioExts.contains(ext);
+        QStringList args;
+        args << "-y";
+        if (!isAudio) args << "-ss" << "3";              // a few seconds in for video
+        args << "-i" << path << "-frames:v" << "1";
+        if (isAudio) args << "-an";                      // grab the embedded cover art
+        args << "-vf" << "scale='min(360,iw)':-1" << coverOut;
+
+        if (coverProc->state() != QProcess::NotRunning) { coverProc->kill(); coverProc->waitForFinished(50); }
+        coverProc->setProperty("path", path);
+        coverProc->start(ffmpeg, args);
+    }
+
+    // --- Metadata via ffprobe ---
+    const QString ffprobe = QCoreApplication::applicationDirPath() + "/tools/ffprobe.exe";
+    QStringList pargs;
+    pargs << "-v" << "quiet" << "-print_format" << "json"
+        << "-show_format" << "-show_streams" << path;
+
+    if (probeProc->state() != QProcess::NotRunning) { probeProc->kill(); probeProc->waitForFinished(50); }
+    probeProc->setProperty("path", path);
+    probeProc->start(ffprobe, pargs);
+}
+
+void Library::clearDetails() {
+    if (detailsTable) detailsTable->setRowCount(0);
+    if (coverLabel) { coverLabel->setPixmap(QPixmap()); coverLabel->setText(""); }
+}
+
+void Library::addDetailRow(const QString& key, const QString& value) {
+    if (value.trimmed().isEmpty()) return;
+    int r = detailsTable->rowCount();
+    detailsTable->insertRow(r);
+    auto* k = new QTableWidgetItem(key);
+    k->setFlags(Qt::ItemIsEnabled);
+    auto* v = new QTableWidgetItem(value);
+    v->setFlags(Qt::ItemIsEnabled);
+    detailsTable->setItem(r, 0, k);
+    detailsTable->setItem(r, 1, v);
+}
+
+void Library::setCover(const QPixmap& pm) {
+    coverLabel->setText("");
+    int w = detailsPanel->width() - 24;
+    if (w < 80) w = 200;
+    coverLabel->setPixmap(pm.scaled(w, 240, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
