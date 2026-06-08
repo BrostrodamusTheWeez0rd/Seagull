@@ -26,6 +26,12 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     refreshBtn = new QPushButton("↻");
     plusFolderBtn = new QPushButton("+ Folder");
 
+    // Toggle between media-only and all files (checked = media only, the default).
+    filterBtn = new QPushButton("Media Only");
+    filterBtn->setCheckable(true);
+    filterBtn->setChecked(true);
+    filterBtn->setToolTip("Toggle showing only media files or all files");
+
     addressBar = new QLineEdit();
     searchBar = new QLineEdit();
     searchBar->setPlaceholderText("Search...");
@@ -37,6 +43,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     toolbarLayout->addWidget(refreshBtn);
     toolbarLayout->addWidget(plusFolderBtn);
     toolbarLayout->addWidget(addressBar);
+    toolbarLayout->addWidget(filterBtn);
     toolbarLayout->addWidget(searchBar);
 
     toolbarLayout->setStretchFactor(addressBar, 1);
@@ -112,6 +119,10 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     connect(upBtn, &QPushButton::clicked, this, &Library::goUp);
     connect(refreshBtn, &QPushButton::clicked, this, &Library::refreshLibrary);
     connect(plusFolderBtn, &QPushButton::clicked, this, &Library::createNewFolder);
+    connect(filterBtn, &QPushButton::toggled, this, [this](bool mediaOnly) {
+        tableFilter->setShowAllFiles(!mediaOnly);
+        filterBtn->setText(mediaOnly ? "Media Only" : "All Files");
+        });
 
     connect(searchBar, &QLineEdit::textChanged, this, &Library::updateSearch);
     connect(folderTree, &QTreeView::clicked, this, &Library::onTreeClicked);

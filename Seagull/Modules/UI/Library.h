@@ -67,6 +67,12 @@ public:
         invalidateFilter();
     }
 
+    // When true the table shows every file (still no folders), not just media.
+    void setShowAllFiles(bool showAll) {
+        m_showAllFiles = showAll;
+        invalidateFilter();
+    }
+
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override {
         auto* fsModel = qobject_cast<QFileSystemModel*>(sourceModel());
@@ -82,17 +88,19 @@ protected:
 
         QString path = fsModel->filePath(index).toLower();
 
-        bool isMedia =
-            path.endsWith(".mp4") ||
-            path.endsWith(".mkv") ||
-            path.endsWith(".avi") ||
-            path.endsWith(".mp3") ||
-            path.endsWith(".wav") ||
-            path.endsWith(".flac") ||
-            path.endsWith(".jpg") ||
-            path.endsWith(".png");
+        if (!m_showAllFiles) {
+            bool isMedia =
+                path.endsWith(".mp4") ||
+                path.endsWith(".mkv") ||
+                path.endsWith(".avi") ||
+                path.endsWith(".mp3") ||
+                path.endsWith(".wav") ||
+                path.endsWith(".flac") ||
+                path.endsWith(".jpg") ||
+                path.endsWith(".png");
 
-        if (!isMedia) return false;
+            if (!isMedia) return false;
+        }
 
         QString filter = filterRegularExpression().pattern();
         if (filter.isEmpty()) return true;
@@ -102,6 +110,7 @@ protected:
 
 private:
     QString currentRootPath;
+    bool m_showAllFiles = false;
 };
 
 // -------------------------
@@ -153,6 +162,7 @@ private:
     QPushButton* upBtn = nullptr;
     QPushButton* refreshBtn = nullptr;
     QPushButton* plusFolderBtn = nullptr;
+    QPushButton* filterBtn = nullptr;   // toggle: media-only vs all files
 
     QLineEdit* addressBar = nullptr;
     QLineEdit* searchBar = nullptr;
