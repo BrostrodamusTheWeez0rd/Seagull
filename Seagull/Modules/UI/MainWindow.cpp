@@ -76,6 +76,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     vlcPlayer->eventManager().onPlaying([this]() {
         QMetaObject::invokeMethod(this, [this]() { hidePosterOverlay(); }, Qt::QueuedConnection);
         });
+    vlcPlayer->eventManager().onEncounteredError([this]() {
+        QMetaObject::invokeMethod(this, [this]() { onPlaybackError(); }, Qt::QueuedConnection);
+        });
 
     mainSplitter->addWidget(videoContainer);
     mainSplitter->setCollapsible(0, false);
@@ -281,6 +284,16 @@ void MainWindow::showPosterOverlay() {
 
 void MainWindow::hidePosterOverlay() {
     if (posterOverlay) posterOverlay->hide();
+}
+
+void MainWindow::onPlaybackError() {
+    // VLC couldn't open/play the stream. Tell the user and offer a retry: drop
+    // into ended mode so the play button becomes a replay button (re-uses
+    // m_lastMedia), and keep the controls/title pinned so the message stays put.
+    osdTimer->stop();
+    if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->show(); titleBar->raise(); }
+    if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); playerControls->raise(); }
+    updateOverlayPosition();
 }
 
 void MainWindow::handleReplay() {

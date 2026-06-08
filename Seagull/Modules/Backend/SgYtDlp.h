@@ -13,6 +13,7 @@
 #include <QFile>
 
 class QJsonArray;
+class QJsonObject;
 
 struct StreamOption {
     QString formatId;
@@ -99,6 +100,8 @@ private:
     bool chooseMatchedAvPair(const QJsonArray& formats, int targetH,
         QString& vUrlOut, QString& aUrlOut) const;
     QString bestProgressiveUrl(const QJsonArray& formats) const;
+    // Prefers a .jpg thumbnail (QPixmap loads it without the webp plugin).
+    QString pickThumbnail(const QJsonObject& root) const;
 
     void resolveLatestVersion(const QString& latestReleaseUrl, const QString& kind);
     QString computeFileSha256(const QString& filePath) const;

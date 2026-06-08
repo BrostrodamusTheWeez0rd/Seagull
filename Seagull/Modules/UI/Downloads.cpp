@@ -6,6 +6,8 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QUrlQuery>
+#include <QNetworkRequest>
+#include <QGraphicsOpacityEffect>
 #include <QDebug>
 #include <algorithm>
 
@@ -30,6 +32,21 @@ Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp
     QPixmap bannerImg(":/Assets/Banner.png");
     banner->setPixmap(bannerImg.scaled(800, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
+    // Hero thumbnail: takes the banner's spot once metadata loads. The banner is
+    // shrunk into a watermark pinned to the thumbnail's bottom-left corner.
+    heroThumb = new QLabel();
+    heroThumb->setFixedSize(480, 270);
+    heroThumb->setAlignment(Qt::AlignCenter);
+    heroThumb->hide();
+
+    bannerWatermark = new QLabel(heroThumb);
+    bannerWatermark->setPixmap(QPixmap(":/Assets/Banner.png").scaledToHeight(26, Qt::SmoothTransformation));
+    bannerWatermark->adjustSize();
+    bannerWatermark->move(8, heroThumb->height() - bannerWatermark->height() - 8);
+    auto* wmOpacity = new QGraphicsOpacityEffect(bannerWatermark);
+    wmOpacity->setOpacity(0.85);
+    bannerWatermark->setGraphicsEffect(wmOpacity);
+
     loadingLabel = new QLabel("Fetching metadata...");
     loadingLabel->setAlignment(Qt::AlignCenter);
     loadingLabel->setStyleSheet("color: #aaaaaa; font-style: italic;");
@@ -51,6 +68,8 @@ Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp
     metaLayout->addWidget(metaUploader);
     metaLayout->addWidget(metaStats);
     metadataContainer->hide();
+
+    m_thumbNam = new QNetworkAccessManager(this);
 
     urlInput = new QLineEdit();
     urlInput->setPlaceholderText("Enter URL here...");
@@ -95,7 +114,9 @@ Downloads::Downloads(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp
     logConsole->setMinimumHeight(150);
     logConsole->hide();
 
-    layout->addWidget(banner); layout->addWidget(loadingLabel);
+    layout->addWidget(banner);
+    layout->addWidget(heroThumb, 0, Qt::AlignHCenter);
+    layout->addWidget(loadingLabel);
     layout->addWidget(metadataContainer); layout->addWidget(urlInput);
     layout->addLayout(btnLayout); layout->addWidget(queueTable);
     layout->addWidget(progressBar); layout->addWidget(logConsole);
@@ -383,9 +404,14 @@ void Downloads::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl&
 
 void Downloads::onUrlTextChanged(const QString& text) {
     if (text == "Bdev") { logConsole->setVisible(!logConsole->isVisible()); urlInput->clear(); return; }
+    // Any edit invalidates a still-loading thumbnail from the previous link and
+    // restores the banner until a new thumbnail is fetched.
+    m_currentThumbUrl.clear();
+    resetHeroToBanner();
     if (text.startsWith("http")) {
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
         metadataContainer->hide();
+        loadingLabel->setStyleSheet("color: #aaaaaa; font-style: italic;"); // clear any error styling
         loadingLabel->setText("Analyzing link...");
         loadingLabel->show();
         cachedTitle.clear();
@@ -395,8 +421,13 @@ void Downloads::onUrlTextChanged(const QString& text) {
         debounceTimer->start(500);
     }
     else {
+        // Empty / non-URL input: clear the preview entirely (label + thumbnail).
         downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
-        loadingLabel->hide(); m_pendingPlaylistUrl.clear();
+        loadingLabel->hide();
+        metadataContainer->hide();
+        cachedTitle.clear();
+        isFetchingMetadata = false;
+        m_pendingPlaylistUrl.clear();
     }
 }
 
@@ -545,13 +576,41 @@ void Downloads::removeSelectedItems() {
 }
 
 void Downloads::handleMetadataReady(const QString& t, const QString& u, const QString& d,
-    const QString& v, const QString& da, const QString&) {
+    const QString& v, const QString& da, const QString& thumbUrl) {
     isFetchingMetadata = false; loadingLabel->hide();
     downBtn->setEnabled(true); queueBtn->setEnabled(true); streamBtn->setEnabled(true);
     cachedTitle = t;
     metaTitle->setText(t); metaUploader->setText(u);
     metaStats->setText(QString("Duration: %1 | Views: %2 | Uploaded: %3").arg(d, v, da));
+
+    // Keep the banner until the thumbnail arrives, then swap it for the hero
+    // thumbnail and tuck the banner into the corner as a watermark.
+    m_currentThumbUrl = thumbUrl;
+    if (!thumbUrl.isEmpty()) {
+        QNetworkRequest req((QUrl(thumbUrl)));
+        req.setRawHeader("User-Agent", "Seagull-Player");
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+        QNetworkReply* reply = m_thumbNam->get(req);
+        connect(reply, &QNetworkReply::finished, this, [this, reply, thumbUrl]() {
+            reply->deleteLater();
+            if (thumbUrl != m_currentThumbUrl) return;          // a newer URL superseded this one
+            if (reply->error() != QNetworkReply::NoError) return;
+            QPixmap pm;
+            if (!pm.loadFromData(reply->readAll())) return;     // e.g. webp without the plugin
+            heroThumb->setPixmap(pm.scaled(heroThumb->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            banner->hide();
+            heroThumb->show();
+            bannerWatermark->show();
+            });
+    }
+
     metadataContainer->show();
+}
+
+void Downloads::resetHeroToBanner() {
+    if (heroThumb) heroThumb->hide();
+    if (bannerWatermark) bannerWatermark->hide();
+    if (banner) banner->show();
 }
 
 void Downloads::handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
@@ -584,6 +643,20 @@ void Downloads::handlePlaylistEntriesReady(const QList<QString>& urls) {
 }
 
 void Downloads::handleFinished(bool success) {
+    // A failure while still fetching the preview metadata means the link couldn't
+    // be resolved — surface that instead of leaving "Analyzing link..." forever.
+    if (!success && isFetchingMetadata) {
+        isFetchingMetadata = false;
+        metadataContainer->hide();
+        resetHeroToBanner();
+        downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
+        loadingLabel->setStyleSheet("color: #ff6b6b; font-style: italic;");
+        loadingLabel->setText("Couldn't fetch link info — check the URL or your connection.");
+        loadingLabel->show();
+        progressBar->hide();
+        return;
+    }
+
     if (isProcessingQueue) {
         queueTable->removeRow(0);
         if (queueTable->rowCount() > 0) {

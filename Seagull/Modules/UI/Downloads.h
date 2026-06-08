@@ -19,6 +19,9 @@
 #include <QMap>
 #include <QList>
 #include <QDateTime>
+#include <QPixmap>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 
 // Forward declaration instead of #include keeps the UI decoupled from the backend implementation
 class SgYtDlp;
@@ -82,9 +85,12 @@ private:
     // Validates the Unix timestamp token inside the YouTube CDN URL
     bool    isStreamUrlValid(const QUrl& cdnUrl) const;
     void    enqueueTitleResolution(const QList<QString>& urls, int startRow);
+    void    resetHeroToBanner();  // restore the big banner, hide the thumbnail hero
 
     // Widgets
     QLabel* banner;
+    QLabel* heroThumb;       // big thumbnail shown in the banner's spot once metadata loads
+    QLabel* bannerWatermark; // shrunk banner overlaid on the thumbnail's bottom-left
     QLabel* loadingLabel;
     QLineEdit* urlInput;
     QPushButton* downBtn;
@@ -109,6 +115,10 @@ private:
     SgYtDlp* downloader;
     SgYtDlp* titleResolver;
     SgYtDlp* cdnPrefetcher;
+
+    // Thumbnail fetching for the metadata preview
+    QNetworkAccessManager* m_thumbNam;
+    QString m_currentThumbUrl;  // guards against a stale reply painting the wrong thumb
 
     // State
     bool    isFetchingMetadata = false;

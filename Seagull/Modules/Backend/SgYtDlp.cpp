@@ -193,6 +193,24 @@ bool SgYtDlp::chooseMatchedAvPair(const QJsonArray& formats, int targetH,
     return false;
 }
 
+QString SgYtDlp::pickThumbnail(const QJsonObject& root) const {
+    // Prefer the widest .jpg from thumbnails[] so QPixmap can load it without the
+    // webp image plugin; fall back to the single "thumbnail" field otherwise.
+    QString thumb;
+    const QJsonArray thumbs = root["thumbnails"].toArray();
+    int bestW = -1;
+    for (const auto& it : thumbs) {
+        QJsonObject t = it.toObject();
+        QString u = t["url"].toString();
+        if (u.isEmpty()) continue;
+        if (!u.contains(".jpg", Qt::CaseInsensitive)) continue;
+        int w = t["width"].toInt();
+        if (w > bestW) { bestW = w; thumb = u; }
+    }
+    if (thumb.isEmpty()) thumb = root["thumbnail"].toString();
+    return thumb;
+}
+
 QString SgYtDlp::bestProgressiveUrl(const QJsonArray& formats) const {
     QString url; int best = -1;
     for (const auto& it : formats) {
@@ -363,20 +381,7 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         QList<int> seenHeights;
 
         // The probe runs on every play, so surface the poster thumbnail here too.
-        // Prefer a JP'G variant (QPixmap loads it without the webp image plugin).
-        QString thumb;
-        const QJsonArray thumbs = root["thumbnails"].toArray();
-        int bestW = -1;
-        for (const auto& it : thumbs) {
-            QJsonObject t = it.toObject();
-            QString u = t["url"].toString();
-            if (u.isEmpty()) continue;
-            if (!u.contains(".jpg", Qt::CaseInsensitive)) continue;
-            int w = t["width"].toInt();
-            if (w > bestW) { bestW = w; thumb = u; }
-        }
-        if (thumb.isEmpty()) thumb = root["thumbnail"].toString();
-        emit thumbnailResolved(thumb);
+        emit thumbnailResolved(pickThumbnail(root));
 
         options.append({ "", "Auto", false });
 
@@ -407,7 +412,7 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         QString duration = obj["duration_string"].toString();
         QString viewCount = QLocale(QLocale::English).toString(obj["view_count"].toInt());
         QString uploadDate = obj["upload_date"].toString();
-        QString thumb = obj["thumbnail"].toString();
+        QString thumb = pickThumbnail(obj);
 
         emit metadataReady(title, uploader, duration, viewCount, uploadDate, thumb);
 

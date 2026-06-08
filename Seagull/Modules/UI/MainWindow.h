@@ -68,6 +68,7 @@ private:
     void installFilterRecursive(QObject* obj, QObject* filter);
     void showPosterOverlay();
     void hidePosterOverlay();
+    void onPlaybackError();
 
     QSplitter* mainSplitter;
     QTabWidget* tabs;
