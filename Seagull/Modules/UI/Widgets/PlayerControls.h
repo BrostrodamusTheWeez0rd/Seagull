@@ -33,6 +33,7 @@ public:
 
     void stopPolling();
     void startPolling();
+    void setEndedMode(bool ended); // Freeze seeker/time at end-of-stream
     void setCurrentFormat(const QString& formatId); // Track active selection
 
 public slots:
@@ -94,6 +95,7 @@ private:
     QLabel* timeLabel;
     qint64 m_duration;
     bool isUserSeeking;
+    bool m_endedMode = false; // true after EOF until the next media starts
 
     QTimer* prevClickTimer;
     QTimer* nextClickTimer;

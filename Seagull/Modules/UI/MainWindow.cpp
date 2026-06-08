@@ -42,11 +42,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const char* vlcArgs[] = {
         "--no-mouse-events",
         "--no-keyboard-events",
-        "--network-caching=5000",
-        "--file-caching=5000"
+        "--network-caching=300",
+        "--file-caching=5000",
+        // Reconnect dropped HTTP connections instead of going silent, and present
+        // the same UA yt-dlp signed the CDN URLs with so the CDN doesn't throttle.
+        "--http-reconnect",
+        "--http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     };
 
-    vlcInstance = std::make_shared<VLC::Instance>(4, vlcArgs);
+    vlcInstance = std::make_shared<VLC::Instance>(6, vlcArgs);
     vlcPlayer = std::make_shared<VLC::MediaPlayer>(*vlcInstance);
 
     vlcPlayer->setMouseInput(false);
@@ -131,7 +135,9 @@ void MainWindow::addTab(QWidget* tab, const QString& label) {
 
 void MainWindow::onMediaEndReached() {
     osdTimer->stop();
-    if (playerControls) playerControls->show();
+    // Freeze the seeker/timestamp at the end so they don't snap back to 0 while
+    // VLC drains the decoder. startPolling() clears this when the next item plays.
+    if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); }
     if (titleBar) titleBar->show();
     updateOverlayPosition();
     emit mediaEnded();
@@ -362,6 +368,15 @@ void MainWindow::changeStreamQuality(const QString& formatId) {
 void MainWindow::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     if (titleBar) titleBar->setTitle(currentVideoTitle.isEmpty() ? "Streaming..." : currentVideoTitle);
     VLC::Media media(*vlcInstance, videoUrl.toString().toUtf8().constData(), VLC::Media::FromLocation);
+
+    // Use libavformat's demuxer (avoids VLC's native mp4 frag-sequence bugs),
+    // pick the highest adaptive rendition, and auto-reconnect dropped HTTP
+    // connections so the audio track doesn't go silent mid-stream.
+    media.addOption(":demux=avformat");
+    media.addOption(":network-caching=300");
+    media.addOption(":adaptive-logic=highest");
+    media.addOption(":http-reconnect=true");
+
     if (audioUrl.isValid() && !audioUrl.isEmpty())
         media.addOption(QString(":input-slave=" + audioUrl.toString()).toUtf8().constData());
     if (savedStreamTimestamp > 0) {

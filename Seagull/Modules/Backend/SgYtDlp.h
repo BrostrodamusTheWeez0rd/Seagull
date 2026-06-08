@@ -12,6 +12,8 @@
 #include <QNetworkRequest>
 #include <QFile>
 
+class QJsonArray;
+
 struct StreamOption {
     QString formatId;
     QString label;
@@ -85,7 +87,17 @@ private:
 
     QByteArray processBuffer;
     QStringList buildDownloadArgs(const QString& url);
-    QString defaultStreamFormat() const;
+
+    // Streaming format selection. The chosen video format id (empty = honor the
+    // default Stream Quality setting) is stashed here while the -J resolve runs.
+    QString m_pendingFormatId;
+    int  defaultStreamHeight() const;
+    int  heightForFormatId(const QJsonArray& formats, const QString& id) const;
+    // Picks a container-matched video+audio pair (mp4+m4a, else webm+opus/vorbis)
+    // so VLC's input-slave merge stays in sync. Returns false if no split pair.
+    bool chooseMatchedAvPair(const QJsonArray& formats, int targetH,
+        QString& vUrlOut, QString& aUrlOut) const;
+    QString bestProgressiveUrl(const QJsonArray& formats) const;
 
     void resolveLatestVersion(const QString& latestReleaseUrl, const QString& kind);
     QString computeFileSha256(const QString& filePath) const;

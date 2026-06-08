@@ -190,9 +190,14 @@ void PlayerControls::stopPolling() {
 }
 
 void PlayerControls::startPolling() {
+    m_endedMode = false; // new media — let the seeker track again
     if (uiPollTimer && !uiPollTimer->isActive()) {
         uiPollTimer->start(250);
     }
+}
+
+void PlayerControls::setEndedMode(bool ended) {
+    m_endedMode = ended;
 }
 
 void PlayerControls::resetUiState() {
@@ -392,10 +397,20 @@ void PlayerControls::toggleMute() {
 void PlayerControls::pollVlcState() {
     if (!m_player) return;
 
-    bool isPlaying = m_player->isPlaying();
+    libvlc_state_t st = m_player->state();
+    bool isPlaying = (st == libvlc_Playing);
     playPauseBtn->setIcon(style()->standardIcon(
         isPlaying ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay
     ));
+
+    // Once the stream has ended, freeze the seeker/timestamp where they are.
+    // (onEndReached sets this.) Otherwise a stale time()==0 snaps them back.
+    if (m_endedMode) return;
+
+    // time()/length() are only trustworthy while actually playing or paused.
+    // During Opening/Buffering/Ended they read 0 or stale, which is what makes
+    // the seeker and timestamp drift out of sync with the real stream position.
+    if (st != libvlc_Playing && st != libvlc_Paused) return;
 
     qint64 length = m_player->length();
     if (length > 0 && (m_duration <= 0 || length != m_duration)) {
