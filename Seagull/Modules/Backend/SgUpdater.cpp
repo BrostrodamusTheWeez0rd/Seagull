@@ -475,10 +475,13 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
         file.write(fileData);
         file.close();
 
-        // Verify zip against Deno's published .sha256sum (format: "hash  filename")
+        // Verify zip against Deno's published .sha256sum. Deno generates it with
+        // PowerShell Get-FileHash, so the body is a Format-List block ("Algorithm :
+        // SHA256 / Hash : <HEX> / Path : ..."), NOT the usual "hash  filename" line.
+        // Pull the 64-char hex digest out by pattern so either format works.
         emit updateStatus("Verifying Deno hash...");
-        QString sumLine = fetchRemoteText("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum");
-        QString expected = sumLine.section(' ', 0, 0).trimmed();
+        QString sumBody = fetchRemoteText("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum");
+        QString expected = QRegularExpression("[0-9a-fA-F]{64}").match(sumBody).captured(0);
         if (!verifyHash(zipPath, expected, "Deno")) {
             QFile::remove(zipPath);
             checkForFfmpegUpdate();
