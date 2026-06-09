@@ -20,6 +20,7 @@
 #include <QAction>
 #include <QTimer>
 #include <QFileInfo>
+#include <QDateTime>
 #include <QLabel>
 #include <QTableWidget>
 #include <QProcess>
@@ -73,7 +74,42 @@ public:
         invalidateFilter();
     }
 
+    // Sequential 1..N row numbers in the vertical header. The default proxy
+    // headerData maps the vertical section back to the source model, which can't
+    // be done over a tree+rootIndex (it returns 0 for every row past the first),
+    // so we number by the proxy's own display order instead.
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
+        if (orientation == Qt::Vertical) {
+            // Handle every vertical role here — don't delegate to the base proxy,
+            // which maps the section to the source model. That mapping succeeds for
+            // row 0 but fails for the rest, so row 0 would pick up the source's
+            // alignment/size while the others fall back to defaults, leaving the
+            // "1" visually out of line with 2, 3, 4…
+            if (role == Qt::DisplayRole)       return section + 1;
+            if (role == Qt::TextAlignmentRole) return static_cast<int>(Qt::AlignCenter);
+            return QVariant();
+        }
+        return QSortFilterProxyModel::headerData(section, orientation, role);
+    }
+
 protected:
+    // Header-click sorting that respects each column's real data: numeric size,
+    // chronological date, case-insensitive name. Other columns (Type) fall back to
+    // the default display-string compare.
+    bool lessThan(const QModelIndex& left, const QModelIndex& right) const override {
+        if (auto* fs = qobject_cast<QFileSystemModel*>(sourceModel())) {
+            const QFileInfo li = fs->fileInfo(left);
+            const QFileInfo ri = fs->fileInfo(right);
+            switch (left.column()) {
+            case 0: return li.fileName().compare(ri.fileName(), Qt::CaseInsensitive) < 0;
+            case 1: if (li.size() != ri.size()) return li.size() < ri.size(); break;
+            case 3: return li.lastModified() < ri.lastModified();
+            default: break;
+            }
+        }
+        return QSortFilterProxyModel::lessThan(left, right);
+    }
+
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override {
         auto* fsModel = qobject_cast<QFileSystemModel*>(sourceModel());
         if (!fsModel) return true;

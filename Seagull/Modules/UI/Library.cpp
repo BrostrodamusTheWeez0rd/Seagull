@@ -78,6 +78,9 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     fileTable->setModel(tableFilter);
     fileTable->setContextMenuPolicy(Qt::CustomContextMenu);
     fileTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    // Click a column header to sort by it (Name/Size/Type/Date), via lessThan.
+    fileTable->setSortingEnabled(true);
+    fileTable->sortByColumn(0, Qt::AscendingOrder);
 
     // --- File details panel (cover/thumbnail + metadata), right of the file table ---
     detailsPanel = new QWidget();
