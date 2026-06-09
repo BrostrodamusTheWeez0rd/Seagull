@@ -242,6 +242,15 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
         emit metadataReady(title, uploader, duration, viewCount, uploadDate, SgFormat::pickThumbnail(obj));
 
+        // Feed the player's quality menu / thumbnail / info / live badge from this
+        // same job, so a play-by-URL with no prefetched CDN (e.g. a Search result)
+        // gets everything from one resolve instead of a separate probe contending
+        // for this worker. (Unconnected for the Queue workers — harmless there.)
+        emit thumbnailResolved(SgFormat::pickThumbnail(obj));
+        emit availableQualitiesFound(SgFormat::buildQualityOptions(obj));
+        emit liveStatusKnown(obj["is_live"].toBool());
+        emit videoInfoReady(title, uploader, viewCount, uploadDate, obj["description"].toString());
+
         // Resolve a playable stream. YouTube gets a container-matched video+audio
         // pair (VLC input-slave merge); every other site gets a single muxed
         // stream. Cap to the requested height (or the default Stream Quality

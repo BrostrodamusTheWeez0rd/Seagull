@@ -42,6 +42,10 @@ public:
     // preview up (so it shows the now-playing video until a new link is pasted).
     void clearUrlForPlayback();
 
+    // Entry point for other tabs (e.g. the Search cards) to add a URL + title to
+    // the queue table, reusing the queue's existing add flow.
+    void addUrlToQueue(const QString& url, const QString& title);
+
 signals:
     // EMITS: Raw URL, CDN Video URL, CDN Audio URL, and Title
     void playMediaRequested(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title);

@@ -158,9 +158,7 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
 }
 
 void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
-    emit probeQualitiesRequested(rawUrl.toString());
-
-    // New media — clear the old poster; the probe will resolve a fresh thumbnail.
+    // New media — clear the old poster; the probe/resolve brings a fresh thumbnail.
     m_posterPixmap = QPixmap();
     hidePosterOverlay();
 
@@ -168,6 +166,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
         playerControls->resetUiState();
         playerControls->setCurrentFormat("");
     }
+    lastRequestedFormatId.clear(); // new video — honour the default quality setting
 
     m_isStreaming = true;   // online stream — a stale cached URL can be refetched
     m_streamRetried = false;
@@ -198,7 +197,16 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     currentVideoTitle = title;
 
     if (cdnVideoUrl.isValid() && !cdnVideoUrl.isEmpty()) {
+        // CDN already resolved (Queue prefetch): probe only fills the quality menu /
+        // thumbnail / info, and we start the provided stream straight away.
+        emit probeQualitiesRequested(rawUrl.toString());
         onStreamUrlReady(cdnVideoUrl, cdnAudioUrl);
+    }
+    else {
+        // No prefetched CDN (e.g. a Search result): resolve + start the stream. The
+        // metadata job also emits the quality menu / thumbnail / info, so we skip the
+        // separate probe (it would contend with this resolve on the same worker).
+        emit streamUrlRequested(rawUrl.toString(), lastRequestedFormatId);
     }
     showOSD();
 }

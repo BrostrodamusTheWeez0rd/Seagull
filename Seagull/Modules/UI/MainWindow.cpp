@@ -8,6 +8,9 @@
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QScrollArea>
+#include <QTabBar>
+#include <QLabel>
+#include <QMovie>
 #include <QFrame>
 #include <QSettings>
 #include <QCoreApplication>
@@ -32,6 +35,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     mainSplitter->setOpaqueResize(true); // live resize — follow the drag, don't wait for release
 
     tabs = new QTabWidget(this);
+    tabs->setMovable(true); // let the user drag tabs into any order
     // Ignored vertical policy gives the tabs pane a zero minimum (it still expands
     // to fill when it's the only pane), so the splitter and the reveal-drag follow
     // the mouse continuously instead of snapping to the tab content's minimum.
@@ -73,7 +77,35 @@ void MainWindow::addTab(QWidget* tab, const QString& label) {
     scroll->viewport()->setAutoFillBackground(false); // keep the page's themed background
     scroll->setWidget(tab);
     tabs->addTab(scroll, label);
+    m_tabPages.insert(tab, scroll); // remember the wrapper so we can find the tab later
     installFilterRecursive(scroll, this);
+}
+
+void MainWindow::setTabBusy(QWidget* tab, bool busy) {
+    QWidget* page = m_tabPages.value(tab, nullptr);
+    if (!page) return;
+    const int idx = tabs->indexOf(page);
+    if (idx < 0) return;
+
+    if (busy) {
+        if (m_busyTab == tab) return; // already spinning
+        auto* spinner = new QLabel();
+        auto* movie = new QMovie(":/Assets/SeagullAnim.gif", QByteArray(), spinner);
+        movie->jumpToFrame(0);
+        const QSize f = movie->currentPixmap().size();
+        const int h = 16; // small enough to sit inside the tab header
+        const int w = f.height() > 0 ? f.width() * h / f.height() : h;
+        movie->setScaledSize(QSize(w, h));
+        spinner->setMovie(movie);
+        movie->start();
+        tabs->tabBar()->setTabButton(idx, QTabBar::RightSide, spinner);
+        m_busyTab = tab;
+    }
+    else {
+        // Passing nullptr removes and deletes the spinner widget (and its movie).
+        tabs->tabBar()->setTabButton(idx, QTabBar::RightSide, nullptr);
+        if (m_busyTab == tab) m_busyTab = nullptr;
+    }
 }
 
 void MainWindow::setVideoPlayer(VideoPlayer* player) {

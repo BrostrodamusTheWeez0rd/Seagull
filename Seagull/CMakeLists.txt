@@ -33,14 +33,21 @@ add_executable(Seagull
     Modules/UI/Theme.cpp
     Modules/UI/Theme.h
     Modules/UI/Search.h
+    Modules/UI/Search.cpp
     Modules/UI/Settings.h
     Modules/UI/Settings.cpp
     Modules/UI/Widgets/PlayerControls.cpp
     Modules/UI/Widgets/PlayerControls.h
     Modules/UI/Widgets/PlayerTitleBar.cpp
     Modules/UI/Widgets/PlayerTitleBar.h
+    Modules/UI/Widgets/VideoCard.cpp
+    Modules/UI/Widgets/VideoCard.h
+    Modules/UI/Widgets/FlowLayout.cpp
+    Modules/UI/Widgets/FlowLayout.h
     Modules/Backend/SgYtDlp.h
     Modules/Backend/SgYtDlp.cpp
+    Modules/Backend/SgSearch.h
+    Modules/Backend/SgSearch.cpp
     Modules/Backend/SgFormat.h
     Modules/Backend/SgFormat.cpp
     Modules/Backend/SgOptions.h

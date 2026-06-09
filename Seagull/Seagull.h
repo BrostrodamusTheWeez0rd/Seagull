@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QThread>
+#include <QStringList>
 #include "Modules/UI/MainWindow.h"
 #include "Modules/UI/VideoPlayer.h"
 #include "Modules/UI/Queue.h"
@@ -10,6 +11,7 @@
 #include "Modules/UI/Search.h"
 #include "Modules/UI/Settings.h"
 #include "Modules/Backend/SgYtDlp.h"
+#include "Modules/Backend/SgSearch.h"
 #include "Modules/Backend/SgUpdater.h"
 
 class Seagull : public QObject {
@@ -21,7 +23,11 @@ public:
     void run();
 
 private:
-    enum class ActiveSource { None, Library, Queue };
+    enum class ActiveSource { None, Library, Queue, Search };
+
+    // Sequential downloader for ad-hoc downloads (e.g. Search cards). Files land in
+    // the library; the Library tab shows a spinner while the queue drains.
+    void pumpDownloads();
 
     MainWindow* mainWindow;
     VideoPlayer* videoPlayer;  // the playback feature, hosted by the shell window
@@ -36,6 +42,11 @@ private:
     SgYtDlp* resolverWorker;
     SgYtDlp* prefetcherWorker;
     SgYtDlp* playerWorker;     // dedicated to the player's probe/stream-url traffic
+    SgYtDlp* downloadWorker;   // dedicated to ad-hoc (Search card) downloads
+    SgSearch* searchWorker;    // backend for the Search tab (discovery)
+
+    QStringList m_downloadQueue; // pending ad-hoc download URLs (FIFO)
+    bool        m_downloading = false;
 
     // The tool updater does slow, blocking work (network fetches, hashing, unzip),
     // so it gets its own thread to keep startup and the UI snappy.

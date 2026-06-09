@@ -17,7 +17,6 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     resolverWorker = new SgYtDlp(this);
     prefetcherWorker = new SgYtDlp(this);
     playerWorker = new SgYtDlp(this);
-    downloadWorker = new SgYtDlp(this);
     searchWorker = new SgSearch(this);
 
     // The tab modules.
@@ -52,30 +51,18 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
         });
 
-    // Search card "Queue" adds to the Queue tab; "Download" goes to the dedicated
-    // download worker's FIFO (files land in the library).
+    // Search card "Queue" / "Download" reuse the Queue tab's existing flow.
     connect(searchModule, &Search::enqueueRequested, queueModule,
         [this](const QUrl& url, const QString& title) {
             queueModule->addUrlToQueue(url.toString(), title);
         });
-    connect(searchModule, &Search::downloadRequested, this,
+    connect(searchModule, &Search::downloadRequested, queueModule,
         [this](const QUrl& url, const QString& /*title*/) {
-            m_downloadQueue.append(url.toString());
-            pumpDownloads();
+            queueModule->downloadUrl(url.toString());
         });
 
-    // Each finished ad-hoc download advances the FIFO; the Library spinner stays up
-    // until the queue drains.
-    connect(downloadWorker, &SgYtDlp::finished, this, [this](bool /*ok*/) {
-        if (!m_downloadQueue.isEmpty()) m_downloadQueue.removeFirst();
-        m_downloading = false;
-        if (!m_downloadQueue.isEmpty()) pumpDownloads();
-        else mainWindow->setTabBusy(libraryModule, false);
-        });
-
-    // Surface the search/download workers' logs in the same dev console as the rest.
+    // Surface the search worker's logs in the same dev console as the rest.
     connect(searchWorker, &SgSearch::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
-    connect(downloadWorker, &SgYtDlp::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
 
     // Once a queued/streamed video starts, clear the URL bar (the metadata preview
     // stays up, showing the now-playing video). Library playback leaves it alone.
@@ -152,13 +139,6 @@ Seagull::~Seagull() {
         updaterThread->wait();
     }
     delete mainWindow;
-}
-
-void Seagull::pumpDownloads() {
-    if (m_downloading || m_downloadQueue.isEmpty()) return;
-    m_downloading = true;
-    mainWindow->setTabBusy(libraryModule, true); // spin the Library tab while downloading
-    downloadWorker->download(m_downloadQueue.first());
 }
 
 void Seagull::run() {

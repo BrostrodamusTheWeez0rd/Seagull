@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QByteArray>
+#include <QHash>
 
 class QSplitter;
 class QTabWidget;
@@ -23,6 +24,10 @@ public:
     void addTab(QWidget* tab, const QString& label);
     void setVideoPlayer(VideoPlayer* player); // host the player in the splitter
 
+    // Show/hide an animated spinner on a tab's header (e.g. Library while a
+    // download runs). Identified by the page widget so it survives tab reordering.
+    void setTabBusy(QWidget* tab, bool busy);
+
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -40,6 +45,8 @@ private:
 
     QSplitter* mainSplitter;
     QTabWidget* tabs;
+    QHash<QWidget*, QWidget*> m_tabPages; // inner page widget -> its QScrollArea wrapper
+    QWidget* m_busyTab = nullptr;         // page currently showing the spinner, if any
     VideoPlayer* videoPlayer = nullptr; // hosted; owned by the widget tree
     bool m_wasMaximized = false;        // window state before going fullscreen
     double m_videoSplitRatio = 0.5;     // video fraction of the split; default 50/50

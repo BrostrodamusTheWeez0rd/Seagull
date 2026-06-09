@@ -503,6 +503,19 @@ void Queue::onAddToQueueClicked() {
     prefetchNextInQueue();
 }
 
+void Queue::addUrlToQueue(const QString& url, const QString& title) {
+    if (url.isEmpty()) return;
+    int row = queueTable->rowCount();
+    queueTable->insertRow(row);
+    auto* item = new QTableWidgetItem(title.isEmpty() ? url : title);
+    item->setData(Qt::UserRole, url);
+    queueTable->setItem(row, 0, item);
+    queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
+    queueTable->setItem(row, 2, new QTableWidgetItem("0%"));
+    updateQueueButtonVisibility();
+    prefetchNextInQueue();
+}
+
 void Queue::onProcessQueueClicked() {
     if (queueTable->rowCount() == 0) return;
     isProcessingQueue = true;
