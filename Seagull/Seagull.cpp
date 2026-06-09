@@ -6,8 +6,10 @@
 #include <QTimer>
 
 Seagull::Seagull(QObject* parent) : QObject(parent) {
-    // The window everything hangs off of.
+    // The window everything hangs off of — a shell that hosts the video player.
     mainWindow = new MainWindow();
+    videoPlayer = new VideoPlayer();
+    mainWindow->setVideoPlayer(videoPlayer);
 
     // Backend workers. Each one is a yt-dlp wrapper with a single job, so their
     // long-running processes never step on each other.
@@ -29,25 +31,25 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     // When a module wants something played, it tells the window. We remember which
     // source asked, so "play next" later knows whether to walk the library or the queue.
-    connect(libraryModule, &Library::playMediaRequested, mainWindow, [this](const QUrl& url) {
+    connect(libraryModule, &Library::playMediaRequested, videoPlayer, [this](const QUrl& url) {
         activeSource = ActiveSource::Library;
-        mainWindow->playLocalFile(url);
+        videoPlayer->playLocalFile(url);
         });
 
-    connect(queueModule, &Queue::playMediaRequested, mainWindow,
+    connect(queueModule, &Queue::playMediaRequested, videoPlayer,
         [this](const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
             activeSource = ActiveSource::Queue;
-            mainWindow->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
+            videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
         });
 
     // A finished video rolls into the next one from whichever source is active.
-    connect(mainWindow, &MainWindow::mediaEnded, this, [this]() {
+    connect(videoPlayer, &VideoPlayer::mediaEnded, this, [this]() {
         if (activeSource == ActiveSource::Library)        libraryModule->playNextFile();
         else if (activeSource == ActiveSource::Queue) queueModule->playNextQueuedItem();
         });
 
     // The skip buttons (single-click = nudge, double-click = jump tracks) land here.
-    connect(mainWindow, &MainWindow::skipRequested, this, [this](int delta) {
+    connect(videoPlayer, &VideoPlayer::skipRequested, this, [this](int delta) {
         if (activeSource == ActiveSource::Library) {
             if (delta > 0) libraryModule->playNextFile();
             else           libraryModule->playPrevFile();
@@ -59,16 +61,16 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         });
 
     // Player asks the backend to resolve qualities and stream URLs on demand.
-    connect(mainWindow, &MainWindow::probeQualitiesRequested, playerWorker, &SgYtDlp::probeAvailableQualities);
+    connect(videoPlayer, &VideoPlayer::probeQualitiesRequested, playerWorker, &SgYtDlp::probeAvailableQualities);
 
-    connect(mainWindow, &MainWindow::streamUrlRequested, playerWorker, [this](const QString& url, const QString& formatId) {
+    connect(videoPlayer, &VideoPlayer::streamUrlRequested, playerWorker, [this](const QString& url, const QString& formatId) {
         playerWorker->fetchMetadataAndStreamUrl(url, formatId);
         });
 
     // Results come back on queued connections so they always land on the UI thread.
-    connect(playerWorker, &SgYtDlp::availableQualitiesFound, mainWindow, &MainWindow::handleAvailableQualities, Qt::QueuedConnection);
-    connect(playerWorker, &SgYtDlp::thumbnailResolved, mainWindow, &MainWindow::onThumbnailResolved, Qt::QueuedConnection);
-    connect(playerWorker, &SgYtDlp::streamUrlReady, mainWindow, &MainWindow::onStreamUrlReady, Qt::QueuedConnection);
+    connect(playerWorker, &SgYtDlp::availableQualitiesFound, videoPlayer, &VideoPlayer::handleAvailableQualities, Qt::QueuedConnection);
+    connect(playerWorker, &SgYtDlp::thumbnailResolved, videoPlayer, &VideoPlayer::onThumbnailResolved, Qt::QueuedConnection);
+    connect(playerWorker, &SgYtDlp::streamUrlReady, videoPlayer, &VideoPlayer::onStreamUrlReady, Qt::QueuedConnection);
 
     // --- Tool auto-update, off the main thread ---
     // Checking and downloading yt-dlp / Deno / ffmpeg means blocking network calls,

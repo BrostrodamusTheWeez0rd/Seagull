@@ -18,14 +18,15 @@
 #include <QSettings>
 #include <QColor>
 #include <QList>
-#include <vlcpp/vlc.hpp>
 #include "../../Backend/SgYtDlp.h"
+
+class PlaybackEngine;
 
 class PlayerControls : public QWidget {
     Q_OBJECT
 
 public:
-    explicit PlayerControls(VLC::MediaPlayer* player, QWidget* parent = nullptr);
+    explicit PlayerControls(PlaybackEngine* engine, QWidget* parent = nullptr);
     ~PlayerControls();
 
     void resetUiState();
@@ -80,7 +81,7 @@ private:
     void   retintIcon(QPushButton* btn, const QColor& col);             // recolour current glyph
     void   refreshIconTints();
 
-    VLC::MediaPlayer* m_player;
+    PlaybackEngine* m_engine;
     QTimer* uiPollTimer;
     QSettings m_settings;
     QString m_currentFormatId; // Active track state

@@ -1,4 +1,5 @@
 #include "PlayerControls.h"
+#include "../../Backend/PlaybackEngine.h"
 #include <QFrame>
 #include <QStyle>
 #include <QIcon>
@@ -49,8 +50,8 @@ QString volumeIconPath(bool muted) {
 }
 }
 
-PlayerControls::PlayerControls(VLC::MediaPlayer* player, QWidget* parent)
-    : QWidget(parent), m_player(player), m_duration(0), isUserSeeking(false),
+PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
+    : QWidget(parent), m_engine(engine), m_duration(0), isUserSeeking(false),
     m_settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat) {
 
     auto* windowLayout = new QVBoxLayout(this);
@@ -248,15 +249,15 @@ void PlayerControls::setStreamingMode(bool isStream) {
 }
 
 void PlayerControls::onPrevSingleClick() {
-    if (!m_player) return;
-    qint64 newTime = qMax(0LL, m_player->time() - 5000LL);
-    m_player->setTime(newTime);
+    if (!m_engine) return;
+    qint64 newTime = qMax(0LL, m_engine->time() - 5000LL);
+    m_engine->setTime(newTime);
 }
 
 void PlayerControls::onNextSingleClick() {
-    if (!m_player) return;
-    qint64 newTime = qMin(m_player->length(), m_player->time() + 5000LL);
-    m_player->setTime(newTime);
+    if (!m_engine) return;
+    qint64 newTime = qMin(m_engine->length(), m_engine->time() + 5000LL);
+    m_engine->setTime(newTime);
 }
 
 void PlayerControls::applyAudioState() {
@@ -272,9 +273,9 @@ void PlayerControls::applyAudioState() {
     int savedVolume = m_settings.value("Audio/Volume", 100).toInt();
     bool savedMute = m_settings.value("Audio/Muted", false).toBool();
 
-    if (m_player) {
-        m_player->setVolume(savedVolume);
-        m_player->setMute(savedMute);
+    if (m_engine) {
+        m_engine->setVolume(savedVolume);
+        m_engine->setMute(savedMute);
     }
 
     setVolumeUi(savedVolume);
@@ -452,7 +453,7 @@ void PlayerControls::hideQualityFrame() {
 }
 
 void PlayerControls::setVolume(int volume) {
-    if (m_player) m_player->setVolume(volume);
+    if (m_engine) m_engine->setVolume(volume);
     setVolumeUi(volume);
     m_settings.setValue("Audio/Volume", volume);
 }
@@ -460,25 +461,25 @@ void PlayerControls::setVolume(int volume) {
 void PlayerControls::togglePlayback() {
     // After EOF the play button is a replay button — restart from the top.
     if (m_endedMode) { emit replayRequested(); return; }
-    if (m_player->isPlaying()) m_player->pause();
-    else m_player->play();
+    if (m_engine->isPlaying()) m_engine->pause();
+    else m_engine->play();
 }
 
 void PlayerControls::toggleMute() {
     bool isCurrentlyMuted = m_settings.value("Audio/Muted", false).toBool();
     bool willBeMuted = !isCurrentlyMuted;
 
-    if (m_player) m_player->setMute(willBeMuted);
+    if (m_engine) m_engine->setMute(willBeMuted);
 
     muteBtn->setIcon(makeIcon(volumeIconPath(willBeMuted), muteBtn));
     m_settings.setValue("Audio/Muted", willBeMuted);
 }
 
 void PlayerControls::pollVlcState() {
-    if (!m_player) return;
+    if (!m_engine) return;
 
-    libvlc_state_t st = m_player->state();
-    bool isPlaying = (st == libvlc_Playing);
+    const PlaybackEngine::State st = m_engine->state();
+    const bool isPlaying = (st == PlaybackEngine::State::Playing);
 
     // Once the stream has ended, freeze the seeker/timestamp where they are and
     // turn the play button into a replay button. (onEndReached sets m_endedMode.)
@@ -495,15 +496,15 @@ void PlayerControls::pollVlcState() {
     // time()/length() are only trustworthy while actually playing or paused.
     // During Opening/Buffering/Ended they read 0 or stale, which is what makes
     // the seeker and timestamp drift out of sync with the real stream position.
-    if (st != libvlc_Playing && st != libvlc_Paused) return;
+    if (st != PlaybackEngine::State::Playing && st != PlaybackEngine::State::Paused) return;
 
-    qint64 length = m_player->length();
+    qint64 length = m_engine->length();
     if (length > 0 && (m_duration <= 0 || length != m_duration)) {
         m_duration = length;
         positionSlider->setRange(0, static_cast<int>(m_duration));
     }
 
-    qint64 time = m_player->time();
+    qint64 time = m_engine->time();
     if (time >= 0 && !isUserSeeking) {
         positionSlider->blockSignals(true);
         positionSlider->setValue(static_cast<int>(time));
@@ -514,8 +515,8 @@ void PlayerControls::pollVlcState() {
 }
 
 void PlayerControls::seek(int position) {
-    if (m_player->length() > 0)
-        m_player->setTime(position);
+    if (m_engine->length() > 0)
+        m_engine->setTime(position);
 }
 
 QString PlayerControls::formatTime(qint64 ms) {

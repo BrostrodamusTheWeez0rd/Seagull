@@ -24,6 +24,8 @@ add_executable(Seagull
     Seagull.h
     Modules/UI/MainWindow.cpp
     Modules/UI/MainWindow.h
+    Modules/UI/VideoPlayer.cpp
+    Modules/UI/VideoPlayer.h
     Modules/UI/Library.cpp
     Modules/UI/Library.h
     Modules/UI/Queue.cpp
@@ -39,6 +41,8 @@ add_executable(Seagull
     Modules/UI/Widgets/PlayerTitleBar.h
     Modules/Backend/SgYtDlp.h
     Modules/Backend/SgYtDlp.cpp
+    Modules/Backend/PlaybackEngine.h
+    Modules/Backend/PlaybackEngine.cpp
     resources.qrc
 )
 

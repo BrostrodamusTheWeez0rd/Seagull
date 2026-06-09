@@ -2,39 +2,26 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include <QTabWidget>
-#include <QSplitter>
-#include <QWidget>
-#include <QFrame>
-#include <QUrl>
-#include <QEvent>
-#include <QTimer>
-#include <QPoint>
-#include <QKeyEvent>
 #include <QByteArray>
-#include <QLabel>
-#include <QPixmap>
-#include <QNetworkAccessManager>
-#include <memory>
-#include <vlcpp/vlc.hpp>
-#include "Widgets/PlayerControls.h"
-#include "Widgets/PlayerTitleBar.h"
 
-struct StreamOption;
+class QSplitter;
+class QTabWidget;
+class QKeyEvent;
+class QResizeEvent;
+class QMoveEvent;
+class VideoPlayer;
 
+// Pure application shell: owns the window chrome, the tab area, and the splitter
+// the video player and tabs live in. It holds no playback logic — it hosts the
+// VideoPlayer and handles only the window-level concerns the player can't do for
+// itself: fullscreen, and repositioning the top-level overlays on window move/resize.
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
     void addTab(QWidget* tab, const QString& label);
-
-signals:
-    void mediaEnded();
-    void skipRequested(int delta);
-    void probeQualitiesRequested(const QString& url);
-    void streamUrlRequested(const QString& url, const QString& formatId);
-    void streamFormatChanged(const QString& formatId);
+    void setVideoPlayer(VideoPlayer* player); // host the player in the splitter
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -43,63 +30,19 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
     void moveEvent(QMoveEvent* event) override;
 
-public slots:
-    void playLocalFile(const QUrl& url);
-    void playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl = QUrl(), const QUrl& cdnAudioUrl = QUrl(), const QString& title = QString());
-    void showOSD();
-    void hideOSD();
-
-    void handleAvailableQualities(const QList<StreamOption>& options);
-    void onThumbnailResolved(const QString& thumbUrl);
-    void onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl);
-
-private slots:
-    void checkMouseMovement();
-    void updateOverlayPosition();
-    void onSingleClickTimeout();
-    void scheduleUpdateOverlay();
-    void closePlayer();
-    void handleStopRequest();
-    void onMediaEndReached();
-    void handleReplay();
-    void changeStreamQuality(const QString& formatId);
-
 private:
     void installFilterRecursive(QObject* obj, QObject* filter);
-    void showPosterOverlay();
-    void hidePosterOverlay();
-    void onPlaybackError();
+    void enterFullScreen();
+    void exitFullScreen();
+    void toggleFullScreen();
+    void applyStoredSplit(); // size the splitter to the remembered video/tabs ratio
+    void captureSplit();     // remember the current ratio (persisted to config.ini)
 
     QSplitter* mainSplitter;
     QTabWidget* tabs;
-    QWidget* videoContainer;
-
-    std::shared_ptr<VLC::Instance> vlcInstance;
-    std::shared_ptr<VLC::MediaPlayer> vlcPlayer;
-    QFrame* videoWidget;
-
-    PlayerControls* playerControls;
-    PlayerTitleBar* titleBar;
-
-    // Poster shown over the video when paused / at end-of-stream. It's a separate
-    // top-level window (like the other overlays) because the VLC HWND draws over
-    // child widgets; click-through so play/pause on the video still works.
-    QLabel* posterOverlay;
-    QPixmap m_posterPixmap;
-    QNetworkAccessManager* m_thumbNam;
-    std::shared_ptr<VLC::Media> m_lastMedia; // for replay-from-start at EOF
-    QTimer* osdTimer;
-    QTimer* mouseTrackerTimer;
-    QTimer* clickTimer;
-    QTimer* updateOverlayTimer;
-    QPoint lastMousePos;
-
-    QUrl currentBaseUrl;
-    QString currentVideoTitle;
-    QString lastRequestedFormatId; // <--- This was the missing piece!
-
-    bool isClosing;
-    qint64 savedStreamTimestamp = -1;
+    VideoPlayer* videoPlayer = nullptr; // hosted; owned by the widget tree
+    bool m_wasMaximized = false;        // window state before going fullscreen
+    double m_videoSplitRatio = 0.5;     // video fraction of the split; default 50/50
 };
 
-#endif
+#endif // MAINWINDOW_H

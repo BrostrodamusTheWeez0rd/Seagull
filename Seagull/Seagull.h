@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QThread>
 #include "Modules/UI/MainWindow.h"
+#include "Modules/UI/VideoPlayer.h"
 #include "Modules/UI/Queue.h"
 #include "Modules/UI/Library.h"
 #include "Modules/UI/Search.h"
@@ -22,6 +23,7 @@ private:
     enum class ActiveSource { None, Library, Queue };
 
     MainWindow* mainWindow;
+    VideoPlayer* videoPlayer;  // the playback feature, hosted by the shell window
     Queue* queueModule;
     Library* libraryModule;
     Search* searchModule;
