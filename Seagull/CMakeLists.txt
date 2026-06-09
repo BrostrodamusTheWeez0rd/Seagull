@@ -41,6 +41,12 @@ add_executable(Seagull
     Modules/UI/Widgets/PlayerTitleBar.h
     Modules/Backend/SgYtDlp.h
     Modules/Backend/SgYtDlp.cpp
+    Modules/Backend/SgFormat.h
+    Modules/Backend/SgFormat.cpp
+    Modules/Backend/SgOptions.h
+    Modules/Backend/SgOptions.cpp
+    Modules/Backend/SgUpdater.h
+    Modules/Backend/SgUpdater.cpp
     Modules/Backend/PlaybackEngine.h
     Modules/Backend/PlaybackEngine.cpp
     resources.qrc

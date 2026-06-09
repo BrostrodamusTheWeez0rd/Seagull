@@ -10,6 +10,7 @@
 #include "Modules/UI/Search.h"
 #include "Modules/UI/Settings.h"
 #include "Modules/Backend/SgYtDlp.h"
+#include "Modules/Backend/SgUpdater.h"
 
 class Seagull : public QObject {
     Q_OBJECT
@@ -38,7 +39,7 @@ private:
 
     // The tool updater does slow, blocking work (network fetches, hashing, unzip),
     // so it gets its own thread to keep startup and the UI snappy.
-    SgYtDlp* updaterWorker;
+    SgUpdater* updaterWorker;
     QThread* updaterThread;
 };
 

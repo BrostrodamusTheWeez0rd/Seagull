@@ -79,11 +79,11 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // worker has no parent (a requirement for moveToThread); its child QProcess and
     // network manager move across with it automatically.
     updaterThread = new QThread(this);
-    updaterWorker = new SgYtDlp(nullptr);
+    updaterWorker = new SgUpdater(nullptr);
     updaterWorker->moveToThread(updaterThread);
 
     // Status lines still show up in the Queue log, hopping back to the UI thread.
-    connect(updaterWorker, &SgYtDlp::ytDlpUpdateStatus, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+    connect(updaterWorker, &SgUpdater::updateStatus, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
 
     // Tear the worker down with its thread.
     connect(updaterThread, &QThread::finished, updaterWorker, &QObject::deleteLater);
@@ -93,7 +93,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Give the UI a few seconds to settle, then kick the update check off on the
     // worker thread (QueuedConnection makes sure it runs there, not here).
     QTimer::singleShot(3000, this, [this]() {
-        QMetaObject::invokeMethod(updaterWorker, &SgYtDlp::checkForYtDlpUpdate, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(updaterWorker, &SgUpdater::checkForUpdates, Qt::QueuedConnection);
         });
 }
 
