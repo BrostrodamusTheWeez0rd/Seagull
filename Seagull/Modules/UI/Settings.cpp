@@ -7,6 +7,19 @@
 #include <QCoreApplication>
 #include <QGroupBox>
 #include <QPushButton>
+#include <QTabWidget>
+#include <QTextBrowser>
+#include <QFile>
+#include <QRegularExpression>
+
+namespace {
+// Load a bundled resource doc as text ("" if missing).
+QString readDoc(const QString& resourcePath) {
+    QFile f(resourcePath);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return QString();
+    return QString::fromUtf8(f.readAll());
+}
+}
 
 Settings::Settings(QWidget* parent) : QWidget(parent) {
     // Force QSettings to create a "config.ini" right next to your .exe
@@ -31,6 +44,7 @@ void Settings::setupUI() {
     sidebar->setMaximumWidth(200);
     sidebar->addItem("Display");
     sidebar->addItem("Download & Streaming");
+    sidebar->addItem("Info");
     // Simple styling for a flat, modern look
     sidebar->setStyleSheet(
         "QListWidget { border: none; background-color: transparent; outline: none; }"
@@ -112,6 +126,40 @@ void Settings::setupUI() {
     dlLayout->addRow("Download Directory:", dlFolderLayout);
 
     stackedWidget->addWidget(dlWidget);
+
+    // === Info Tab: bundled docs in a tabbed reader ===
+    auto* infoWidget = new QWidget();
+    auto* infoLayout = new QVBoxLayout(infoWidget);
+    infoLayout->setContentsMargins(20, 20, 20, 20);
+
+    auto* docTabs = new QTabWidget();
+
+    // Read Me — drop the Screenshots section (its images live on disk/GitHub, not
+    // in resources, so they'd render as broken icons in-app).
+    QString readme = readDoc(":/docs/README.md");
+    readme.remove(QRegularExpression("\\n## Screenshots[\\s\\S]*?(?=\\n## )"));
+    auto* readmeView = new QTextBrowser();
+    readmeView->setOpenExternalLinks(true);
+    readmeView->setMarkdown(readme);
+    docTabs->addTab(readmeView, "Read Me");
+
+    auto* disclaimerView = new QTextBrowser();
+    disclaimerView->setOpenExternalLinks(true);
+    disclaimerView->setMarkdown(readDoc(":/docs/DISCLAIMER.md"));
+    docTabs->addTab(disclaimerView, "Disclaimer");
+
+    auto* licenseView = new QTextBrowser();
+    licenseView->setOpenExternalLinks(true);
+    licenseView->setPlainText(readDoc(":/docs/LICENSE.txt")); // plain text, not markdown
+    docTabs->addTab(licenseView, "License");
+
+    auto* noticesView = new QTextBrowser();
+    noticesView->setOpenExternalLinks(true);
+    noticesView->setMarkdown(readDoc(":/docs/THIRD_PARTY_NOTICES.md"));
+    docTabs->addTab(noticesView, "Notices");
+
+    infoLayout->addWidget(docTabs);
+    stackedWidget->addWidget(infoWidget);
 
     // --- Assemble and Connect ---
     mainLayout->addWidget(sidebar);
