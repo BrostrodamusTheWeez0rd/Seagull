@@ -231,6 +231,15 @@ void PlayerControls::setEndedMode(bool ended) {
     m_endedMode = ended;
 }
 
+void PlayerControls::setLiveMode(bool isLive) {
+    if (m_isLive == isLive) return;
+    m_isLive = isLive;
+    // Live still seeks within VLC's DVR window (length()/time() track it), so the
+    // slider stays fully live — the only difference is the timestamp shows a LIVE
+    // badge in place of a fixed total duration. pollVlcState renders it each tick.
+    if (m_isLive) timeLabel->setText(QStringLiteral("● LIVE"));
+}
+
 void PlayerControls::resetUiState() {
     isUserSeeking = false;
     m_duration = -1;
@@ -511,7 +520,12 @@ void PlayerControls::pollVlcState() {
         positionSlider->blockSignals(false);
     }
 
-    timeLabel->setText(formatTime(time) + " / " + formatTime(m_duration));
+    // On a live stream there's no fixed end — show the DVR position against a LIVE
+    // badge instead of a total. The slider still tracks/seeks within the window.
+    if (m_isLive)
+        timeLabel->setText(formatTime(time) + QStringLiteral(" / ● LIVE"));
+    else
+        timeLabel->setText(formatTime(time) + " / " + formatTime(m_duration));
 }
 
 void PlayerControls::seek(int position) {

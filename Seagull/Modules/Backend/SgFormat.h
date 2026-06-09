@@ -22,14 +22,13 @@ namespace SgFormat {
     // Height of the format with the given id, or -1 if not found ("no cap").
     int heightForFormatId(const QJsonArray& formats, const QString& id);
 
-    // Container-matched video+audio pair (mp4+m4a, else webm+opus/vorbis) so VLC's
-    // :input-slave merge stays in sync. Caps to targetH (<=0 = no cap). Returns
-    // false if no split pair is available.
-    bool chooseMatchedAvPair(const QJsonArray& formats, int targetH,
+    // Site-aware stream resolution. YouTube serves separate adaptive video+audio,
+    // so it gets a container-matched pair (audioUrl set -> caller uses input-slave).
+    // Every other site (PornHub, generic, ...) gets a single already-muxed stream
+    // (audioUrl empty). Caps to targetH (<=0 = no cap). Returns false if nothing
+    // playable was found.
+    bool resolveStream(const QJsonObject& root, int targetH,
         QString& videoUrl, QString& audioUrl);
-
-    // Best already-muxed (progressive) stream URL, or empty.
-    QString bestProgressiveUrl(const QJsonArray& formats);
 
     // "Auto" + one entry per distinct video height, for the quality menu.
     QList<StreamOption> buildQualityOptions(const QJsonObject& root);

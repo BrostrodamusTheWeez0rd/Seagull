@@ -3,9 +3,9 @@
 #include <QJsonArray>
 #include <QStringList>
 
-// Container-matched A/V selection (ported from the Python prototype's
-// _choose_matched_av_pair). Pairing video and audio from the same container
-// family is what keeps VLC's :input-slave merge from desyncing / dropping out.
+// Format-selection helpers. Container-matched A/V pairing (ported from the Python
+// prototype's _choose_matched_av_pair) keeps VLC's :input-slave merge in sync for
+// YouTube; the rest hands VLC a single muxed stream for sites that serve one.
 namespace {
     bool isVideoOnly(const QJsonObject& f) {
         QString vc = f["vcodec"].toString();
@@ -15,7 +15,20 @@ namespace {
     bool isAudioOnly(const QJsonObject& f) {
         QString vc = f["vcodec"].toString();
         QString ac = f["acodec"].toString();
-        return !ac.isEmpty() && ac != "none" && (vc.isEmpty() || vc == "none");
+        const bool noVideo = (vc.isEmpty() || vc == "none");
+        const bool hasAudioCodec = !ac.isEmpty() && ac != "none";
+        // Some extractors (e.g. Chaturbate) leave acodec blank on their audio-only
+        // HLS track, so also treat a no-video format as audio when it advertises an
+        // audio bitrate or names itself "audio".
+        const bool looksAudio = hasAudioCodec
+            || f["abr"].toDouble() > 0
+            || f["format_id"].toString().contains("audio", Qt::CaseInsensitive);
+        return noVideo && looksAudio;
+    }
+    bool isMuxed(const QJsonObject& f) {
+        QString vc = f["vcodec"].toString();
+        QString ac = f["acodec"].toString();
+        return !vc.isEmpty() && vc != "none" && !ac.isEmpty() && ac != "none";
     }
     // Higher is better: height, then fps, then total bitrate.
     bool betterVideo(const QJsonObject& a, const QJsonObject& b) {
@@ -30,6 +43,119 @@ namespace {
         double aa = a["abr"].toDouble(), ba = b["abr"].toDouble();
         if (aa != ba) return aa > ba;
         return a["tbr"].toDouble() > b["tbr"].toDouble();
+    }
+    // Playable URL for a format: the direct url, else the HLS/DASH manifest url
+    // (m3u8/mpd) which VLC can open just as well.
+    QString fmtUrl(const QJsonObject& f) {
+        QString u = f["url"].toString();
+        return u.isEmpty() ? f["manifest_url"].toString() : u;
+    }
+
+    // YouTube-style: best container-matched separate video + audio (no AV1), capped.
+    bool chooseMatchedAvPair(const QJsonArray& formats, int targetH,
+        QString& videoUrl, QString& audioUrl) {
+
+        auto pickFamily = [&](const QStringList& vExts, const QStringList& aExts,
+            const QStringList& aCodecPrefixes, QString& vUrl, QString& aUrl) -> bool {
+
+            QJsonObject bestV; bool haveV = false;
+            for (const auto& it : formats) {
+                QJsonObject f = it.toObject();
+                if (!isVideoOnly(f)) continue;
+                if (!vExts.contains(f["ext"].toString().toLower())) continue;
+                if (f["url"].toString().isEmpty()) continue;
+                int h = f["height"].toInt();
+                if (h <= 0) continue;
+                if (targetH > 0 && h > targetH) continue;
+                if (f["vcodec"].toString().toLower().startsWith("av01")) continue;
+                if (!haveV || betterVideo(f, bestV)) { bestV = f; haveV = true; }
+            }
+            if (!haveV) return false;
+
+            QString vext = bestV["ext"].toString().toLower();
+            QString wantAext = (vext == "mp4" || vext == "m4v") ? "m4a" : vext;
+            QJsonObject bestA;       bool haveA = false;
+            QJsonObject bestASame;   bool haveASame = false;
+            for (const auto& it : formats) {
+                QJsonObject f = it.toObject();
+                if (!isAudioOnly(f)) continue;
+                QString ext = f["ext"].toString().toLower();
+                if (!aExts.contains(ext)) continue;
+                if (f["url"].toString().isEmpty()) continue;
+                QString ac = f["acodec"].toString().toLower();
+                bool okCodec = false;
+                for (const auto& p : aCodecPrefixes) if (ac.startsWith(p)) { okCodec = true; break; }
+                if (!okCodec) continue;
+                if (!haveA || betterAudio(f, bestA)) { bestA = f; haveA = true; }
+                if (ext == wantAext && (!haveASame || betterAudio(f, bestASame))) { bestASame = f; haveASame = true; }
+            }
+            if (!haveA) return false;
+
+            vUrl = bestV["url"].toString();
+            aUrl = (haveASame ? bestASame : bestA)["url"].toString();
+            return true;
+        };
+
+        if (pickFamily({ "mp4","m4v" }, { "m4a","mp4" }, { "mp4a","aac" }, videoUrl, audioUrl)) return true;
+        if (pickFamily({ "webm" }, { "webm" }, { "opus","vorbis" }, videoUrl, audioUrl)) return true;
+        return false;
+    }
+
+    // Best already-muxed (progressive/HLS) stream URL at or below targetH.
+    QString bestMuxedUrl(const QJsonArray& formats, int targetH) {
+        QString url; int best = -1;
+        for (const auto& it : formats) {
+            QJsonObject f = it.toObject();
+            if (!isMuxed(f)) continue;
+            if (fmtUrl(f).isEmpty()) continue;
+            int h = f["height"].toInt();
+            if (targetH > 0 && h > targetH) continue;
+            if (h > best) { best = h; url = fmtUrl(f); }
+        }
+        return url;
+    }
+
+    // Generic separate-stream pairing (any container, no AV1), for non-YouTube
+    // sites that still split video and audio.
+    bool chooseGenericAvPair(const QJsonArray& formats, int targetH,
+        QString& videoUrl, QString& audioUrl) {
+        QJsonObject bestV; bool haveV = false;
+        for (const auto& it : formats) {
+            QJsonObject f = it.toObject();
+            if (!isVideoOnly(f)) continue;
+            if (fmtUrl(f).isEmpty()) continue;
+            int h = f["height"].toInt();
+            if (h <= 0) continue;
+            if (targetH > 0 && h > targetH) continue;
+            if (f["vcodec"].toString().toLower().startsWith("av01")) continue;
+            if (!haveV || betterVideo(f, bestV)) { bestV = f; haveV = true; }
+        }
+        if (!haveV) return false;
+
+        QJsonObject bestA; bool haveA = false;
+        for (const auto& it : formats) {
+            QJsonObject f = it.toObject();
+            if (!isAudioOnly(f)) continue;
+            if (fmtUrl(f).isEmpty()) continue;
+            if (!haveA || betterAudio(f, bestA)) { bestA = f; haveA = true; }
+        }
+        if (!haveA) return false;
+
+        videoUrl = fmtUrl(bestV);
+        audioUrl = fmtUrl(bestA);
+        return true;
+    }
+
+    // Last resort: the highest format that carries any playable URL.
+    QString anyPlayableUrl(const QJsonArray& formats) {
+        QString url; int best = -1;
+        for (const auto& it : formats) {
+            QJsonObject f = it.toObject();
+            if (fmtUrl(f).isEmpty()) continue;
+            int h = f["height"].toInt();
+            if (h > best) { best = h; url = fmtUrl(f); }
+        }
+        return url;
     }
 }
 
@@ -57,69 +183,51 @@ int SgFormat::heightForFormatId(const QJsonArray& formats, const QString& id) {
     return -1; // not found -> treat as "no cap"
 }
 
-bool SgFormat::chooseMatchedAvPair(const QJsonArray& formats, int targetH,
+bool SgFormat::resolveStream(const QJsonObject& root, int targetH,
     QString& videoUrl, QString& audioUrl) {
 
-    auto pickFamily = [&](const QStringList& vExts, const QStringList& aExts,
-        const QStringList& aCodecPrefixes, QString& vUrl, QString& aUrl) -> bool {
+    const QJsonArray formats = root["formats"].toArray();
+    videoUrl.clear();
+    audioUrl.clear();
 
-        // Best video in this family at or below the target height (no AV1).
-        QJsonObject bestV; bool haveV = false;
-        for (const auto& it : formats) {
-            QJsonObject f = it.toObject();
-            if (!isVideoOnly(f)) continue;
-            if (!vExts.contains(f["ext"].toString().toLower())) continue;
-            if (f["url"].toString().isEmpty()) continue;
-            int h = f["height"].toInt();
-            if (h <= 0) continue;
-            if (targetH > 0 && h > targetH) continue;
-            if (f["vcodec"].toString().toLower().startsWith("av01")) continue;
-            if (!haveV || betterVideo(f, bestV)) { bestV = f; haveV = true; }
-        }
-        if (!haveV) return false;
+    const bool isYoutube = root["extractor_key"].toString().toLower().startsWith("youtube")
+        || root["extractor"].toString().toLower().startsWith("youtube");
 
-        // Best audio in this family, preferring the same extension as the video.
-        QString vext = bestV["ext"].toString().toLower();
-        QString wantAext = (vext == "mp4" || vext == "m4v") ? "m4a" : vext;
-        QJsonObject bestA;       bool haveA = false;
-        QJsonObject bestASame;   bool haveASame = false;
-        for (const auto& it : formats) {
-            QJsonObject f = it.toObject();
-            if (!isAudioOnly(f)) continue;
-            QString ext = f["ext"].toString().toLower();
-            if (!aExts.contains(ext)) continue;
-            if (f["url"].toString().isEmpty()) continue;
-            QString ac = f["acodec"].toString().toLower();
-            bool okCodec = false;
-            for (const auto& p : aCodecPrefixes) if (ac.startsWith(p)) { okCodec = true; break; }
-            if (!okCodec) continue;
-            if (!haveA || betterAudio(f, bestA)) { bestA = f; haveA = true; }
-            if (ext == wantAext && (!haveASame || betterAudio(f, bestASame))) { bestASame = f; haveASame = true; }
-        }
-        if (!haveA) return false;
+    const bool isLive = root["is_live"].toBool();
 
-        vUrl = bestV["url"].toString();
-        aUrl = (haveASame ? bestASame : bestA)["url"].toString();
+    // YouTube: container-matched separate video+audio so VLC's input-slave merge
+    // stays in sync. Unchanged behaviour. (audioUrl set -> caller pairs them.)
+    //
+    // Live is the exception: the matched pair forces the :demux=avformat +
+    // :input-slave path, which treats a live DASH input as finite and hits EOF
+    // after the first window (~a minute), ending playback. For live we fall
+    // through to the single muxed/HLS manifest below so VLC's native demuxer
+    // keeps refreshing the live playlist instead.
+    if (isYoutube && !isLive && chooseMatchedAvPair(formats, targetH, videoUrl, audioUrl))
         return true;
-    };
 
-    if (pickFamily({ "mp4","m4v" }, { "m4a","mp4" }, { "mp4a","aac" }, videoUrl, audioUrl)) return true;
-    if (pickFamily({ "webm" }, { "webm" }, { "opus","vorbis" }, videoUrl, audioUrl)) return true;
-    return false;
-}
+    // Everything else (and the rare YouTube fallback): a single muxed stream that
+    // plays directly — most sites serve progressive/HLS.
+    audioUrl.clear();
 
-QString SgFormat::bestProgressiveUrl(const QJsonArray& formats) {
-    QString url; int best = -1;
-    for (const auto& it : formats) {
-        QJsonObject f = it.toObject();
-        QString vc = f["vcodec"].toString();
-        QString ac = f["acodec"].toString();
-        if (vc.isEmpty() || vc == "none" || ac.isEmpty() || ac == "none") continue;
-        if (f["url"].toString().isEmpty()) continue;
-        int h = f["height"].toInt();
-        if (h > best) { best = h; url = f["url"].toString(); }
-    }
-    return url;
+    videoUrl = bestMuxedUrl(formats, targetH);
+    if (!videoUrl.isEmpty()) return true;   // YouTube/Twitch live: muxed variant carries audio
+
+    // yt-dlp's own resolved URL (set when it picked a single format).
+    videoUrl = root["url"].toString();
+    if (!videoUrl.isEmpty()) return true;
+
+    // A non-YouTube site that still splits streams in some other container. Covers
+    // sites like Chaturbate that serve separate video-only + audio-only HLS — the
+    // caller builds a local master playlist from the returned pair (the site's own
+    // master manifest is single-use, so VLC can't reuse it). See PlaybackEngine.
+    if (chooseGenericAvPair(formats, targetH, videoUrl, audioUrl))
+        return true;
+
+    // Last resort: anything with a playable URL.
+    audioUrl.clear();
+    videoUrl = anyPlayableUrl(formats);
+    return !videoUrl.isEmpty();
 }
 
 QList<StreamOption> SgFormat::buildQualityOptions(const QJsonObject& root) {

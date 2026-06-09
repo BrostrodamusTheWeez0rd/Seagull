@@ -13,5 +13,7 @@
         <file>Assets/icons/volume-high.svg</file>
         <file>Assets/icons/volume-off.svg</file>
         <file>Assets/icons/restart.svg</file>
+        <file>Assets/icons/info.svg</file>
+        <file>Assets/icons/share.svg</file>
     </qresource>
 </RCC>

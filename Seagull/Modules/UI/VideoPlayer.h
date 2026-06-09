@@ -41,6 +41,9 @@ public slots:
     void handleAvailableQualities(const QList<StreamOption>& options);
     void onThumbnailResolved(const QString& thumbUrl);
     void onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl);
+    void onVideoInfo(const QString& title, const QString& uploader,
+        const QString& views, const QString& date, const QString& description);
+    void onLiveStatus(bool isLive); // probe reported live/VOD — drives the LIVE seeker
 
 signals:
     void mediaEnded();
@@ -68,7 +71,10 @@ private:
     void showPosterOverlay();
     void hidePosterOverlay();
     void onPlaybackError();
+    void showStreamFailed(); // pin the "stream failed — replay" message + ended mode
     void closePlayer();
+    void showInfoModal();    // pop the playing video's metadata + description
+    void shareLink();        // copy the source URL to the clipboard
 
     PlaybackEngine* engine;
     QFrame* videoWidget;
@@ -87,12 +93,19 @@ private:
     QTimer* mouseTrackerTimer;
     QTimer* clickTimer;
     QTimer* updateOverlayTimer;
+    QTimer* retryTimer;        // bounds the stale-URL refetch so it can't hang forever
     QPoint  lastMousePos;
 
     QUrl    currentBaseUrl;
     QString currentVideoTitle;
     QString lastRequestedFormatId;
     qint64  savedStreamTimestamp = -1;
+
+    // Metadata for the Info modal (filled by the probe's videoInfoReady).
+    QString m_infoTitle, m_infoUploader, m_infoViews, m_infoDate, m_infoDescription;
+
+    bool m_isStreaming = false;   // current media is an online stream (not a local file)
+    bool m_streamRetried = false; // one stale-URL refetch has been spent for this stream
 };
 
 #endif // VIDEOPLAYER_H

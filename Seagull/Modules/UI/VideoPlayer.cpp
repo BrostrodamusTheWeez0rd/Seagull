@@ -11,6 +11,11 @@
 #include <QEvent>
 #include <QResizeEvent>
 #include <QCursor>
+#include <QDialog>
+#include <QTextEdit>
+#include <QStringList>
+#include <QGuiApplication>
+#include <QClipboard>
 #include <QFileInfo>
 #include <QDir>
 #include <QPointer>
@@ -87,6 +92,12 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     clickTimer->setSingleShot(true);
     connect(clickTimer, &QTimer::timeout, this, &VideoPlayer::onSingleClickTimeout);
 
+    // If a stale-URL refetch doesn't come back with a playable stream in time,
+    // give up gracefully instead of leaving "refetching..." up forever.
+    retryTimer = new QTimer(this);
+    retryTimer->setSingleShot(true);
+    connect(retryTimer, &QTimer::timeout, this, &VideoPlayer::showStreamFailed);
+
     lastMousePos = QCursor::pos();
     videoWidget->installEventFilter(this);
 
@@ -95,6 +106,8 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::replayRequested, this, &VideoPlayer::handleReplay);
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() { emit fullscreenToggleRequested(); });
+    connect(titleBar, &PlayerTitleBar::infoRequested, this, &VideoPlayer::showInfoModal);
+    connect(titleBar, &PlayerTitleBar::shareRequested, this, &VideoPlayer::shareLink);
 }
 
 void VideoPlayer::onMediaEndReached() {
@@ -117,6 +130,7 @@ void VideoPlayer::onMediaEndReached() {
 }
 
 void VideoPlayer::playLocalFile(const QUrl& url) {
+    m_isStreaming = false; // local file — playback errors are genuine, no refetch
     emit playbackStarted(); // host shows + sizes the video area
 
     engine->setOutputWindow((void*)videoWidget->winId());
@@ -134,8 +148,12 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
         if (playerControls) playerControls->startPolling();
         });
 
-    if (titleBar) { titleBar->setTitle(QFileInfo(nativePath).completeBaseName()); titleBar->setLoading(false); }
-    if (playerControls) playerControls->setStreamingMode(false);
+    if (titleBar) {
+        titleBar->setTitle(QFileInfo(nativePath).completeBaseName());
+        titleBar->setLoading(false);
+        titleBar->setActionsVisible(false); // local file: no online info/share
+    }
+    if (playerControls) { playerControls->setStreamingMode(false); playerControls->setLiveMode(false); }
     showOSD();
 }
 
@@ -151,6 +169,13 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
         playerControls->setCurrentFormat("");
     }
 
+    m_isStreaming = true;   // online stream — a stale cached URL can be refetched
+    m_streamRetried = false;
+
+    // Reset the Info panel; the title is known now, the rest arrives with the probe.
+    m_infoTitle = title;
+    m_infoUploader.clear(); m_infoViews.clear(); m_infoDate.clear(); m_infoDescription.clear();
+
     emit playbackStarted();
 
     engine->setOutputWindow((void*)videoWidget->winId());
@@ -161,9 +186,13 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
         if (!title.isEmpty()) titleBar->setTitle(title);
         else titleBar->setTitle((cdnVideoUrl.isValid() && !cdnVideoUrl.isEmpty()) ? "Starting stream..." : "Probing stream...");
         titleBar->setLoading(true); // seagull spins until playing
+        titleBar->setActionsVisible(true); // online stream: enable Info/Share
     }
 
-    if (playerControls) playerControls->setStreamingMode(true);
+    if (playerControls) {
+        playerControls->setStreamingMode(true);
+        playerControls->setLiveMode(false); // assume VOD until the probe says otherwise
+    }
 
     currentBaseUrl = rawUrl;
     currentVideoTitle = title;
@@ -210,9 +239,31 @@ void VideoPlayer::hidePosterOverlay() {
 }
 
 void VideoPlayer::onPlaybackError() {
-    // VLC couldn't open/play the stream. Tell the user and offer a retry: drop
-    // into ended mode so the play button becomes a replay button (re-uses the
-    // last media), and keep the controls/title pinned so the message stays put.
+    // A cached stream URL can go stale (non-YouTube tokens we can't pre-validate),
+    // which VLC reports as an open error. Re-resolve the link fresh and try once
+    // more before giving up.
+    if (m_isStreaming && !m_streamRetried) {
+        m_streamRetried = true;
+        if (titleBar) {
+            titleBar->setTitle("Stream link expired — refetching...");
+            titleBar->setLoading(true);
+            titleBar->show();
+            titleBar->raise();
+        }
+        repositionOverlays();
+        emit streamUrlRequested(currentBaseUrl.toString(), lastRequestedFormatId);
+        retryTimer->start(15000); // give the refetch+open a window, else showStreamFailed()
+        return;
+    }
+
+    showStreamFailed();
+}
+
+void VideoPlayer::showStreamFailed() {
+    // VLC couldn't open/play the stream (or the refetch never produced one). Tell
+    // the user and offer a retry: drop into ended mode so the play button becomes a
+    // replay button (re-uses the last media), and keep the controls/title pinned.
+    retryTimer->stop();
     osdTimer->stop();
     if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->setLoading(false); titleBar->show(); titleBar->raise(); }
     if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); playerControls->raise(); }
@@ -368,10 +419,12 @@ void VideoPlayer::changeStreamQuality(const QString& formatId) {
 }
 
 void VideoPlayer::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
+    retryTimer->stop(); // a (re)resolved URL arrived — the refetch window is satisfied
     if (titleBar) titleBar->setTitle(currentVideoTitle.isEmpty() ? "Streaming..." : currentVideoTitle);
 
     const qint64 startMs = (savedStreamTimestamp > 0) ? savedStreamTimestamp : 0;
-    engine->loadStream(videoUrl, audioUrl, startMs);
+    // Pass the page URL as Referer so hotlink-protected CDNs accept the stream.
+    engine->loadStream(videoUrl, audioUrl, startMs, currentBaseUrl.toString());
     savedStreamTimestamp = -1;
 
     QTimer::singleShot(50, this, [this]() {
@@ -385,5 +438,60 @@ void VideoPlayer::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     QPointer<PlayerControls> safeControls = playerControls;
     QTimer::singleShot(250, this, [safeControls]() {
         if (safeControls) safeControls->applyAudioState();
+        });
+}
+
+void VideoPlayer::onLiveStatus(bool isLive) {
+    if (playerControls) playerControls->setLiveMode(isLive);
+}
+
+void VideoPlayer::onVideoInfo(const QString& title, const QString& uploader,
+    const QString& views, const QString& date, const QString& description) {
+    if (!title.isEmpty()) m_infoTitle = title;
+    m_infoUploader = uploader;
+    m_infoViews = views;
+    m_infoDate = date;
+    m_infoDescription = description;
+}
+
+void VideoPlayer::showInfoModal() {
+    QDialog dlg(this);
+    dlg.setWindowTitle("Video info");
+    dlg.resize(560, 460);
+
+    auto* lay = new QVBoxLayout(&dlg);
+
+    auto* titleLbl = new QLabel("<b>" + m_infoTitle.toHtmlEscaped() + "</b>", &dlg);
+    titleLbl->setWordWrap(true);
+    titleLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    lay->addWidget(titleLbl);
+
+    // One dimmed line of uploader • views • date (skipping any empty fields).
+    QStringList bits;
+    if (!m_infoUploader.isEmpty()) bits << m_infoUploader;
+    if (!m_infoViews.isEmpty())    bits << (m_infoViews + " views");
+    if (!m_infoDate.isEmpty())     bits << m_infoDate;
+    if (!bits.isEmpty()) {
+        auto* metaLbl = new QLabel(bits.join("   •   "), &dlg);
+        metaLbl->setObjectName("metaStats"); // dimmed by the theme
+        metaLbl->setWordWrap(true);
+        lay->addWidget(metaLbl);
+    }
+
+    auto* desc = new QTextEdit(&dlg);
+    desc->setReadOnly(true);
+    desc->setPlainText(m_infoDescription.isEmpty() ? "No description available." : m_infoDescription);
+    lay->addWidget(desc, 1);
+
+    dlg.exec();
+}
+
+void VideoPlayer::shareLink() {
+    if (currentBaseUrl.isEmpty()) return;
+    QGuiApplication::clipboard()->setText(currentBaseUrl.toString());
+    // Brief confirmation in the banner, then restore the title.
+    if (titleBar) titleBar->setTitle("Link copied to clipboard");
+    QTimer::singleShot(1500, this, [this]() {
+        if (titleBar) titleBar->setTitle(currentVideoTitle.isEmpty() ? "Streaming..." : currentVideoTitle);
         });
 }

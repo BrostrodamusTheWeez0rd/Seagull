@@ -38,6 +38,10 @@ public:
     void playPrevQueuedItem();
     void setStreamingQueueMode(bool active);
 
+    // Clears the URL bar once a video starts playing, but leaves the metadata
+    // preview up (so it shows the now-playing video until a new link is pasted).
+    void clearUrlForPlayback();
+
 signals:
     // EMITS: Raw URL, CDN Video URL, CDN Audio URL, and Title
     void playMediaRequested(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title);
@@ -83,7 +87,8 @@ private:
     void    offerPlaylistQueue(const QString& fullUrl);
     void    playQueueIndex(int index);
 
-    // Validates the Unix timestamp token inside the YouTube CDN URL
+    // True if the cached CDN URL is still usable. Checks YouTube's ?expire= token
+    // when present; other sites have no checkable token, so any non-empty URL passes.
     bool    isStreamUrlValid(const QUrl& cdnUrl) const;
     void    enqueueTitleResolution(const QList<QString>& urls, int startRow);
     void    resetHeroToBanner();  // restore the big banner, hide the thumbnail hero

@@ -9,6 +9,18 @@
 #include <QLocale>
 #include <QDate>
 
+namespace {
+    bool isYoutubeUrl(const QString& url) {
+        const QString u = url.toLower();
+        return u.contains("youtube.com") || u.contains("youtu.be");
+    }
+    // Non-YouTube sites are often bot-protected (TLS fingerprinting): impersonate a
+    // browser so they don't reject yt-dlp with HTTP 403/410. YouTube doesn't need it.
+    void addImpersonateIfNeeded(QStringList& args, const QString& url) {
+        if (!isYoutubeUrl(url)) args << "--impersonate" << "chrome";
+    }
+}
+
 SgYtDlp::SgYtDlp(QObject* parent) : QObject(parent) {
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);
@@ -38,7 +50,11 @@ void SgYtDlp::download(const QString& url) {
     processBuffer.clear();
 
     QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
-    QStringList args = SgOptions::buildDownloadArgs(url);
+    QStringList args = SgOptions::buildDownloadArgs(url); // ends with the url
+    if (!isYoutubeUrl(url)) {
+        const QString u = args.takeLast();                // pull the url off the end
+        args << "--impersonate" << "chrome" << u;         // ...put impersonate before it
+    }
 
     emit logMessage("Starting download: " + url);
     m_process->start(exePath, args);
@@ -58,7 +74,9 @@ void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& forma
     QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
     QStringList args;
-    args << "-J" << "--quiet" << "--no-warnings" << url;
+    args << "-J" << "--quiet" << "--no-warnings";
+    addImpersonateIfNeeded(args, url);
+    args << url;
 
     emit logMessage("Fetching metadata for: " + url
         + (formatId.isEmpty() ? QString("  [format: default]")
@@ -75,7 +93,9 @@ void SgYtDlp::probeAvailableQualities(const QString& url) {
     QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
     QStringList args;
-    args << "-J" << "--quiet" << "--no-warnings" << url;
+    args << "-J" << "--quiet" << "--no-warnings";
+    addImpersonateIfNeeded(args, url);
+    args << url;
 
     emit logMessage("Probing qualities for: " + url);
     m_process->start(exePath, args);
@@ -90,7 +110,9 @@ void SgYtDlp::fetchPlaylistEntries(const QString& playlistUrl) {
     QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
     QStringList args;
-    args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings" << playlistUrl;
+    args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings";
+    addImpersonateIfNeeded(args, playlistUrl);
+    args << playlistUrl;
 
     emit logMessage("Fetching playlist entries...");
     m_process->start(exePath, args);
@@ -143,6 +165,11 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
     if (exitStatus == QProcess::CrashExit || exitCode != 0) {
         emit logMessage("Operation failed (yt-dlp). Code: " + QString::number(exitCode));
+        // Surface yt-dlp's own error text (merged stdout+stderr) so failures like a
+        // broken extractor / age gate are diagnosable instead of silently swallowed.
+        const QString errOut = QString::fromLocal8Bit(processBuffer).trimmed();
+        if (!errOut.isEmpty())
+            emit logMessage("yt-dlp: " + errOut.right(800));
         emit finished(false);
         return;
     }
@@ -180,9 +207,23 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
     else if (mode == JobMode::Probing) {
         QJsonObject root = doc.object();
-        // The probe runs on every play, so surface the poster thumbnail here too.
+        // The probe runs on every play, so surface the poster thumbnail + the full
+        // metadata (for the player's Info panel) here too.
         emit thumbnailResolved(SgFormat::pickThumbnail(root));
         emit availableQualitiesFound(SgFormat::buildQualityOptions(root));
+        emit liveStatusKnown(root["is_live"].toBool());
+
+        QString vdate = root["upload_date"].toString();
+        QDate pd = QDate::fromString(vdate, "yyyyMMdd");
+        if (pd.isValid()) vdate = pd.toString("MMM d, yyyy");
+        QString vuploader = root["uploader"].toString();
+        if (vuploader.isEmpty()) vuploader = root["channel"].toString(); // some sites only set "channel"
+        emit videoInfoReady(
+            root["title"].toString(),
+            vuploader,
+            QLocale(QLocale::English).toString(root["view_count"].toInt()),
+            vdate,
+            root["description"].toString());
     }
 
     else if (mode == JobMode::FetchingMetadata) {
@@ -190,6 +231,7 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
         QString title = obj["title"].toString();
         QString uploader = obj["uploader"].toString();
+        if (uploader.isEmpty()) uploader = obj["channel"].toString(); // some sites only set "channel"
         QString duration = obj["duration_string"].toString();
         QString viewCount = QLocale(QLocale::English).toString(obj["view_count"].toInt());
         // yt-dlp gives upload_date as a bare "YYYYMMDD" string — make it readable.
@@ -200,9 +242,10 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
         emit metadataReady(title, uploader, duration, viewCount, uploadDate, SgFormat::pickThumbnail(obj));
 
-        // Pick a container-matched video+audio pair so VLC's input-slave merge
-        // doesn't desync or drop audio. Cap to the requested height (or the
-        // default Stream Quality setting when no explicit format was chosen).
+        // Resolve a playable stream. YouTube gets a container-matched video+audio
+        // pair (VLC input-slave merge); every other site gets a single muxed
+        // stream. Cap to the requested height (or the default Stream Quality
+        // setting when no explicit format was chosen).
         const QString wantId = m_pendingFormatId;
         m_pendingFormatId.clear();
 
@@ -210,19 +253,15 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         int targetH = wantId.isEmpty() ? SgOptions::defaultStreamHeight()
                                        : SgFormat::heightForFormatId(formats, wantId);
 
+        emit logMessage("Resolving stream [extractor: " + obj["extractor_key"].toString() + "]");
+
         QString videoUrl, audioUrl;
-        if (SgFormat::chooseMatchedAvPair(formats, targetH, videoUrl, audioUrl)) {
-            emit streamUrlReady(QUrl(videoUrl), QUrl(audioUrl));
+        if (SgFormat::resolveStream(obj, targetH, videoUrl, audioUrl)) {
+            emit logMessage(QString("Stream resolved%1: %2")
+                .arg(audioUrl.isEmpty() ? QString() : QString(" (+separate audio)"), videoUrl.left(160)));
+            emit streamUrlReady(QUrl(videoUrl), audioUrl.isEmpty() ? QUrl() : QUrl(audioUrl));
         }
-        else {
-            // No split A/V pair available — fall back to a single progressive
-            // stream (already muxed, no input-slave needed).
-            QString prog = obj["url"].toString();
-            if (prog.isEmpty()) prog = SgFormat::bestProgressiveUrl(formats);
-            if (!prog.isEmpty())
-                emit streamUrlReady(QUrl(prog), QUrl());
-            else
-                emit logMessage("No playable stream format found.");
-        }
+        else
+            emit logMessage("No playable stream format found.");
     }
 }

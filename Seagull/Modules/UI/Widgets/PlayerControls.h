@@ -39,6 +39,7 @@ public:
     void stopPolling();
     void startPolling();
     void setEndedMode(bool ended); // Freeze seeker/time at end-of-stream
+    void setLiveMode(bool isLive); // Live stream: show "LIVE", disable seeking
     void setCurrentFormat(const QString& formatId); // Track active selection
 
 public slots:
@@ -115,6 +116,7 @@ private:
     qint64 m_duration;
     bool isUserSeeking;
     bool m_endedMode = false; // true after EOF until the next media starts
+    bool m_isLive = false;    // live stream: no meaningful duration, no seeking
 
     QTimer* prevClickTimer;
     QTimer* nextClickTimer;

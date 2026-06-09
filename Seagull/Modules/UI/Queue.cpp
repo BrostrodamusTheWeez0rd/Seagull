@@ -137,8 +137,8 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     loadingRowLayout->setContentsMargins(0, 0, 0, 0);
     loadingRowLayout->setSpacing(8);
     loadingRowLayout->addStretch();
-    loadingRowLayout->addWidget(m_loadingSpinner);
     loadingRowLayout->addWidget(loadingLabel);
+    loadingRowLayout->addWidget(m_loadingSpinner); // seagull sits just right of the message
     loadingRowLayout->addStretch();
 
     layout->addWidget(banner);
@@ -161,6 +161,7 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     connect(downloader, &SgYtDlp::playlistEntriesReady, this, &Queue::handlePlaylistEntriesReady);
 
     connect(titleResolver, &SgYtDlp::logMessage, this, &Queue::handleLogMessage);
+    connect(cdnPrefetcher, &SgYtDlp::logMessage, this, &Queue::handleLogMessage); // surface prefetch/resolve logs
     connect(titleResolver, &SgYtDlp::metadataReady, this, &Queue::handleResolverMetadataReady);
     connect(titleResolver, &SgYtDlp::streamUrlReady, this, [this](const QUrl& videoUrl, const QUrl& audioUrl) {
         if (m_currentResolvingRow >= 0 && m_currentResolvingRow < queueTable->rowCount()) {
@@ -216,11 +217,22 @@ QString Queue::stripToVideoUrl(const QString& url) const {
     return qurl.toString();
 }
 
+void Queue::clearUrlForPlayback() {
+    // A normal clear: this fires the "empty input" path which also tears down the
+    // metadata/thumbnail preview, so it doesn't linger under the video during
+    // playback. The playing video's metadata lives in the player's Info button.
+    urlInput->clear();
+}
+
 bool Queue::isStreamUrlValid(const QUrl& cdnUrl) const {
     if (cdnUrl.isEmpty()) return false;
     QUrlQuery query(cdnUrl.query());
     QString expireStr = query.queryItemValue("expire");
-    if (expireStr.isEmpty()) return false;
+    // Only YouTube's googlevideo URLs carry an ?expire= token we can validate here.
+    // Other sites (PornHub/xvideos/...) keep any expiry in the path, so we can't
+    // check it — treat a non-empty URL as usable (playback will surface a failure
+    // if it's stale). Without this, non-YouTube streams never start from the cache.
+    if (expireStr.isEmpty()) return true;
     qint64 expireTime = expireStr.toLongLong();
     qint64 currentTime = QDateTime::currentSecsSinceEpoch();
     return (expireTime - 300) > currentTime;

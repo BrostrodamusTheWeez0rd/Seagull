@@ -2,6 +2,7 @@
 #include <QObject>
 #include <QProcess>
 #include <QString>
+#include <QStringList>
 #include <QByteArray>
 #include <QUrl>
 #include "SgFormat.h" // StreamOption + format-selection policy
@@ -31,6 +32,12 @@ signals:
         const QString& viewCount, const QString& uploadDate, const QString& thumbUrl);
     void availableQualitiesFound(const QList<StreamOption>& options);
     void thumbnailResolved(const QString& thumbUrl);
+    // True when yt-dlp reports the source is a live stream. Emitted from the probe
+    // (which runs on every play) so the player can render a LIVE seeker/timestamp.
+    void liveStatusKnown(bool isLive);
+    // Full metadata for the player's Info panel (includes the description).
+    void videoInfoReady(const QString& title, const QString& uploader,
+        const QString& views, const QString& date, const QString& description);
     void streamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl = QUrl());
     void playlistEntriesReady(const QList<QString>& urls);
 

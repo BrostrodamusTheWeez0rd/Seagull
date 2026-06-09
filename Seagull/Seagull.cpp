@@ -42,6 +42,12 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
         });
 
+    // Once a queued/streamed video starts, clear the URL bar (the metadata preview
+    // stays up, showing the now-playing video). Library playback leaves it alone.
+    connect(videoPlayer, &VideoPlayer::playbackStarted, this, [this]() {
+        if (activeSource == ActiveSource::Queue) queueModule->clearUrlForPlayback();
+        });
+
     // A finished video rolls into the next one from whichever source is active.
     connect(videoPlayer, &VideoPlayer::mediaEnded, this, [this]() {
         if (activeSource == ActiveSource::Library)        libraryModule->playNextFile();
@@ -60,16 +66,23 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         }
         });
 
+    // Surface the player worker's logs (stream resolution, yt-dlp errors) in the
+    // same dev console as the others, by re-emitting through the downloader.
+    connect(playerWorker, &SgYtDlp::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+
     // Player asks the backend to resolve qualities and stream URLs on demand.
     connect(videoPlayer, &VideoPlayer::probeQualitiesRequested, playerWorker, &SgYtDlp::probeAvailableQualities);
 
     connect(videoPlayer, &VideoPlayer::streamUrlRequested, playerWorker, [this](const QString& url, const QString& formatId) {
+        playerWorker->cancel(); // free the worker (e.g. drop an in-flight quality probe) so the resolve runs now
         playerWorker->fetchMetadataAndStreamUrl(url, formatId);
         });
 
     // Results come back on queued connections so they always land on the UI thread.
     connect(playerWorker, &SgYtDlp::availableQualitiesFound, videoPlayer, &VideoPlayer::handleAvailableQualities, Qt::QueuedConnection);
+    connect(playerWorker, &SgYtDlp::liveStatusKnown, videoPlayer, &VideoPlayer::onLiveStatus, Qt::QueuedConnection);
     connect(playerWorker, &SgYtDlp::thumbnailResolved, videoPlayer, &VideoPlayer::onThumbnailResolved, Qt::QueuedConnection);
+    connect(playerWorker, &SgYtDlp::videoInfoReady, videoPlayer, &VideoPlayer::onVideoInfo, Qt::QueuedConnection);
     connect(playerWorker, &SgYtDlp::streamUrlReady, videoPlayer, &VideoPlayer::onStreamUrlReady, Qt::QueuedConnection);
 
     // --- Tool auto-update, off the main thread ---

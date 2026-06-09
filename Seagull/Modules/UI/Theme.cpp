@@ -138,6 +138,10 @@ void Theme::apply(const QString& name) {
         "QPushButton#qualityItem { background:transparent; color:%2; border:none; font-size:11px; padding-left:8px; }"
         "QPushButton#qualityItem:hover { background:%5; }"
         "QPushButton#qualityItem[active=\"true\"] { font-weight:bold; color:%6; border-left:3px solid %6; padding-left:5px; }"
+        // banner Info / Share round icon buttons (icon tinted to overlayFg in code;
+        // hover is a wash so the icon stays visible)
+        "QPushButton#bannerActionButton { background:transparent; border:1px solid %6; border-radius:11px; min-width:22px; min-height:22px; }"
+        "QPushButton#bannerActionButton:hover { background:%5; }"
     ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line);
 
     app->setStyleSheet(ss + overlay);

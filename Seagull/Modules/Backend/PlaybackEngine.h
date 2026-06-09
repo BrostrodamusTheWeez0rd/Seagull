@@ -25,7 +25,8 @@ public:
     // Load methods set the media but don't start playback, so callers keep the
     // small "settle then play" delay the UI relies on. Call play() after.
     void loadLocalFile(const QString& path);
-    void loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint64 startMs);
+    void loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint64 startMs,
+        const QString& referer = QString());
     void reloadLastMedia();           // stop + re-arm the last media (for replay)
     bool hasMedia() const;
 
@@ -50,10 +51,14 @@ signals:
 
 private:
     void hookEvents();
+    // Synthesise a local HLS master tying a video-only + audio-only chunklist
+    // together (for sites that split them); returns false on write failure.
+    bool writeHlsMaster(const QString& videoUrl, const QString& audioUrl);
 
     std::shared_ptr<VLC::Instance>    m_instance;
     std::shared_ptr<VLC::MediaPlayer> m_player;
-    std::shared_ptr<VLC::Media>       m_lastMedia; // kept for replay-from-start
+    std::shared_ptr<VLC::Media>       m_lastMedia;   // kept for replay-from-start
+    QString                           m_hlsMasterPath; // temp local master for split-HLS streams
 };
 
 #endif // PLAYBACKENGINE_H
