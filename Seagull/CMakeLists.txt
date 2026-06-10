@@ -48,6 +48,8 @@ add_executable(Seagull
     Modules/Backend/SgYtDlp.cpp
     Modules/Backend/SgHlsProxy.h
     Modules/Backend/SgHlsProxy.cpp
+    Modules/Backend/SgRecorder.h
+    Modules/Backend/SgRecorder.cpp
     Modules/Backend/SgSearch.h
     Modules/Backend/SgSearch.cpp
     Modules/Backend/SgFormat.h

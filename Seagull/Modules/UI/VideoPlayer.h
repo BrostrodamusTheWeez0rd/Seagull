@@ -45,6 +45,10 @@ public slots:
         const QString& views, const QString& date, const QString& description);
     void onLiveStatus(bool isLive); // probe reported live/VOD — drives the LIVE seeker
 
+    // Recorder state, pushed back from the orchestrator's SgRecorder.
+    void onRecordingStarted();
+    void onRecordingStopped();
+
 signals:
     void mediaEnded();
     void skipRequested(int delta);
@@ -54,6 +58,10 @@ signals:
     void fullscreenToggleRequested(); // host performs the actual window fullscreen
     void playbackStarted();           // host shows/sizes the video area
     void closed();                    // host hides the video area / leaves fullscreen
+
+    // Live-stream recording (handled by the orchestrator's SgRecorder).
+    void recordStartRequested(const QUrl& videoUrl, const QUrl& audioUrl, const QString& referer, const QString& title);
+    void recordStopRequested();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -100,6 +108,15 @@ private:
     QString currentVideoTitle;
     QString lastRequestedFormatId;
     qint64  savedStreamTimestamp = -1;
+
+    // The resolved stream URLs currently feeding VLC — handed to the recorder so it
+    // captures the exact same (ad-free, for Twitch) stream. For Twitch this is the
+    // local proxy URL. Cleared when playback stops.
+    QUrl    m_recordVideoUrl;
+    QUrl    m_recordAudioUrl;
+    bool    m_recording = false;
+    void    toggleRecording(); // record button handler: emits start or stop
+    void    stopRecordingIfActive(); // auto-stop on stop/close/new-media/end
 
     // Metadata for the Info modal (filled by the probe's videoInfoReady).
     QString m_infoTitle, m_infoUploader, m_infoViews, m_infoDate, m_infoDescription;

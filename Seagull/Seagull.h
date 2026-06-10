@@ -14,6 +14,7 @@
 #include "Modules/Backend/SgSearch.h"
 #include "Modules/Backend/SgUpdater.h"
 #include "Modules/Backend/SgHlsProxy.h"
+#include "Modules/Backend/SgRecorder.h"
 
 class Seagull : public QObject {
     Q_OBJECT
@@ -49,6 +50,9 @@ private:
     // One shared localhost proxy that strips Twitch's stitched ad segments from the
     // live HLS manifest before VLC sees them. Handed to every resolve worker.
     SgHlsProxy* hlsProxy;
+
+    // Records the currently-playing live stream to disk (parallel ffmpeg).
+    SgRecorder* recorder;
 
     QStringList m_downloadQueue; // pending ad-hoc download URLs (FIFO)
     bool        m_downloading = false;

@@ -20,6 +20,7 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QPalette>
+#include <cmath>
 
 namespace {
 // A slider that jumps to the click position (and lets you keep dragging from
@@ -84,12 +85,13 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     stopBtn = new QPushButton();
     nextBtn = new QPushButton();
     muteBtn = new QPushButton();
+    recordBtn = new QPushButton();
     qualityBtn = new QPushButton();
     qualityBtn->hide();
     fullscreenBtn = new QPushButton();
 
     QSize iconSize(20, 20);
-    m_iconButtons = { prevBtn, playPauseBtn, stopBtn, nextBtn, muteBtn, qualityBtn, fullscreenBtn };
+    m_iconButtons = { prevBtn, playPauseBtn, recordBtn, stopBtn, nextBtn, muteBtn, qualityBtn, fullscreenBtn };
 
     for (auto* btn : m_iconButtons) {
         btn->setObjectName("playerCtlButton"); // styled by Theme::apply
@@ -106,8 +108,15 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     qualityBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/cog.svg"), qualityBtn)); // MDI cog, themed like the rest
     fullscreenBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/fullscreen.svg"), fullscreenBtn)); // MDI fullscreen
 
+    // Record button: live-only, hidden until a live stream plays. Themed like the rest
+    // when idle (it's in m_iconButtons above); turns red and pulses while recording.
+    recordBtn->setToolTip(QStringLiteral("Record stream"));
+    recordBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/record.svg"), recordBtn));
+    recordBtn->hide();
+
     mainLayout->addWidget(prevBtn);
     mainLayout->addWidget(playPauseBtn);
+    mainLayout->addWidget(recordBtn);
     mainLayout->addWidget(stopBtn);
     mainLayout->addWidget(nextBtn);
     mainLayout->addWidget(timeLabel);
@@ -178,6 +187,18 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
     connect(fullscreenBtn, &QPushButton::clicked, this, &PlayerControls::fullscreenRequested);
+    connect(recordBtn, &QPushButton::clicked, this, [this]() { emit recordToggleRequested(); });
+
+    // Smoothly pulses the record glyph between dim and bright red while recording
+    // (a sine fade, ~1.3s per cycle), so it reads as "recording" rather than blinking.
+    recordPulseTimer = new QTimer(this);
+    recordPulseTimer->setInterval(50);
+    connect(recordPulseTimer, &QTimer::timeout, this, [this]() {
+        m_pulsePhase += 0.24;
+        const double s = (std::sin(m_pulsePhase) + 1.0) * 0.5; // 0..1
+        auto lerp = [](int a, int b, double t) { return int(a + (b - a) * t); };
+        retintIcon(recordBtn, QColor(lerp(130, 255, s), lerp(22, 70, s), lerp(22, 70, s)));
+        });
 
     connect(positionSlider, &QSlider::sliderPressed, this, [this]() {
         isUserSeeking = true;
@@ -232,12 +253,34 @@ void PlayerControls::setEndedMode(bool ended) {
 }
 
 void PlayerControls::setLiveMode(bool isLive) {
-    if (m_isLive == isLive) return;
     m_isLive = isLive;
     // Live still seeks within VLC's DVR window (length()/time() track it), so the
     // slider stays fully live — the only difference is the timestamp shows a LIVE
     // badge in place of a fixed total duration. pollVlcState renders it each tick.
     if (m_isLive) timeLabel->setText(QStringLiteral("● LIVE"));
+    updateRecordVisibility(); // record is offered only for live streams
+}
+
+void PlayerControls::updateRecordVisibility() {
+    const bool show = m_isStream && m_isLive;
+    recordBtn->setVisible(show);
+    if (!show && m_recording) setRecording(false); // left live -> drop the flashing state
+}
+
+void PlayerControls::setRecording(bool on) {
+    if (m_recording == on) return;
+    m_recording = on;
+    if (on) {
+        // Keep the record glyph, turn it red and start the pulse.
+        recordBtn->setToolTip(QStringLiteral("Stop recording"));
+        m_pulsePhase = 0.0;
+        retintIcon(recordBtn, QColor(255, 70, 70));
+        recordPulseTimer->start();
+    } else {
+        recordPulseTimer->stop();
+        recordBtn->setToolTip(QStringLiteral("Record stream"));
+        retintIcon(recordBtn, recordBtn->underMouse() ? m_iconHover : m_iconIdle); // back to themed
+    }
 }
 
 void PlayerControls::resetUiState() {
@@ -248,12 +291,16 @@ void PlayerControls::resetUiState() {
     positionSlider->setValue(0);
     positionSlider->blockSignals(false);
     timeLabel->setText("0:00 / 0:00");
+    m_isLive = false;          // new media: live status re-asserted by the probe
+    updateRecordVisibility();  // hide record until we know it's live again
     startPolling();
 }
 
 void PlayerControls::setStreamingMode(bool isStream) {
+    m_isStream = isStream;
     qualityBtn->setVisible(isStream);
     if (!isStream && qualityFrame) qualityFrame->hide();
+    updateRecordVisibility();
     startPolling();
 }
 
@@ -359,8 +406,10 @@ void PlayerControls::retintIcon(QPushButton* btn, const QColor& col) {
 void PlayerControls::refreshIconTints() {
     m_iconIdle  = palette().color(QPalette::BrightText);
     m_iconHover = palette().color(QPalette::Window);
-    for (auto* btn : m_iconButtons)
+    for (auto* btn : m_iconButtons) {
+        if (btn == recordBtn && m_recording) continue; // the pulse owns it
         retintIcon(btn, btn->underMouse() ? m_iconHover : m_iconIdle);
+    }
 }
 
 void PlayerControls::changeEvent(QEvent* event) {
@@ -405,7 +454,8 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
     }
 
     QPushButton* btn = qobject_cast<QPushButton*>(watched);
-    if (btn && (event->type() == QEvent::Enter || event->type() == QEvent::Leave)) {
+    if (btn && (event->type() == QEvent::Enter || event->type() == QEvent::Leave)
+        && !(btn == recordBtn && m_recording)) { // the pulse owns the record glyph while recording
         // Re-tint the glyph for hover: idle uses the text colour, hover uses the
         // on-accent colour to read against the accent fill the stylesheet paints.
         retintIcon(btn, event->type() == QEvent::Enter ? m_iconHover : m_iconIdle);

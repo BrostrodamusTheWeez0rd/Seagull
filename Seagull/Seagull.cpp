@@ -29,6 +29,10 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     prefetcherWorker->setHlsProxy(hlsProxy);
     playerWorker->setHlsProxy(hlsProxy);
 
+    // Records the currently-playing live stream (parallel ffmpeg), driven by the
+    // player's Record button.
+    recorder = new SgRecorder(this);
+
     // The tab modules.
     libraryModule = new Library();
     queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);
@@ -131,6 +135,19 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     connect(playerWorker, &SgYtDlp::thumbnailResolved, videoPlayer, &VideoPlayer::onThumbnailResolved, Qt::QueuedConnection);
     connect(playerWorker, &SgYtDlp::videoInfoReady, videoPlayer, &VideoPlayer::onVideoInfo, Qt::QueuedConnection);
     connect(playerWorker, &SgYtDlp::streamUrlReady, videoPlayer, &VideoPlayer::onStreamUrlReady, Qt::QueuedConnection);
+
+    // --- Live-stream recording (parallel ffmpeg against the same resolved URLs) ---
+    connect(videoPlayer, &VideoPlayer::recordStartRequested, recorder,
+        [this](const QUrl& videoUrl, const QUrl& audioUrl, const QString& referer, const QString& title) {
+            // The URL VLC plays is already the (ad-free, for Twitch) stream; record it
+            // verbatim. Referer is the page URL (ignored for Twitch's localhost proxy
+            // URL, but helps hotlink-protected CDNs on other live sites).
+            recorder->start(videoUrl, audioUrl, referer, title);
+        });
+    connect(videoPlayer, &VideoPlayer::recordStopRequested, recorder, &SgRecorder::stop);
+    connect(recorder, &SgRecorder::started, videoPlayer, [this](const QString&) { videoPlayer->onRecordingStarted(); }, Qt::QueuedConnection);
+    connect(recorder, &SgRecorder::finished, videoPlayer, [this](const QString&, bool) { videoPlayer->onRecordingStopped(); }, Qt::QueuedConnection);
+    connect(recorder, &SgRecorder::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
 
     // --- Tool auto-update, off the main thread ---
     // Checking and downloading yt-dlp / Deno / ffmpeg means blocking network calls,

@@ -106,11 +106,13 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::replayRequested, this, &VideoPlayer::handleReplay);
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() { emit fullscreenToggleRequested(); });
+    connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
     connect(titleBar, &PlayerTitleBar::infoRequested, this, &VideoPlayer::showInfoModal);
     connect(titleBar, &PlayerTitleBar::shareRequested, this, &VideoPlayer::shareLink);
 }
 
 void VideoPlayer::onMediaEndReached() {
+    stopRecordingIfActive(); // the live source ended — finalise any recording
     osdTimer->stop();
     // Freeze the seeker/timestamp at the end so they don't snap back to 0 while
     // VLC drains the decoder. startPolling() clears this when the next item plays.
@@ -130,6 +132,8 @@ void VideoPlayer::onMediaEndReached() {
 }
 
 void VideoPlayer::playLocalFile(const QUrl& url) {
+    stopRecordingIfActive(); // switching media — finalise any recording first
+    m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
     m_isStreaming = false; // local file — playback errors are genuine, no refetch
     emit playbackStarted(); // host shows + sizes the video area
 
@@ -158,6 +162,9 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
 }
 
 void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
+    stopRecordingIfActive(); // switching media — finalise any recording first
+    m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
+
     // New media — clear the old poster; the probe/resolve brings a fresh thumbnail.
     m_posterPixmap = QPixmap();
     hidePosterOverlay();
@@ -291,6 +298,8 @@ void VideoPlayer::handleReplay() {
 }
 
 void VideoPlayer::closePlayer() {
+    stopRecordingIfActive(); // finalise any recording before tearing down playback
+    m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
     mouseTrackerTimer->stop();
     osdTimer->stop();
     clickTimer->stop();
@@ -430,6 +439,11 @@ void VideoPlayer::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     retryTimer->stop(); // a (re)resolved URL arrived — the refetch window is satisfied
     if (titleBar) titleBar->setTitle(currentVideoTitle.isEmpty() ? "Streaming..." : currentVideoTitle);
 
+    // Remember the exact URLs feeding VLC so the recorder captures the same stream
+    // (for Twitch this is the local ad-free proxy URL).
+    m_recordVideoUrl = videoUrl;
+    m_recordAudioUrl = audioUrl;
+
     const qint64 startMs = (savedStreamTimestamp > 0) ? savedStreamTimestamp : 0;
     // Pass the page URL as Referer so hotlink-protected CDNs accept the stream.
     engine->loadStream(videoUrl, audioUrl, startMs, currentBaseUrl.toString());
@@ -451,6 +465,30 @@ void VideoPlayer::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
 
 void VideoPlayer::onLiveStatus(bool isLive) {
     if (playerControls) playerControls->setLiveMode(isLive);
+}
+
+void VideoPlayer::toggleRecording() {
+    if (m_recording) {
+        emit recordStopRequested();
+    } else {
+        if (!m_recordVideoUrl.isValid() || m_recordVideoUrl.isEmpty()) return;
+        const QString title = currentVideoTitle.isEmpty() ? QStringLiteral("stream") : currentVideoTitle;
+        emit recordStartRequested(m_recordVideoUrl, m_recordAudioUrl, currentBaseUrl.toString(), title);
+    }
+}
+
+void VideoPlayer::stopRecordingIfActive() {
+    if (m_recording) emit recordStopRequested();
+}
+
+void VideoPlayer::onRecordingStarted() {
+    m_recording = true;
+    if (playerControls) playerControls->setRecording(true);
+}
+
+void VideoPlayer::onRecordingStopped() {
+    m_recording = false;
+    if (playerControls) playerControls->setRecording(false);
 }
 
 void VideoPlayer::onVideoInfo(const QString& title, const QString& uploader,

@@ -41,6 +41,7 @@ public:
     void setEndedMode(bool ended); // Freeze seeker/time at end-of-stream
     void setLiveMode(bool isLive); // Live stream: show "LIVE", disable seeking
     void setCurrentFormat(const QString& formatId); // Track active selection
+    void setRecording(bool on);    // reflect recorder state: flashing-red square while on
 
 public slots:
     void setAvailableQualities(const QList<StreamOption>& options);
@@ -50,6 +51,7 @@ signals:
     void stopRequested();
     void replayRequested();
     void qualitySelected(QString formatId);
+    void recordToggleRequested(); // Record button clicked (start if idle, stop if recording)
 
     // delta = +1 for next, -1 for prev
     void skipRequested(int delta);
@@ -97,6 +99,9 @@ private:
     QPushButton* prevBtn;
     QPushButton* nextBtn;
     QPushButton* muteBtn;
+    QPushButton* recordBtn;        // live-only; toggles stream recording
+
+    void updateRecordVisibility(); // record shown only while streaming a live source
 
     QPushButton* qualityBtn;
     QFrame* qualityFrame;
@@ -117,6 +122,10 @@ private:
     bool isUserSeeking;
     bool m_endedMode = false; // true after EOF until the next media starts
     bool m_isLive = false;    // live stream: no meaningful duration, no seeking
+    bool m_isStream = false;  // current media is an online stream (drives record visibility)
+    bool m_recording = false; // recorder is running (drives the red pulse)
+    double m_pulsePhase = 0.0;        // animates the recording pulse
+    QTimer* recordPulseTimer = nullptr;
 
     QTimer* prevClickTimer;
     QTimer* nextClickTimer;
