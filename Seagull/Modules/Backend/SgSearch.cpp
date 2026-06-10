@@ -20,8 +20,9 @@ SgSearch::~SgSearch() {
 }
 
 void SgSearch::search(Site site, const QString& query, int limit) {
-    if (m_process->state() == QProcess::Running) return; // one query at a time
     if (query.trimmed().isEmpty()) { emit failed("Empty search query."); return; }
+
+    cancel(); // drop any in-flight query (a new search supersedes it; no 'failed' emitted)
 
     m_site = site;
     m_buffer.clear();
@@ -44,6 +45,7 @@ void SgSearch::search(Site site, const QString& query, int limit) {
 
 void SgSearch::cancel() {
     if (m_process->state() == QProcess::Running) {
+        m_cancelled = true; // tells handleFinished to ignore this killed run
         m_process->kill();
         m_process->waitForFinished();
     }
@@ -51,6 +53,8 @@ void SgSearch::cancel() {
 }
 
 void SgSearch::handleFinished(int exitCode, QProcess::ExitStatus exitStatus) {
+    if (m_cancelled) { m_cancelled = false; return; } // superseded by a newer query
+
     m_buffer.append(m_process->readAllStandardOutput());
 
     if (exitStatus == QProcess::CrashExit || exitCode != 0) {

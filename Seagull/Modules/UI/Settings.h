@@ -8,6 +8,8 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QButtonGroup>
+#include <QSpinBox>
+#include <QSlider>
 
 class Settings : public QWidget {
     Q_OBJECT
@@ -16,12 +18,16 @@ public:
     explicit Settings(QWidget* parent = nullptr);
     ~Settings();
 
+signals:
+    void cardWidthChanged(int width); // Display "Card size" -> Search card width (px)
+
 private slots:
     void browseHomeFolder();
     void browseDownloadFolder();
     void saveSettings();
     void loadSettings();
     void resetDefaults();
+    void onCardSizeChanged();            // card-size combo -> show/hide slider + save
 
 private:
     void setupUI();
@@ -29,8 +35,15 @@ private:
     void updateDownloadQualityOptions(); // repopulate quality list (resolutions vs bitrates)
     void onDownloadTypeChanged();        // type toggle -> refresh formats + qualities + save
     QString currentDownloadType() const; // "Video" or "Audio"
+    int  currentCardWidth() const;       // px from the combo preset, or the slider if Custom
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
+
+    // What we last pushed to the rest of the app, so a save that didn't touch these
+    // doesn't needlessly re-apply the global theme (a full re-polish of every widget)
+    // or re-flow the search grid.
+    QString m_appliedTheme;
+    int     m_appliedCardWidth = -1;
 
     // Side tab layout components
     QListWidget* sidebar;
@@ -38,6 +51,8 @@ private:
 
     // Display Tab elements
     QComboBox* themeCombo;
+    QComboBox* cardSizeCombo;   // Small / Medium / Large / Extra Large / Custom
+    QSlider*   cardSizeSlider;  // shown only for Custom; spans Small..Extra Large
 
     // Download & Streaming Tab elements
     QButtonGroup* typeGroup;     // Video | Audio toggle
@@ -48,6 +63,9 @@ private:
     QComboBox* streamQualityCombo;
     QLineEdit* homeFolderEdit;
     QLineEdit* dlFolderEdit;
+
+    // Search Tab elements
+    QSpinBox* searchResultsSpin; // how many results a search fetches
 
     QPushButton* resetBtn;
 

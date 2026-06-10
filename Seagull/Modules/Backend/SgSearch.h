@@ -47,4 +47,5 @@ private:
     QProcess*  m_process;
     QByteArray m_buffer;
     Site       m_site = Site::YouTube;
+    bool       m_cancelled = false; // suppresses the finished handler for a killed query
 };

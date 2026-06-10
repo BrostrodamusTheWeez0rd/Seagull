@@ -5,34 +5,103 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QPixmap>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPaintEvent>
 #include <QMouseEvent>
 #include <QFont>
+#include <QFontMetrics>
+#include <QApplication>
 #include <QStringList>
+#include <QPixmapCache>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
 
 namespace {
-constexpr int kCardWidth = 300;
-constexpr int kThumbW = 300;
-constexpr int kThumbH = 169; // 16:9
+constexpr int kCardMargin = 8;    // QVBoxLayout content margin (left+right)
+constexpr int kVSpace = 6;        // spacing between the card's stacked elements
+constexpr int kThumbSrcCap = 720; // widest source thumbnail we keep
+// The rounded thumbnail is rendered once at this reference size, then scaled to the
+// card on paint. Big enough to stay crisp at any card width; radius is scaled too.
+constexpr int kRefThumbW = 480;
+constexpr int kRefThumbH = 270;   // 16:9
+constexpr int kRefRadius = 18;
+int thumbHeightFor(int thumbWidth) { return thumbWidth * 9 / 16; } // 16:9
 }
 
-VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, QWidget* parent)
+// A 16:9 thumbnail with rounded ("pilled") corners. The image is rounded ONCE at a
+// reference resolution; paintEvent just scales that cached pixmap to the widget.
+// So when the card grows/shrinks on a window resize there's no re-rounding — only a
+// cheap scaled blit — which is what keeps the grid smooth.
+class RoundedThumb : public QWidget {
+public:
+    explicit RoundedThumb(QWidget* parent = nullptr) : QWidget(parent) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed); // card sets our height
+    }
+
+    void setSource(const QPixmap& src) {
+        m_rounded = src.isNull() ? QPixmap() : roundedReference(src);
+        update();
+    }
+
+    QSize minimumSizeHint() const override { return QSize(40, 23); }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        const QRect r = rect();
+
+        if (m_rounded.isNull()) {
+            // Placeholder: a themed rounded tile (palette follows the theme).
+            const int radius = qMin(10, r.height() / 4);
+            QPainterPath path;
+            path.addRoundedRect(r, radius, radius);
+            p.fillPath(path, palette().color(QPalette::AlternateBase));
+            p.setPen(palette().color(QPalette::PlaceholderText));
+            p.drawText(r, Qt::AlignCenter, QStringLiteral("…"));
+            return;
+        }
+        p.drawPixmap(r, m_rounded); // scaled from the reference render
+    }
+
+private:
+    // Render once: scale to cover, centre-crop to 16:9, round the corners.
+    static QPixmap roundedReference(const QPixmap& src) {
+        const QSize sz(kRefThumbW, kRefThumbH);
+        QPixmap scaled = src.scaled(sz, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        const int x = (scaled.width() - sz.width()) / 2;
+        const int y = (scaled.height() - sz.height()) / 2;
+        scaled = scaled.copy(x, y, sz.width(), sz.height());
+
+        QPixmap out(sz);
+        out.fill(Qt::transparent);
+        QPainter cp(&out);
+        cp.setRenderHint(QPainter::Antialiasing);
+        QPainterPath path;
+        path.addRoundedRect(0, 0, sz.width(), sz.height(), kRefRadius, kRefRadius);
+        cp.setClipPath(path);
+        cp.drawPixmap(0, 0, scaled);
+        return out;
+    }
+
+    QPixmap m_rounded; // rounded render at reference size
+};
+
+VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth, QWidget* parent)
     : QWidget(parent), m_result(result) {
     setObjectName("videoCard"); // themable via Theme::apply's global sheet
-    setFixedWidth(kCardWidth);
+    setAttribute(Qt::WA_StyledBackground, true); // let the QSS background/border paint
     setCursor(Qt::PointingHandCursor);
 
     auto* lay = new QVBoxLayout(this);
-    lay->setContentsMargins(8, 8, 8, 8);
-    lay->setSpacing(6);
+    lay->setContentsMargins(kCardMargin, kCardMargin, kCardMargin, kCardMargin);
+    lay->setSpacing(kVSpace);
 
-    m_thumb = new QLabel(this);
+    m_thumb = new RoundedThumb(this);
     m_thumb->setObjectName("videoCardThumb");
-    m_thumb->setFixedSize(kThumbW, kThumbH);
-    m_thumb->setAlignment(Qt::AlignCenter);
-    m_thumb->setText("…");
     lay->addWidget(m_thumb);
 
     auto* title = new QLabel(m_result.title, this);
@@ -41,6 +110,7 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, QWi
     tf.setBold(true);
     title->setFont(tf);
     title->setWordWrap(true);
+    title->setFixedHeight(QFontMetrics(tf).height() * 2 + 2); // exactly 2 lines (deterministic)
     lay->addWidget(title);
 
     QStringList bits;
@@ -49,7 +119,7 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, QWi
     if (m_result.viewCount >= 0)     bits << (formatViewCount(m_result.viewCount) + " views");
     auto* meta = new QLabel(bits.join("   |   "), this);
     meta->setObjectName("metaStats"); // reuse the theme's dimmed stat styling
-    meta->setWordWrap(true);
+    meta->setWordWrap(false);         // single line keeps card height deterministic
     lay->addWidget(meta);
 
     auto* btnRow = new QHBoxLayout();
@@ -75,7 +145,30 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, QWi
         emit downloadRequested(QUrl(m_result.url), m_result.title);
         });
 
+    setCardWidth(cardWidth);
     if (nam) loadThumbnail(nam);
+}
+
+void VideoCard::setCardWidth(int width) {
+    setFixedSize(width, heightForCardWidth(width));
+    const int tw = width - 2 * kCardMargin;
+    m_thumb->setFixedHeight(thumbHeightFor(tw)); // the thumb just scales its cached render
+}
+
+int VideoCard::chromeHeight() {
+    static const int cached = [] {
+        const QFont base = QApplication::font();
+        QFont bold = base; bold.setBold(true);
+        const int titleH = QFontMetrics(bold).height() * 2 + 2; // 2 lines
+        const int metaH  = QFontMetrics(base).height();
+        const int btnH   = QPushButton(QStringLiteral("Ag")).sizeHint().height();
+        return 2 * kCardMargin + 3 * kVSpace + titleH + metaH + btnH;
+    }();
+    return cached;
+}
+
+int VideoCard::heightForCardWidth(int cardWidth) {
+    return thumbHeightFor(cardWidth - 2 * kCardMargin) + chromeHeight();
 }
 
 void VideoCard::mousePressEvent(QMouseEvent* event) {
@@ -85,17 +178,25 @@ void VideoCard::mousePressEvent(QMouseEvent* event) {
 }
 
 void VideoCard::loadThumbnail(QNetworkAccessManager* nam) {
-    if (m_result.thumbnail.isEmpty()) { m_thumb->setText("No thumbnail"); return; }
+    if (m_result.thumbnail.isEmpty()) return; // RoundedThumb shows its placeholder
+
+    // Process-wide cache keyed by URL so re-running a search doesn't re-download.
+    QPixmap cached;
+    if (QPixmapCache::find(m_result.thumbnail, &cached)) { m_thumb->setSource(cached); return; }
+
     QNetworkRequest req((QUrl(m_result.thumbnail)));
     req.setRawHeader("User-Agent", "Seagull-Player");
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply = nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    const QString key = m_result.thumbnail;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, key]() {
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) { m_thumb->setText("No thumbnail"); return; }
+        if (reply->error() != QNetworkReply::NoError) return;
         QPixmap pm;
-        if (!pm.loadFromData(reply->readAll())) { m_thumb->setText("No thumbnail"); return; }
-        m_thumb->setPixmap(pm.scaled(m_thumb->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if (!pm.loadFromData(reply->readAll())) return;
+        if (pm.width() > kThumbSrcCap) pm = pm.scaledToWidth(kThumbSrcCap, Qt::SmoothTransformation);
+        QPixmapCache::insert(key, pm);
+        m_thumb->setSource(pm);
         });
 }
 

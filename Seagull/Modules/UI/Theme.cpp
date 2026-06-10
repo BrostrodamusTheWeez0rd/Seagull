@@ -32,6 +32,66 @@ Theme::Colors Theme::colorsFor(const QString& name) {
         c.border     = QColor("#3a3a3a");
         c.overlayFg  = QColor("#ffffff"); // the original white chrome over video
     }
+    else if (name == "Coastal Dusk") {
+        // Twilight over the water: deep indigo with a warm coral accent.
+        c.window     = QColor("#1a1526");
+        c.base       = QColor("#241d34");
+        c.alt        = QColor("#1f1830");
+        c.text       = QColor("#ece6f2");
+        c.subtext    = QColor("#9a8fb0");
+        c.accent     = QColor("#ff7e6b");
+        c.accentText = QColor("#1a1526");
+        c.border     = QColor("#352a48");
+        c.overlayFg  = QColor("#ff7e6b");
+    }
+    else if (name == "Foggy Shore") {
+        // A soft light theme: misty grey-green with a muted teal accent.
+        c.window     = QColor("#eef1f0");
+        c.base       = QColor("#ffffff");
+        c.alt        = QColor("#e2e8e6");
+        c.text       = QColor("#243230");
+        c.subtext    = QColor("#6d7d79");
+        c.accent     = QColor("#3a8f86");
+        c.accentText = QColor("#ffffff");
+        c.border     = QColor("#cdd6d3");
+        c.overlayFg  = QColor("#243230"); // inverted: dark chrome on the light pill
+    }
+    else if (name == "Storm Petrel") {
+        // Near-black charcoal with an electric stormy-cyan accent.
+        c.window     = QColor("#0e1113");
+        c.base       = QColor("#181c1f");
+        c.alt        = QColor("#131719");
+        c.text       = QColor("#dfe6ea");
+        c.subtext    = QColor("#8794a0");
+        c.accent     = QColor("#36c5d9");
+        c.accentText = QColor("#0e1113");
+        c.border     = QColor("#232a2f");
+        c.overlayFg  = QColor("#36c5d9");
+    }
+    else if (name == "Golden Beach") {
+        // Warm sand light theme with an amber sunset accent.
+        c.window     = QColor("#faf4e8");
+        c.base       = QColor("#fffdf8");
+        c.alt        = QColor("#f1e7d4");
+        c.text       = QColor("#3a2f1c");
+        c.subtext    = QColor("#8a7857");
+        c.accent     = QColor("#e0892f");
+        c.accentText = QColor("#ffffff");
+        c.border     = QColor("#e2d4ba");
+        c.overlayFg  = QColor("#3a2f1c"); // inverted: dark chrome on the light pill
+    }
+    else if (name == "Deep Tide") {
+        // Dark ocean teal with a bright aqua accent.
+        c.window     = QColor("#0c1a1c");
+        c.base       = QColor("#11282b");
+        c.alt        = QColor("#0f2225");
+        c.text       = QColor("#def0f0");
+        c.subtext    = QColor("#7fa3a4");
+        c.accent     = QColor("#2fd6c3");
+        c.accentText = QColor("#07211f");
+        c.border     = QColor("#1b3a3d");
+        c.overlayFg  = QColor("#2fd6c3");
+    }
     else {
         // Seagull (default): dark coastal slate with a sky-blue accent.
         c.window     = QColor("#11151c");
@@ -45,6 +105,15 @@ Theme::Colors Theme::colorsFor(const QString& name) {
         c.overlayFg  = QColor("#4ea8de"); // Seagull's signature: blue outlines + highlights
     }
     return c;
+}
+
+QStringList Theme::names() {
+    // Order shown in the Settings theme menu. The three originals first, then the
+    // seagull/coastal-inspired set.
+    return {
+        "Seagull", "Dark", "Light",
+        "Coastal Dusk", "Foggy Shore", "Storm Petrel", "Golden Beach", "Deep Tide"
+    };
 }
 
 static QPalette buildPalette(const Theme::Colors& c) {
@@ -97,6 +166,22 @@ void Theme::apply(const QString& name) {
         "QTextEdit#logConsole { background-color:%4; color:%6; }"
     ).arg(c.base.name(), c.text.name(), c.border.name(), c.alt.name(), c.accent.name(), c.subtext.name());
 
+    // Search tab: the result cards and the status/"loading more" pill. Cards are
+    // rounded, themed tiles whose thumbnail is itself a rounded pill (the pixmap is
+    // pre-rounded in code; the rule here just sets the placeholder/background look).
+    // %1 base  %2 alt  %3 border  %4 text  %5 accent  %6 accentText  %7 subtext
+    const QString cards = QString(
+        "QWidget#videoCard { background-color:%1; border:1px solid %3; border-radius:14px; }"
+        "QWidget#videoCard:hover { border:1px solid %5; }"
+        "QLabel#videoCardThumb { background-color:%2; color:%7; border-radius:10px; }"
+        "QLabel#videoCardTitle { color:%4; background:transparent; }"
+        "QPushButton#videoCardButton { background-color:%2; color:%4; border:1px solid %3; border-radius:10px; padding:5px 4px; }"
+        "QPushButton#videoCardButton:hover { background-color:%5; color:%6; border:1px solid %5; }"
+        "QFrame#searchStatusPill { background-color:%2; border:1px solid %3; border-radius:14px; }"
+        "QLabel#searchStatus { background:transparent; color:%4; }"
+    ).arg(c.base.name(), c.alt.name(), c.border.name(), c.text.name(),
+          c.accent.name(), c.accentText.name(), c.subtext.name());
+
     // The player overlays (banner + controls bar) sit over video as translucent
     // pills. They're styled here, by object name, so they follow the theme like
     // everything else. Pill surfaces use the window colour at ~84% alpha so the
@@ -144,7 +229,7 @@ void Theme::apply(const QString& name) {
         "QPushButton#bannerActionButton:hover { background:%5; }"
     ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line);
 
-    app->setStyleSheet(ss + overlay);
+    app->setStyleSheet(ss + cards + overlay);
 }
 
 QString Theme::currentName() { return g_current; }

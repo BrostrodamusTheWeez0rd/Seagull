@@ -2,6 +2,7 @@
 #define THEME_H
 
 #include <QString>
+#include <QStringList>
 #include <QColor>
 
 // Central app theming. Each theme is a small set of colors; apply() turns those
@@ -23,9 +24,10 @@ namespace Theme {
                             // themes, inverted (dark) on light — distinct from accent
     };
 
-    Colors  colorsFor(const QString& name);   // "Seagull" | "Dark" | "Light"
-    void    apply(const QString& name);        // sets Fusion style + palette + global QSS on qApp
-    QString currentName();
+    Colors      colorsFor(const QString& name);   // any name from names(); unknown -> Seagull
+    QStringList names();                          // every selectable theme, in menu order
+    void        apply(const QString& name);       // sets Fusion style + palette + global QSS on qApp
+    QString     currentName();
 
 }
 

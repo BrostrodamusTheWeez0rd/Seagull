@@ -74,7 +74,11 @@ void MainWindow::addTab(QWidget* tab, const QString& label) {
     auto* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
-    scroll->viewport()->setAutoFillBackground(false); // keep the page's themed background
+    // Paint an opaque, themed page background. Without this the page is transparent,
+    // so a splitter/window resize that exposes fresh page area smears the old pixels
+    // (the bars/buttons "trail" like Win95). Window role keeps it the themed colour.
+    scroll->viewport()->setAutoFillBackground(true);
+    scroll->viewport()->setBackgroundRole(QPalette::Window);
     scroll->setWidget(tab);
     tabs->addTab(scroll, label);
     m_tabPages.insert(tab, scroll); // remember the wrapper so we can find the tab later

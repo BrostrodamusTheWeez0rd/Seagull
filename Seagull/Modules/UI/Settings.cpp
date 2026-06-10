@@ -19,6 +19,24 @@ QString readDoc(const QString& resourcePath) {
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return QString();
     return QString::fromUtf8(f.readAll());
 }
+
+// Card-size presets: the named sizes are points on one continuous slider, so the
+// Custom slider can land on any width in between.
+struct CardPreset { const char* name; int px; };
+const CardPreset kCardPresets[] = {
+    { "Small", 180 }, { "Medium", 240 }, { "Large", 300 }, { "Extra Large", 360 }
+};
+constexpr int kCardMinPx = 180; // == Small
+constexpr int kCardMaxPx = 360; // == Extra Large
+
+int presetWidth(const QString& name) {
+    for (const auto& p : kCardPresets) if (name == p.name) return p.px;
+    return 240; // Medium fallback
+}
+QString presetName(int px) {
+    for (const auto& p : kCardPresets) if (px == p.px) return QString::fromLatin1(p.name);
+    return QString(); // not a preset -> Custom
+}
 }
 
 Settings::Settings(QWidget* parent) : QWidget(parent) {
@@ -44,6 +62,7 @@ void Settings::setupUI() {
     sidebar->setMaximumWidth(200);
     sidebar->addItem("Display");
     sidebar->addItem("Download & Streaming");
+    sidebar->addItem("Search");
     sidebar->addItem("Info");
     // Simple styling for a flat, modern look
     sidebar->setStyleSheet(
@@ -61,8 +80,26 @@ void Settings::setupUI() {
     displayLayout->setContentsMargins(20, 20, 20, 20);
 
     themeCombo = new QComboBox();
-    themeCombo->addItems({ "Seagull", "Dark", "Light" });
+    themeCombo->addItems(Theme::names());
     displayLayout->addRow("Theme:", themeCombo);
+
+    cardSizeCombo = new QComboBox();
+    cardSizeCombo->addItems({ "Small", "Medium", "Large", "Extra Large", "Custom" });
+    cardSizeCombo->setToolTip("Target card size — cards grow to fill the row from this. "
+        "Smaller = more per row. Custom reveals a slider for in-between sizes.");
+    displayLayout->addRow("Card size:", cardSizeCombo);
+
+    // Custom slider: spans Small..Extra Large with a tick at each named size. Only
+    // shown when "Custom" is selected.
+    cardSizeSlider = new QSlider(Qt::Horizontal);
+    cardSizeSlider->setRange(kCardMinPx, kCardMaxPx);
+    cardSizeSlider->setSingleStep(10);
+    cardSizeSlider->setPageStep(60);
+    cardSizeSlider->setTickInterval(60); // ticks land on Small/Medium/Large/Extra Large
+    cardSizeSlider->setTickPosition(QSlider::TicksBelow);
+    cardSizeSlider->hide();
+    displayLayout->addRow("", cardSizeSlider);
+
     stackedWidget->addWidget(displayWidget);
 
     // === Download & Streaming Tab ===
@@ -127,6 +164,20 @@ void Settings::setupUI() {
 
     stackedWidget->addWidget(dlWidget);
 
+    // === Search Tab ===
+    auto* searchWidget = new QWidget();
+    auto* searchLayout = new QFormLayout(searchWidget);
+    searchLayout->setContentsMargins(20, 20, 20, 20);
+
+    searchResultsSpin = new QSpinBox();
+    searchResultsSpin->setRange(5, 100);
+    searchResultsSpin->setSingleStep(5);
+    searchResultsSpin->setValue(20);
+    searchLayout->addRow("Results per batch:", searchResultsSpin);
+    searchResultsSpin->setToolTip("How many results load at a time; more reveal as you scroll.");
+
+    stackedWidget->addWidget(searchWidget);
+
     // === Info Tab: bundled docs in a tabbed reader ===
     auto* infoWidget = new QWidget();
     auto* infoLayout = new QVBoxLayout(infoWidget);
@@ -184,11 +235,14 @@ void Settings::setupUI() {
 
     // Auto-apply: every control change writes config and applies immediately.
     connect(themeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(cardSizeCombo, &QComboBox::currentTextChanged, this, &Settings::onCardSizeChanged);
+    connect(cardSizeSlider, &QSlider::valueChanged, this, &Settings::saveSettings);
     connect(typeGroup, &QButtonGroup::buttonClicked, this, [this](QAbstractButton*) {
         onDownloadTypeChanged(); // refresh format + quality lists, then save
         });
     connect(formatCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(dlQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(searchResultsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
     connect(streamQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(homeFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
     connect(dlFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
@@ -242,6 +296,24 @@ void Settings::onDownloadTypeChanged() {
     saveSettings();
 }
 
+int Settings::currentCardWidth() const {
+    if (cardSizeCombo->currentText() == "Custom") return cardSizeSlider->value();
+    return presetWidth(cardSizeCombo->currentText());
+}
+
+void Settings::onCardSizeChanged() {
+    const bool custom = (cardSizeCombo->currentText() == "Custom");
+    cardSizeSlider->setVisible(custom);
+    if (!custom) {
+        // Snap the (hidden) slider to the chosen preset so switching to Custom later
+        // starts from the right place.
+        cardSizeSlider->blockSignals(true);
+        cardSizeSlider->setValue(presetWidth(cardSizeCombo->currentText()));
+        cardSizeSlider->blockSignals(false);
+    }
+    saveSettings();
+}
+
 void Settings::browseHomeFolder() {
     QString dir = QFileDialog::getExistingDirectory(this, "Select Home Folder", homeFolderEdit->text());
     if (!dir.isEmpty()) {
@@ -262,6 +334,15 @@ void Settings::loadSettings() {
 
     themeCombo->setCurrentText(iniSettings->value("Display/Theme", "Seagull").toString());
 
+    // Card size: stored as a pixel width. Match it to a named preset, else Custom.
+    int cardPx = qBound(kCardMinPx, iniSettings->value("Display/CardWidth", 240).toInt(), kCardMaxPx);
+    cardSizeSlider->blockSignals(true);
+    cardSizeSlider->setValue(cardPx);
+    cardSizeSlider->blockSignals(false);
+    const QString cardPreset = presetName(cardPx);
+    cardSizeCombo->setCurrentText(cardPreset.isEmpty() ? "Custom" : cardPreset);
+    cardSizeSlider->setVisible(cardPreset.isEmpty());
+
     // Type -> Format -> Quality cascade: set the type, build its format list, pick
     // the saved format, build the matching quality list, pick the saved quality.
     QString savedFormat = iniSettings->value("Download/Format", "Best Available").toString();
@@ -279,8 +360,15 @@ void Settings::loadSettings() {
 
     streamQualityCombo->setCurrentText(iniSettings->value("Streaming/Quality", "Best Available").toString());
 
+    searchResultsSpin->setValue(iniSettings->value("Search/ResultLimit", 20).toInt());
+
     homeFolderEdit->setText(iniSettings->value("Paths/HomeFolder", QCoreApplication::applicationDirPath()).toString());
     dlFolderEdit->setText(iniSettings->value("Paths/DownloadFolder", QCoreApplication::applicationDirPath() + "/Downloads").toString());
+
+    // Seed the "already applied" trackers so the first unrelated save doesn't trigger
+    // a redundant theme re-apply / grid re-flow.
+    m_appliedTheme = themeCombo->currentText();
+    m_appliedCardWidth = currentCardWidth();
 
     m_loading = false;
 }
@@ -290,30 +378,51 @@ void Settings::saveSettings() {
 
     // Write values to INI groups
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
+    iniSettings->setValue("Display/CardWidth", currentCardWidth());
     iniSettings->setValue("Download/Type", currentDownloadType());
     iniSettings->setValue("Download/Format", formatCombo->currentText());
     iniSettings->setValue("Download/Quality", dlQualityCombo->currentText());
     iniSettings->setValue("Streaming/Quality", streamQualityCombo->currentText());
+    iniSettings->setValue("Search/ResultLimit", searchResultsSpin->value());
     iniSettings->setValue("Paths/HomeFolder", homeFolderEdit->text());
     iniSettings->setValue("Paths/DownloadFolder", dlFolderEdit->text());
 
     // Force write to disk immediately rather than waiting for OS garbage collection
     iniSettings->sync();
 
-    // Apply the chosen theme across the whole app immediately.
-    Theme::apply(themeCombo->currentText());
+    // Apply the chosen theme across the whole app — but only when it actually
+    // changed. Re-applying re-polishes every widget (all the search cards), which
+    // is a multi-second hitch, so we must not do it for unrelated setting changes.
+    const QString theme = themeCombo->currentText();
+    if (theme != m_appliedTheme) {
+        Theme::apply(theme);
+        m_appliedTheme = theme;
+    }
+
+    // Likewise only resize the Search cards when the size actually changed.
+    const int cardPx = currentCardWidth();
+    if (cardPx != m_appliedCardWidth) {
+        emit cardWidthChanged(cardPx);
+        m_appliedCardWidth = cardPx;
+    }
 }
 
 void Settings::resetDefaults() {
     // Set everything quietly, then write + apply once.
     m_loading = true;
     themeCombo->setCurrentText("Seagull");
+    cardSizeSlider->blockSignals(true);
+    cardSizeSlider->setValue(240);
+    cardSizeSlider->blockSignals(false);
+    cardSizeCombo->setCurrentText("Medium");
+    cardSizeSlider->hide();
     typeVideoBtn->setChecked(true);
     updateDownloadFormatOptions();
     formatCombo->setCurrentText("Best Available");
     updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText("Best Available");
     streamQualityCombo->setCurrentText("Best Available");
+    searchResultsSpin->setValue(20);
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());
     dlFolderEdit->setText(QCoreApplication::applicationDirPath() + "/Downloads");
     m_loading = false;

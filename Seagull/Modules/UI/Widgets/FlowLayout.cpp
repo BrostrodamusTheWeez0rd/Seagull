@@ -57,30 +57,64 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const {
     int left, top, right, bottom;
     getContentsMargins(&left, &top, &right, &bottom);
     const QRect effective = rect.adjusted(left, top, -right, -bottom);
-    int x = effective.x();
+    const int availW = effective.width();
+
+    int spaceX = horizontalSpacing();
+    if (spaceX < 0) spaceX = 8;
+    int spaceY = verticalSpacing();
+    if (spaceY < 0) spaceY = 8;
+
+    const int n = itemList.size();
     int y = effective.y();
-    int lineHeight = 0;
+    int lastBottom = effective.y();
 
-    for (QLayoutItem* item : itemList) {
-        const QSize hint = item->sizeHint();
-        int spaceX = horizontalSpacing();
-        if (spaceX == -1) spaceX = 8;
-        int spaceY = verticalSpacing();
-        if (spaceY == -1) spaceY = 8;
-
-        int nextX = x + hint.width() + spaceX;
-        if (nextX - spaceX > effective.right() && lineHeight > 0) {
-            x = effective.x();
-            y = y + lineHeight + spaceY;
-            nextX = x + hint.width() + spaceX;
-            lineHeight = 0;
+    // Lay out a row at a time. A full (wrapped) row is justified — first card flush
+    // left, last card flush right, leftover spread into the gaps — so the grid uses
+    // the whole width. The final partial row is centered so it isn't stretched out.
+    // Pure positioning; cards keep their fixed size (nothing re-renders).
+    int i = 0;
+    while (i < n) {
+        int sumWidths = 0;  // item widths only
+        int rowWidth = 0;   // widths + the minimum gaps between them
+        int lineHeight = 0;
+        int j = i;
+        while (j < n) {
+            const QSize hint = itemList[j]->sizeHint();
+            const int add = (j == i) ? hint.width() : spaceX + hint.width();
+            if (j > i && rowWidth + add > availW) break; // always keep at least one
+            rowWidth += add;
+            sumWidths += hint.width();
+            lineHeight = qMax(lineHeight, hint.height());
+            ++j;
         }
-        if (!testOnly)
-            item->setGeometry(QRect(QPoint(x, y), hint));
-        x = nextX;
-        lineHeight = qMax(lineHeight, hint.height());
+
+        const int count = j - i;
+        const bool lastRow = (j == n);
+
+        int x = effective.x();
+        int gap = spaceX;
+        if (!lastRow && count > 1) {
+            // Justify: distribute the slack so the row spans the full width.
+            gap = qMax(spaceX, (availW - sumWidths) / (count - 1));
+        }
+        else {
+            // Final/partial row (or a lone card): center it.
+            x += qMax(0, (availW - rowWidth) / 2);
+        }
+
+        for (int k = i; k < j; ++k) {
+            const QSize hint = itemList[k]->sizeHint();
+            if (!testOnly)
+                itemList[k]->setGeometry(QRect(QPoint(x, y), hint));
+            x += hint.width() + gap;
+        }
+
+        lastBottom = y + lineHeight;
+        y = lastBottom + spaceY;
+        i = j;
     }
-    return y + lineHeight - rect.y() + bottom;
+
+    return lastBottom - rect.y() + bottom;
 }
 
 int FlowLayout::smartSpacing(QStyle::PixelMetric pm) const {

@@ -64,6 +64,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             pumpDownloads();
         });
 
+    // Display "Card size" resizes the Search result cards live.
+    connect(settingsModule, &Settings::cardWidthChanged, searchModule, &Search::setCardWidth);
+
     // Each finished ad-hoc download advances the FIFO; the Library spinner stays up
     // until the queue drains.
     connect(downloadWorker, &SgYtDlp::finished, this, [this](bool /*ok*/) {
