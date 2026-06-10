@@ -1,5 +1,6 @@
 #include "SgYtDlp.h"
 #include "SgOptions.h"
+#include "SgHlsProxy.h"
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -266,6 +267,20 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
         QString videoUrl, audioUrl;
         if (SgFormat::resolveStream(obj, targetH, videoUrl, audioUrl)) {
+            // Twitch stitches ads server-side. yt-dlp resolves with playerType="site"
+            // (ad-served); the proxy instead resolves its OWN PlaybackAccessToken with
+            // playerType="embed" (clean stream) and serves that, ad-stripping yt-dlp's
+            // URL only as a fallback. (Only Twitch live; every other site / VOD untouched.)
+            const bool isTwitch = obj["extractor_key"].toString().startsWith("twitch", Qt::CaseInsensitive)
+                || obj["extractor"].toString().startsWith("twitch", Qt::CaseInsensitive);
+            if (m_hlsProxy && isTwitch && obj["is_live"].toBool() && audioUrl.isEmpty()) {
+                QString login = obj["uploader_id"].toString();
+                if (login.isEmpty()) login = obj["display_id"].toString();
+                if (!login.isEmpty()) {
+                    videoUrl = m_hlsProxy->proxifyTwitch(login, targetH, QUrl(videoUrl), "https://www.twitch.tv/").toString();
+                    emit logMessage("Twitch live: resolving ad-free stream via embed token (login=" + login + ").");
+                }
+            }
             emit logMessage(QString("Stream resolved%1: %2")
                 .arg(audioUrl.isEmpty() ? QString() : QString(" (+separate audio)"), videoUrl.left(160)));
             emit streamUrlReady(QUrl(videoUrl), audioUrl.isEmpty() ? QUrl() : QUrl(audioUrl));

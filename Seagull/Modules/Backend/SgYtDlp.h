@@ -7,6 +7,8 @@
 #include <QUrl>
 #include "SgFormat.h" // StreamOption + format-selection policy
 
+class SgHlsProxy;
+
 // Thin wrapper around the yt-dlp.exe process. Runs one job at a time (download /
 // metadata+streamURL / quality probe / playlist), buffers the output, parses the
 // `-J` JSON, and emits the results. The orchestrator runs several instances so
@@ -23,6 +25,10 @@ public:
     void probeAvailableQualities(const QString& url);
     void fetchPlaylistEntries(const QString& playlistUrl);
     void cancel();
+
+    // Optional shared ad-stripping HLS proxy. When set, a resolved Twitch *live*
+    // stream URL is routed through it so VLC never sees the stitched ad segments.
+    void setHlsProxy(SgHlsProxy* proxy) { m_hlsProxy = proxy; }
 
 signals:
     void logMessage(const QString& message);
@@ -56,4 +62,6 @@ private:
     // The chosen video format id (empty = honor the default Stream Quality
     // setting) is stashed here while the -J resolve runs.
     QString m_pendingFormatId;
+
+    SgHlsProxy* m_hlsProxy = nullptr; // shared, owned by the orchestrator (may be null)
 };

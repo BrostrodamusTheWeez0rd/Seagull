@@ -20,6 +20,15 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     downloadWorker = new SgYtDlp(this);
     searchWorker = new SgSearch(this);
 
+    // Shared ad-strip proxy for Twitch live streams. Every worker that resolves a
+    // playable stream URL gets it, so the ad-free routing applies no matter which
+    // path (player probe, queue prefetch, …) produced the URL.
+    hlsProxy = new SgHlsProxy(this);
+    downloaderWorker->setHlsProxy(hlsProxy);
+    resolverWorker->setHlsProxy(hlsProxy);
+    prefetcherWorker->setHlsProxy(hlsProxy);
+    playerWorker->setHlsProxy(hlsProxy);
+
     // The tab modules.
     libraryModule = new Library();
     queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);

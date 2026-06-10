@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_PREFIX_PATH "C:/Qt/6.11.1/msvc2022_64")
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Svg)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Svg Network)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
@@ -46,6 +46,8 @@ add_executable(Seagull
     Modules/UI/Widgets/FlowLayout.h
     Modules/Backend/SgYtDlp.h
     Modules/Backend/SgYtDlp.cpp
+    Modules/Backend/SgHlsProxy.h
+    Modules/Backend/SgHlsProxy.cpp
     Modules/Backend/SgSearch.h
     Modules/Backend/SgSearch.cpp
     Modules/Backend/SgFormat.h
@@ -74,7 +76,8 @@ target_link_libraries(Seagull PRIVATE
     Qt6::Multimedia
     Qt6::MultimediaWidgets
     Qt6::Svg
-    ${LIBVLC_LIB} 
+    Qt6::Network
+    ${LIBVLC_LIB}
     ${LIBVLCCORE_LIB}
 )
 
