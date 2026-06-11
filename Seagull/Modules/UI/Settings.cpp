@@ -64,6 +64,7 @@ void Settings::setupUI() {
     sidebar->setMaximumWidth(200);
     sidebar->addItem("Display");
     sidebar->addItem("Download & Streaming");
+    sidebar->addItem("Folders & Recording");
     sidebar->addItem("Search");
     sidebar->addItem("Info");
     // Simple styling for a flat, modern look
@@ -108,7 +109,6 @@ void Settings::setupUI() {
     auto* dlWidget = new QWidget();
     auto* dlLayout = new QFormLayout(dlWidget);
     dlLayout->setContentsMargins(20, 20, 20, 20);
-    foldersForm = dlLayout; // applyUnifyState shows/hides folder rows on it
 
     // Download Type toggle (Video | Audio) — drives which formats are offered.
     typeVideoBtn = new QPushButton("Video");
@@ -208,22 +208,33 @@ void Settings::setupUI() {
         "Where the Record button saves recordings and clips.");
     typedFolderRows = { videoFolderRow, audioFolderRow, photoFolderRow, recFolderRow };
 
+    dlLayout->addRow("Downloads Folder:", dlFolderRow);
     dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
     dlLayout->addRow("Download Quality:", dlQualityCombo);
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
-    dlLayout->addRow("Recording Type:", recTypeRow);
-    dlLayout->addRow("Recording Format:", recFormatCombo);
-    dlLayout->addRow("Downloads Folder:", dlFolderRow);
-    dlLayout->addRow("Unify Folders:", unifyCheck);
-    dlLayout->addRow("Media Folder:", unifiedFolderRow);
-    dlLayout->addRow("Videos Folder:", videoFolderRow);
-    dlLayout->addRow("Audio Folder:", audioFolderRow);
-    dlLayout->addRow("Photos Folder:", photoFolderRow);
-    dlLayout->addRow("Recordings Folder:", recFolderRow);
-    dlLayout->addRow("Home Directory:", homeRow);
 
     stackedWidget->addWidget(dlWidget);
+
+    // === Folders & Recording Tab ===
+    // The media folder paths (the unify toggle swaps the four typed rows for the
+    // single Media Folder row) with the recording settings underneath.
+    auto* dirsWidget = new QWidget();
+    auto* dirsLayout = new QFormLayout(dirsWidget);
+    dirsLayout->setContentsMargins(20, 20, 20, 20);
+    foldersForm = dirsLayout; // applyUnifyState shows/hides folder rows on it
+
+    dirsLayout->addRow("Unify Folders:", unifyCheck);
+    dirsLayout->addRow("Media Folder:", unifiedFolderRow);
+    dirsLayout->addRow("Videos Folder:", videoFolderRow);
+    dirsLayout->addRow("Audio Folder:", audioFolderRow);
+    dirsLayout->addRow("Photos Folder:", photoFolderRow);
+    dirsLayout->addRow("Recordings Folder:", recFolderRow);
+    dirsLayout->addRow("Home Directory:", homeRow);
+    dirsLayout->addRow("Recording Type:", recTypeRow);
+    dirsLayout->addRow("Recording Format:", recFormatCombo);
+
+    stackedWidget->addWidget(dirsWidget);
 
     // === Search Tab ===
     auto* searchWidget = new QWidget();
