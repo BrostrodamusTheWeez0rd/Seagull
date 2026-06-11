@@ -117,16 +117,15 @@ void SgRecorder::start(const QUrl& videoUrl, const QUrl& audioUrl,
     const QString stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd HH-mm-ss");
     m_outFile = QDir(outputDir()).filePath(sanitize(title) + " " + stamp + "." + extForFormat());
 
-    const bool isLocal = videoUrl.isLocalFile();
     const bool hasAudio = audioUrl.isValid() && !audioUrl.isEmpty();
     const bool audio = audioOnly();
     const QString ext = extForFormat();
-    const QString headers = (referer.isEmpty() || isLocal) ? QString()
+    const QString headers = referer.isEmpty() ? QString()
         : QString("Referer: %1\r\n").arg(referer);
 
     QStringList args;
     args << "-hide_banner" << "-loglevel" << "warning" << "-y";
-    if (!isLocal) args << "-user_agent" << "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+    args << "-user_agent" << "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
 
     if (audio && hasAudio) {
         // Audio-only with a separate audio stream: pull just it — no video bandwidth.
@@ -134,7 +133,7 @@ void SgRecorder::start(const QUrl& videoUrl, const QUrl& audioUrl,
         args << "-i" << audioUrl.toString();
     } else {
         if (!headers.isEmpty()) args << "-headers" << headers;
-        args << "-i" << (isLocal ? QDir::toNativeSeparators(videoUrl.toLocalFile()) : videoUrl.toString());
+        args << "-i" << videoUrl.toString();
         if (!audio && hasAudio) {
             if (!headers.isEmpty()) args << "-headers" << headers;
             args << "-i" << audioUrl.toString();
@@ -224,7 +223,9 @@ void SgRecorder::finishClip(const QString& file, bool ok) {
 
 void SgRecorder::clipSection(const QString& pageUrl, const QUrl& videoUrl, const QUrl& audioUrl,
     qint64 startMs, qint64 endMs, const QString& title) {
-    if (isClipping() || pageUrl.isEmpty() || endMs <= startMs) {
+    // A local-file clip has no page URL — the file itself is the only source needed.
+    const bool localSource = videoUrl.isLocalFile();
+    if (isClipping() || endMs <= startMs || (pageUrl.isEmpty() && !localSource)) {
         emit clipFinished(QString(), false);
         return;
     }
@@ -275,7 +276,12 @@ void SgRecorder::startClipSection() {
     // Input options (UA/Referer/seek) must precede each -i they apply to.
     // -rw_timeout: a dead connection errors out (-> failure banner) instead of
     // hanging the grab forever — non-YouTube has no watchdog to rescue it.
+    // A local file takes none of the network options — just the seek + native path.
     auto addInput = [&](const QUrl& u) {
+        if (u.isLocalFile()) {
+            args << "-ss" << startS << "-i" << QDir::toNativeSeparators(u.toLocalFile());
+            return;
+        }
         args << "-user_agent" << "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
              << "-rw_timeout" << "15000000"; // 15s, in microseconds
         if (!headers.isEmpty()) args << "-headers" << headers;

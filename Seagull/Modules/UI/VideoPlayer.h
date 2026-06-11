@@ -62,10 +62,11 @@ signals:
     void closed();                    // host hides the video area / leaves fullscreen
 
     // Recording (handled by the orchestrator's SgRecorder), dispatched by source type:
-    //  - live + local: ffmpeg -c copy (recordStart / recordStop).
-    //  - VOD: clip the watched range [markStart, markEnd]. The already-resolved CDN
-    //    URLs feeding VLC ride along so the recorder can cut the section directly
-    //    with ffmpeg (no yt-dlp re-resolve); pageUrl is the fallback + Referer.
+    //  - live: ffmpeg -c copy (recordStart / recordStop).
+    //  - VOD + local: clip the watched range [markStart, markEnd]. The already-resolved
+    //    CDN URLs feeding VLC (or the local file path) ride along so the recorder can
+    //    cut the section directly with ffmpeg; pageUrl is the fallback + Referer for
+    //    streams, empty for a local file.
     void recordStartRequested(const QUrl& videoUrl, const QUrl& audioUrl, const QString& referer, const QString& title);
     void recordStopRequested();
     void recordClipRequested(const QString& pageUrl, const QUrl& videoUrl, const QUrl& audioUrl,
@@ -123,10 +124,10 @@ private:
     // local proxy URL. Cleared when playback stops.
     QUrl    m_recordVideoUrl;
     QUrl    m_recordAudioUrl;
-    QUrl    m_currentLocalUrl;       // local file currently playing (for local record)
-    bool    m_recording = false;     // live/local ffmpeg capture is running
+    QUrl    m_currentLocalUrl;       // local file currently playing (clip source)
+    bool    m_recording = false;     // live ffmpeg capture is running
 
-    // VOD recording captures the watched range: 1st Record press marks the start (button
+    // VOD/local recording captures the watched range: 1st Record press marks the start (button
     // pulses), 2nd press marks the end and saves [start,end] in the BACKGROUND (button
     // returns to idle). m_clipBusy guards against a second clip while one is still saving.
     bool    m_clipMarking = false;

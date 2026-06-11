@@ -21,22 +21,23 @@ public:
     bool isRecording() const;
     QString outputFile() const; // the file being written right now ("" if not recording)
 
-    // Start recording via parallel ffmpeg -c copy. Used for LIVE streams (capture in
-    // real time) and for LOCAL files (a lossless remux to the record format). audioUrl
-    // may be empty (single combined stream); when present it's muxed as a second input.
-    // A local-file videoUrl is fed to ffmpeg by native path. title seeds the file name;
-    // referer is sent to hotlink-protected CDNs (as VLC does for playback).
+    // Start recording a LIVE stream via parallel ffmpeg -c copy (capture in real
+    // time). audioUrl may be empty (single combined stream); when present it's muxed
+    // as a second input. title seeds the file name; referer is sent to
+    // hotlink-protected CDNs (as VLC does for playback).
     void start(const QUrl& videoUrl, const QUrl& audioUrl,
         const QString& referer, const QString& title);
 
     // Stop gracefully so the container is finalised (important for MP4).
     void stop();
 
-    // VOD "clip": save just the [startMs, endMs] range of a non-live stream.
-    // videoUrl/audioUrl are the CDN URLs the player already resolved (the streams
-    // VLC is playing) — the section is cut straight from them with ffmpeg, no
-    // yt-dlp relaunch/re-resolve. pageUrl is the Referer + the fallback (full
-    // yt-dlp download + trim) when the direct cut is throttled, stale, or fails.
+    // "Clip": save just the [startMs, endMs] range of a non-live stream or a local
+    // file. videoUrl/audioUrl are the CDN URLs the player already resolved (the
+    // streams VLC is playing), or videoUrl is the local file's path — the section is
+    // cut straight from the source with ffmpeg, no yt-dlp relaunch/re-resolve.
+    // pageUrl is the Referer + the fallback (full yt-dlp download + trim) when the
+    // direct cut is throttled, stale, or fails; empty for a local file, where the
+    // direct cut is the only path (and is near-instant).
     void clipSection(const QString& pageUrl, const QUrl& videoUrl, const QUrl& audioUrl,
         qint64 startMs, qint64 endMs, const QString& title);
     bool isClipping() const;

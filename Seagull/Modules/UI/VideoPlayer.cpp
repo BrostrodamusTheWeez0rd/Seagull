@@ -134,7 +134,7 @@ void VideoPlayer::onMediaEndReached() {
 void VideoPlayer::playLocalFile(const QUrl& url) {
     stopRecordingIfActive(); // switching media — finalise any recording first
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
-    m_currentLocalUrl = url; // recorded via lossless ffmpeg -c copy if the user hits Record
+    m_currentLocalUrl = url; // Record clips the watched range straight from this file
     m_isLive = false;
     m_isStreaming = false; // local file — playback errors are genuine, no refetch
     emit playbackStarted(); // host shows + sizes the video area
@@ -481,18 +481,8 @@ void VideoPlayer::onLiveStatus(bool isLive) {
 }
 
 void VideoPlayer::toggleRecording() {
-    // Local file: lossless ffmpeg -c copy remux of the file on disk.
-    if (!m_isStreaming) {
-        if (m_recording) { emit recordStopRequested(); return; }
-        if (!m_currentLocalUrl.isValid() || m_currentLocalUrl.isEmpty()) return;
-        const QString title = QFileInfo(m_currentLocalUrl.toLocalFile()).completeBaseName();
-        emit recordStartRequested(m_currentLocalUrl, QUrl(), QString(),
-            title.isEmpty() ? QStringLiteral("video") : title);
-        return;
-    }
-
     // Live stream: parallel ffmpeg -c copy capture of the resolved stream URL.
-    if (m_isLive) {
+    if (m_isStreaming && m_isLive) {
         if (m_recording) { emit recordStopRequested(); return; }
         if (!m_recordVideoUrl.isValid() || m_recordVideoUrl.isEmpty()) return;
         const QString title = currentVideoTitle.isEmpty() ? QStringLiteral("stream") : currentVideoTitle;
@@ -500,28 +490,38 @@ void VideoPlayer::toggleRecording() {
         return;
     }
 
-    // VOD: record the *watched* range. 1st press marks the start (pulse); 2nd press marks
-    // the end and saves [start,end] in the background, returning the button to idle.
+    // VOD + local file: record the *watched* range. 1st press marks the start (pulse);
+    // 2nd press marks the end and saves [start,end] in the background, returning the
+    // button to idle.
     if (m_clipMarking) {
         const qint64 endMs = engine->time();
         m_clipMarking = false;
         if (playerControls) playerControls->setRecording(false); // stop pulsing — marking done
-        if (!currentBaseUrl.isEmpty() && endMs > m_clipStartMs) {
+        const bool isLocal = !m_isStreaming;
+        const QUrl clipVideo = isLocal ? m_currentLocalUrl : m_recordVideoUrl;
+        const bool haveSource = isLocal ? (clipVideo.isValid() && !clipVideo.isEmpty())
+                                        : !currentBaseUrl.isEmpty();
+        if (haveSource && endMs > m_clipStartMs) {
             m_clipBusy = true;
-            const QString title = currentVideoTitle.isEmpty() ? QStringLiteral("clip") : currentVideoTitle;
+            QString title = currentVideoTitle;
+            if (title.isEmpty() && isLocal)
+                title = QFileInfo(m_currentLocalUrl.toLocalFile()).completeBaseName();
+            if (title.isEmpty()) title = QStringLiteral("clip");
             if (titleBar) {                          // seagull + "Saving clip…" until the file is ready
                 titleBar->setTitle(QStringLiteral("Saving clip…"));
                 titleBar->setLoading(true);
                 titleBar->show();
                 titleBar->raise();
             }
-            // Pause playback while the clip downloads — the player and the grab pull
-            // from the same CDN and starve each other, crawling the cut to a halt.
-            m_resumeAfterClip = engine->isPlaying();
+            // Pause playback while a STREAM clip downloads — the player and the grab
+            // pull from the same CDN and starve each other, crawling the cut to a halt.
+            // A local cut reads from disk and is near-instant; keep playing.
+            m_resumeAfterClip = !isLocal && engine->isPlaying();
             if (m_resumeAfterClip) engine->pause();
-            // Hand over the resolved CDN URLs feeding VLC so the recorder can cut the
-            // section directly (records the watched quality, no yt-dlp re-resolve).
-            emit recordClipRequested(currentBaseUrl.toString(), m_recordVideoUrl, m_recordAudioUrl,
+            // Hand over the resolved CDN URLs feeding VLC (or the local file path) so
+            // the recorder cuts the section directly (no yt-dlp re-resolve).
+            emit recordClipRequested(isLocal ? QString() : currentBaseUrl.toString(),
+                clipVideo, isLocal ? QUrl() : m_recordAudioUrl,
                 m_clipStartMs, endMs, title);
         }
         return;
