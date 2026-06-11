@@ -181,6 +181,7 @@ private slots:
     void goForward();
     void goUp();
     void showContextMenu(const QPoint& pos);
+    void showFolderContextMenu(const QPoint& pos);
     void updateSearch(const QString& text);
     void onFileSelectionChanged(const QModelIndex& current, const QModelIndex& previous);
 
@@ -213,7 +214,6 @@ private:
     QPushButton* fwdBtn = nullptr;
     QPushButton* upBtn = nullptr;
     QPushButton* refreshBtn = nullptr;
-    QPushButton* plusFolderBtn = nullptr;
     QPushButton* filterBtn = nullptr;   // toggle: media-only vs all files
 
     QLineEdit* addressBar = nullptr;

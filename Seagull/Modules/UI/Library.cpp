@@ -29,7 +29,6 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     fwdBtn = new QPushButton("→");
     upBtn = new QPushButton("↑");
     refreshBtn = new QPushButton("↻");
-    plusFolderBtn = new QPushButton("+ Folder");
 
     // Toggle between media-only and all files (checked = media only, the default).
     filterBtn = new QPushButton("Media Only");
@@ -46,9 +45,8 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     toolbarLayout->addWidget(fwdBtn);
     toolbarLayout->addWidget(upBtn);
     toolbarLayout->addWidget(refreshBtn);
-    toolbarLayout->addWidget(plusFolderBtn);
-    toolbarLayout->addWidget(addressBar);
     toolbarLayout->addWidget(filterBtn);
+    toolbarLayout->addWidget(addressBar);
     toolbarLayout->addWidget(searchBar);
 
     toolbarLayout->setStretchFactor(addressBar, 1);
@@ -78,6 +76,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     folderTree->setColumnHidden(1, true);
     folderTree->setColumnHidden(2, true);
     folderTree->setColumnHidden(3, true);
+    folderTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     fileTable = new QTableView();
     fileTable->setModel(tableFilter);
@@ -133,7 +132,6 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     connect(fwdBtn, &QPushButton::clicked, this, &Library::goForward);
     connect(upBtn, &QPushButton::clicked, this, &Library::goUp);
     connect(refreshBtn, &QPushButton::clicked, this, &Library::refreshLibrary);
-    connect(plusFolderBtn, &QPushButton::clicked, this, &Library::createNewFolder);
     connect(filterBtn, &QPushButton::toggled, this, [this](bool mediaOnly) {
         tableFilter->setShowAllFiles(!mediaOnly);
         filterBtn->setText(mediaOnly ? "Media Only" : "All Files");
@@ -142,6 +140,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     connect(searchBar, &QLineEdit::textChanged, this, &Library::updateSearch);
     connect(folderTree, &QTreeView::clicked, this, &Library::onTreeClicked);
     connect(folderTree, &QTreeView::doubleClicked, this, &Library::onTreeDoubleClicked);
+    connect(folderTree, &QTreeView::customContextMenuRequested, this, &Library::showFolderContextMenu);
     connect(fileTable, &QTableView::doubleClicked, this, &Library::onFileDoubleClicked);
     connect(fileTable, &QTableView::customContextMenuRequested, this, &Library::showContextMenu);
     connect(fileTable->selectionModel(), &QItemSelectionModel::currentRowChanged,
@@ -431,6 +430,39 @@ void Library::showContextMenu(const QPoint& pos) {
 
     menu.exec(fileTable->viewport()->mapToGlobal(pos));
     actPaste->setEnabled(true); // restore for the Ctrl+V shortcut (paste no-ops itself)
+}
+
+void Library::showFolderContextMenu(const QPoint& pos) {
+    const QModelIndex index = folderTree->indexAt(pos);
+    QMenu menu(this);
+
+    if (index.isValid()) {
+        const QModelIndex srcIdx = treeFilter->mapToSource(index);
+        const QString path = fileModel->filePath(srcIdx);
+
+        menu.addAction("Open", this, [this, path]() { navigateTo(path); });
+        menu.addSeparator();
+        menu.addAction("New Folder", this, [this, path]() {
+            bool ok;
+            QString name = QInputDialog::getText(this, "New Folder", "Folder Name:",
+                QLineEdit::Normal, "", &ok);
+            if (ok && !name.isEmpty())
+                QDir(path).mkdir(name);
+        });
+        menu.addSeparator();
+        menu.addAction("Show in Explorer", this, [path]() {
+            QProcess::startDetached("explorer.exe",
+                { "/select,", QDir::toNativeSeparators(path) });
+        });
+        menu.addAction("Copy Path", this, [path]() {
+            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(path));
+        });
+    } else {
+        menu.addAction("New Folder", this, &Library::createNewFolder);
+        menu.addAction("Refresh", this, &Library::refreshLibrary);
+    }
+
+    menu.exec(folderTree->viewport()->mapToGlobal(pos));
 }
 
 void Library::updateAddressBar(const QModelIndex& index) {
