@@ -124,9 +124,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Player asks the backend to resolve qualities and stream URLs on demand.
     connect(videoPlayer, &VideoPlayer::probeQualitiesRequested, playerWorker, &SgYtDlp::probeAvailableQualities);
 
-    connect(videoPlayer, &VideoPlayer::streamUrlRequested, playerWorker, [this](const QString& url, const QString& formatId) {
+    connect(videoPlayer, &VideoPlayer::streamUrlRequested, playerWorker, [this](const QString& url, const QString& formatId, bool freshResolve) {
         playerWorker->cancel(); // free the worker (e.g. drop an in-flight quality probe) so the resolve runs now
-        playerWorker->fetchMetadataAndStreamUrl(url, formatId);
+        playerWorker->fetchMetadataAndStreamUrl(url, formatId, freshResolve);
         });
 
     // Results come back on queued connections so they always land on the UI thread.
@@ -145,8 +145,24 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             recorder->start(videoUrl, audioUrl, referer, title);
         });
     connect(videoPlayer, &VideoPlayer::recordStopRequested, recorder, &SgRecorder::stop);
+    // VOD: clip the watched range [startMs,endMs] — direct ffmpeg cut of the resolved
+    // stream URLs, with a yt-dlp full-download fallback driven off the page URL.
+    connect(videoPlayer, &VideoPlayer::recordClipRequested, recorder,
+        [this](const QString& pageUrl, const QUrl& videoUrl, const QUrl& audioUrl,
+            qint64 startMs, qint64 endMs, const QString& title) {
+            recorder->clipSection(pageUrl, videoUrl, audioUrl, startMs, endMs, title);
+        });
+    connect(videoPlayer, &VideoPlayer::recordClipCancelRequested, recorder, &SgRecorder::cancelClip);
+
     connect(recorder, &SgRecorder::started, videoPlayer, [this](const QString&) { videoPlayer->onRecordingStarted(); }, Qt::QueuedConnection);
-    connect(recorder, &SgRecorder::finished, videoPlayer, [this](const QString&, bool) { videoPlayer->onRecordingStopped(); }, Qt::QueuedConnection);
+    connect(recorder, &SgRecorder::finished, videoPlayer, [this](const QString& file, bool ok) {
+        videoPlayer->onRecordingStopped(file, ok);
+        if (ok && !file.isEmpty()) flashLibraryTab(); // the recording is on disk + playable
+        }, Qt::QueuedConnection);
+    connect(recorder, &SgRecorder::clipFinished, videoPlayer, [this](const QString& file, bool ok) {
+        videoPlayer->onClipFinished(file, ok);
+        if (ok && !file.isEmpty()) flashLibraryTab(); // the clip is on disk + playable
+        }, Qt::QueuedConnection);
     connect(recorder, &SgRecorder::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
 
     // --- Tool auto-update, off the main thread ---
@@ -188,6 +204,15 @@ void Seagull::pumpDownloads() {
     m_downloading = true;
     mainWindow->setTabBusy(libraryModule, true); // spin the Library tab while downloading
     downloadWorker->download(m_downloadQueue.first());
+}
+
+void Seagull::flashLibraryTab() {
+    // Brief seagull on the Library tab: a recording/clip just landed and is playable.
+    mainWindow->setTabBusy(libraryModule, true);
+    QTimer::singleShot(4000, this, [this]() {
+        // Don't clear a spinner a still-draining download queue owns.
+        if (m_downloadQueue.isEmpty()) mainWindow->setTabBusy(libraryModule, false);
+        });
 }
 
 void Seagull::run() {

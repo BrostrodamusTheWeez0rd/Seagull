@@ -9,6 +9,7 @@
 #include <QRegularExpression>
 #include <QLocale>
 #include <QDate>
+#include <QDateTime>
 
 namespace {
     bool isYoutubeUrl(const QString& url) {
@@ -61,7 +62,19 @@ void SgYtDlp::download(const QString& url) {
     m_process->start(exePath, args);
 }
 
-void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& formatId) {
+void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& formatId, bool freshResolve) {
+    if (freshResolve) m_metaCache.remove(url); // the cached stream URL went stale
+
+    // A fresh-enough earlier resolve answers instantly: quality switches re-pair
+    // from the cached format list and replays skip the whole yt-dlp launch.
+    const QJsonObject cached = cachedMetadata(url);
+    if (!cached.isEmpty()) {
+        emit logMessage("Metadata cache hit — resolving stream locally: " + url);
+        m_pendingFormatId = formatId;
+        processMetadata(cached);
+        return;
+    }
+
     if (m_process->state() == QProcess::Running) return;
 
     currentMode = JobMode::FetchingMetadata;
@@ -71,11 +84,14 @@ void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& forma
     // with -J (no -f) and do container-matched A/V pairing ourselves in
     // handleProcessFinished, so VLC never gets a mismatched video+audio pair.
     m_pendingFormatId = formatId;
+    m_pendingMetaUrl = url;
 
     QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
     QStringList args;
-    args << "-J" << "--quiet" << "--no-warnings";
+    // --no-playlist: a video URL carrying a &list= param would otherwise resolve
+    // the whole playlist before this video can start (can take minutes).
+    args << "-J" << "--quiet" << "--no-warnings" << "--no-playlist";
     addImpersonateIfNeeded(args, url);
     args << url;
 
@@ -86,20 +102,44 @@ void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& forma
 }
 
 void SgYtDlp::probeAvailableQualities(const QString& url) {
+    const QJsonObject cached = cachedMetadata(url);
+    if (!cached.isEmpty()) {
+        emitProbeResults(cached);
+        return;
+    }
+
     if (m_process->state() == QProcess::Running) return;
 
     currentMode = JobMode::Probing;
     processBuffer.clear();
+    m_pendingMetaUrl = url;
 
     QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
     QStringList args;
-    args << "-J" << "--quiet" << "--no-warnings";
+    args << "-J" << "--quiet" << "--no-warnings" << "--no-playlist";
     addImpersonateIfNeeded(args, url);
     args << url;
 
     emit logMessage("Probing qualities for: " + url);
     m_process->start(exePath, args);
+}
+
+QJsonObject SgYtDlp::cachedMetadata(const QString& url) {
+    constexpr qint64 kTtlMs = 30 * 60 * 1000; // CDN URLs comfortably outlive this
+    const auto it = m_metaCache.constFind(url);
+    if (it == m_metaCache.constEnd()) return {};
+    if (QDateTime::currentMSecsSinceEpoch() - it->atMs > kTtlMs) {
+        m_metaCache.remove(url);
+        return {};
+    }
+    return it->obj;
+}
+
+void SgYtDlp::storeMetadata(const QString& url, const QJsonObject& obj) {
+    if (url.isEmpty() || obj["is_live"].toBool()) return; // live URLs rotate — never cache
+    if (m_metaCache.size() > 16) m_metaCache.clear();     // tiny working set; keep it bounded
+    m_metaCache.insert(url, { obj, QDateTime::currentMSecsSinceEpoch() });
 }
 
 void SgYtDlp::fetchPlaylistEntries(const QString& playlistUrl) {
@@ -207,85 +247,93 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
     }
 
     else if (mode == JobMode::Probing) {
-        QJsonObject root = doc.object();
-        // The probe runs on every play, so surface the poster thumbnail + the full
-        // metadata (for the player's Info panel) here too.
-        emit thumbnailResolved(SgFormat::pickThumbnail(root));
-        emit availableQualitiesFound(SgFormat::buildQualityOptions(root));
-        emit liveStatusKnown(root["is_live"].toBool());
-
-        QString vdate = root["upload_date"].toString();
-        QDate pd = QDate::fromString(vdate, "yyyyMMdd");
-        if (pd.isValid()) vdate = pd.toString("MMM d, yyyy");
-        QString vuploader = root["uploader"].toString();
-        if (vuploader.isEmpty()) vuploader = root["channel"].toString(); // some sites only set "channel"
-        emit videoInfoReady(
-            root["title"].toString(),
-            vuploader,
-            QLocale(QLocale::English).toString(root["view_count"].toInt()),
-            vdate,
-            root["description"].toString());
+        const QJsonObject root = doc.object();
+        storeMetadata(m_pendingMetaUrl, root);
+        m_pendingMetaUrl.clear();
+        emitProbeResults(root);
     }
 
     else if (mode == JobMode::FetchingMetadata) {
-        QJsonObject obj = doc.object();
-
-        QString title = obj["title"].toString();
-        QString uploader = obj["uploader"].toString();
-        if (uploader.isEmpty()) uploader = obj["channel"].toString(); // some sites only set "channel"
-        QString duration = obj["duration_string"].toString();
-        QString viewCount = QLocale(QLocale::English).toString(obj["view_count"].toInt());
-        // yt-dlp gives upload_date as a bare "YYYYMMDD" string — make it readable.
-        QString uploadDate = obj["upload_date"].toString();
-        QDate parsedDate = QDate::fromString(uploadDate, "yyyyMMdd");
-        if (parsedDate.isValid())
-            uploadDate = parsedDate.toString("MMM d, yyyy");
-
-        emit metadataReady(title, uploader, duration, viewCount, uploadDate, SgFormat::pickThumbnail(obj));
-
-        // Feed the player's quality menu / thumbnail / info / live badge from this
-        // same job, so a play-by-URL with no prefetched CDN (e.g. a Search result)
-        // gets everything from one resolve instead of a separate probe contending
-        // for this worker. (Unconnected for the Queue workers — harmless there.)
-        emit thumbnailResolved(SgFormat::pickThumbnail(obj));
-        emit availableQualitiesFound(SgFormat::buildQualityOptions(obj));
-        emit liveStatusKnown(obj["is_live"].toBool());
-        emit videoInfoReady(title, uploader, viewCount, uploadDate, obj["description"].toString());
-
-        // Resolve a playable stream. YouTube gets a container-matched video+audio
-        // pair (VLC input-slave merge); every other site gets a single muxed
-        // stream. Cap to the requested height (or the default Stream Quality
-        // setting when no explicit format was chosen).
-        const QString wantId = m_pendingFormatId;
-        m_pendingFormatId.clear();
-
-        QJsonArray formats = obj["formats"].toArray();
-        int targetH = wantId.isEmpty() ? SgOptions::defaultStreamHeight()
-                                       : SgFormat::heightForFormatId(formats, wantId);
-
-        emit logMessage("Resolving stream [extractor: " + obj["extractor_key"].toString() + "]");
-
-        QString videoUrl, audioUrl;
-        if (SgFormat::resolveStream(obj, targetH, videoUrl, audioUrl)) {
-            // Twitch stitches ads server-side. yt-dlp resolves with playerType="site"
-            // (ad-served); the proxy instead resolves its OWN PlaybackAccessToken with
-            // playerType="embed" (clean stream) and serves that, ad-stripping yt-dlp's
-            // URL only as a fallback. (Only Twitch live; every other site / VOD untouched.)
-            const bool isTwitch = obj["extractor_key"].toString().startsWith("twitch", Qt::CaseInsensitive)
-                || obj["extractor"].toString().startsWith("twitch", Qt::CaseInsensitive);
-            if (m_hlsProxy && isTwitch && obj["is_live"].toBool() && audioUrl.isEmpty()) {
-                QString login = obj["uploader_id"].toString();
-                if (login.isEmpty()) login = obj["display_id"].toString();
-                if (!login.isEmpty()) {
-                    videoUrl = m_hlsProxy->proxifyTwitch(login, targetH, QUrl(videoUrl), "https://www.twitch.tv/").toString();
-                    emit logMessage("Twitch live: resolving ad-free stream via embed token (login=" + login + ").");
-                }
-            }
-            emit logMessage(QString("Stream resolved%1: %2")
-                .arg(audioUrl.isEmpty() ? QString() : QString(" (+separate audio)"), videoUrl.left(160)));
-            emit streamUrlReady(QUrl(videoUrl), audioUrl.isEmpty() ? QUrl() : QUrl(audioUrl));
-        }
-        else
-            emit logMessage("No playable stream format found.");
+        const QJsonObject obj = doc.object();
+        storeMetadata(m_pendingMetaUrl, obj);
+        m_pendingMetaUrl.clear();
+        processMetadata(obj);
     }
+}
+
+// The probe runs on every play, so surface the poster thumbnail + the full
+// metadata (for the player's Info panel) here too.
+void SgYtDlp::emitProbeResults(const QJsonObject& root) {
+    emit thumbnailResolved(SgFormat::pickThumbnail(root));
+    emit availableQualitiesFound(SgFormat::buildQualityOptions(root));
+    emit liveStatusKnown(root["is_live"].toBool());
+
+    QString vdate = root["upload_date"].toString();
+    QDate pd = QDate::fromString(vdate, "yyyyMMdd");
+    if (pd.isValid()) vdate = pd.toString("MMM d, yyyy");
+    QString vuploader = root["uploader"].toString();
+    if (vuploader.isEmpty()) vuploader = root["channel"].toString(); // some sites only set "channel"
+    emit videoInfoReady(
+        root["title"].toString(),
+        vuploader,
+        QLocale(QLocale::English).toString(root["view_count"].toInt()),
+        vdate,
+        root["description"].toString());
+}
+
+void SgYtDlp::processMetadata(const QJsonObject& obj) {
+    QString title = obj["title"].toString();
+    QString uploader = obj["uploader"].toString();
+    if (uploader.isEmpty()) uploader = obj["channel"].toString(); // some sites only set "channel"
+    QString duration = obj["duration_string"].toString();
+    QString viewCount = QLocale(QLocale::English).toString(obj["view_count"].toInt());
+    // yt-dlp gives upload_date as a bare "YYYYMMDD" string — make it readable.
+    QString uploadDate = obj["upload_date"].toString();
+    QDate parsedDate = QDate::fromString(uploadDate, "yyyyMMdd");
+    if (parsedDate.isValid())
+        uploadDate = parsedDate.toString("MMM d, yyyy");
+
+    emit metadataReady(title, uploader, duration, viewCount, uploadDate, SgFormat::pickThumbnail(obj));
+
+    // Feed the player's quality menu / thumbnail / info / live badge from this
+    // same job, so a play-by-URL with no prefetched CDN (e.g. a Search result)
+    // gets everything from one resolve instead of a separate probe contending
+    // for this worker. (Unconnected for the Queue workers — harmless there.)
+    emitProbeResults(obj);
+
+    // Resolve a playable stream. YouTube gets a container-matched video+audio
+    // pair (VLC input-slave merge); every other site gets a single muxed
+    // stream. Cap to the requested height (or the default Stream Quality
+    // setting when no explicit format was chosen).
+    const QString wantId = m_pendingFormatId;
+    m_pendingFormatId.clear();
+
+    QJsonArray formats = obj["formats"].toArray();
+    int targetH = wantId.isEmpty() ? SgOptions::defaultStreamHeight()
+                                   : SgFormat::heightForFormatId(formats, wantId);
+
+    emit logMessage("Resolving stream [extractor: " + obj["extractor_key"].toString() + "]");
+
+    QString videoUrl, audioUrl;
+    if (SgFormat::resolveStream(obj, targetH, videoUrl, audioUrl)) {
+        // Twitch stitches ads server-side. yt-dlp resolves with playerType="site"
+        // (ad-served); the proxy instead resolves its OWN PlaybackAccessToken with
+        // playerType="embed" (clean stream) and serves that, ad-stripping yt-dlp's
+        // URL only as a fallback. (Only Twitch live; every other site / VOD untouched.)
+        const bool isTwitch = obj["extractor_key"].toString().startsWith("twitch", Qt::CaseInsensitive)
+            || obj["extractor"].toString().startsWith("twitch", Qt::CaseInsensitive);
+        if (m_hlsProxy && isTwitch && obj["is_live"].toBool() && audioUrl.isEmpty()) {
+            QString login = obj["uploader_id"].toString();
+            if (login.isEmpty()) login = obj["display_id"].toString();
+            if (!login.isEmpty()) {
+                videoUrl = m_hlsProxy->proxifyTwitch(login, targetH, QUrl(videoUrl), "https://www.twitch.tv/").toString();
+                emit logMessage("Twitch live: resolving ad-free stream via embed token (login=" + login + ").");
+            }
+        }
+        emit logMessage(QString("Stream resolved%1: %2")
+            .arg(audioUrl.isEmpty() ? QString() : QString(" (+separate audio)"), videoUrl.left(160)));
+        emit streamUrlReady(QUrl(videoUrl), audioUrl.isEmpty() ? QUrl() : QUrl(audioUrl));
+    }
+    else
+        emit logMessage("No playable stream format found.");
 }

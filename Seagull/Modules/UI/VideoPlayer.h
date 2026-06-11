@@ -47,21 +47,30 @@ public slots:
 
     // Recorder state, pushed back from the orchestrator's SgRecorder.
     void onRecordingStarted();
-    void onRecordingStopped();
+    void onRecordingStopped(const QString& filePath, bool ok);
+    void onClipFinished(const QString& filePath, bool ok); // VOD clip done (or cancelled)
 
 signals:
     void mediaEnded();
     void skipRequested(int delta);
     void probeQualitiesRequested(const QString& url);
-    void streamUrlRequested(const QString& url, const QString& formatId);
+    // freshResolve = true bypasses the worker's metadata cache (stale-URL refetch).
+    void streamUrlRequested(const QString& url, const QString& formatId, bool freshResolve);
 
     void fullscreenToggleRequested(); // host performs the actual window fullscreen
     void playbackStarted();           // host shows/sizes the video area
     void closed();                    // host hides the video area / leaves fullscreen
 
-    // Live-stream recording (handled by the orchestrator's SgRecorder).
+    // Recording (handled by the orchestrator's SgRecorder), dispatched by source type:
+    //  - live + local: ffmpeg -c copy (recordStart / recordStop).
+    //  - VOD: clip the watched range [markStart, markEnd]. The already-resolved CDN
+    //    URLs feeding VLC ride along so the recorder can cut the section directly
+    //    with ffmpeg (no yt-dlp re-resolve); pageUrl is the fallback + Referer.
     void recordStartRequested(const QUrl& videoUrl, const QUrl& audioUrl, const QString& referer, const QString& title);
     void recordStopRequested();
+    void recordClipRequested(const QString& pageUrl, const QUrl& videoUrl, const QUrl& audioUrl,
+        qint64 startMs, qint64 endMs, const QString& title);
+    void recordClipCancelRequested();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -114,14 +123,32 @@ private:
     // local proxy URL. Cleared when playback stops.
     QUrl    m_recordVideoUrl;
     QUrl    m_recordAudioUrl;
-    bool    m_recording = false;
-    void    toggleRecording(); // record button handler: emits start or stop
+    QUrl    m_currentLocalUrl;       // local file currently playing (for local record)
+    bool    m_recording = false;     // live/local ffmpeg capture is running
+
+    // VOD recording captures the watched range: 1st Record press marks the start (button
+    // pulses), 2nd press marks the end and saves [start,end] in the BACKGROUND (button
+    // returns to idle). m_clipBusy guards against a second clip while one is still saving.
+    bool    m_clipMarking = false;
+    bool    m_clipBusy = false;
+    bool    m_clipCancelled = false; // we asked for the cancel — don't report it as a failure
+    bool    m_resumeAfterClip = false; // playback was paused for the grab — resume on finish
+    qint64  m_clipStartMs = 0;
+
+    // Brief "saved" confirmation pinned in the banner after a recording/clip lands;
+    // keeps hideOSD from tearing the title bar down mid-message.
+    bool    m_bannerNotice = false;
+    void    showBannerNotice(const QString& text);
+    void    restoreBannerTitle(); // put the playing media's title back
+
+    void    toggleRecording(); // record button handler: dispatch by source type
     void    stopRecordingIfActive(); // auto-stop on stop/close/new-media/end
 
     // Metadata for the Info modal (filled by the probe's videoInfoReady).
     QString m_infoTitle, m_infoUploader, m_infoViews, m_infoDate, m_infoDescription;
 
     bool m_isStreaming = false;   // current media is an online stream (not a local file)
+    bool m_isLive = false;        // online stream is live (vs VOD) — picks the record method
     bool m_streamRetried = false; // one stale-URL refetch has been spent for this stream
 };
 

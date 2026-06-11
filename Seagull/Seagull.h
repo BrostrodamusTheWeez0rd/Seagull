@@ -31,6 +31,9 @@ private:
     // the library; the Library tab shows a spinner while the queue drains.
     void pumpDownloads();
 
+    // Brief seagull on the Library tab once a recording/clip is saved + playable.
+    void flashLibraryTab();
+
     MainWindow* mainWindow;
     VideoPlayer* videoPlayer;  // the playback feature, hosted by the shell window
     Queue* queueModule;

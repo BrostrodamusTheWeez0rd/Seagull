@@ -129,7 +129,12 @@ protected:
                 path.endsWith(".mp4") ||
                 path.endsWith(".mkv") ||
                 path.endsWith(".avi") ||
+                path.endsWith(".ts") ||
+                path.endsWith(".webm") ||
+                path.endsWith(".mov") ||
                 path.endsWith(".mp3") ||
+                path.endsWith(".m4a") ||
+                path.endsWith(".opus") ||
                 path.endsWith(".wav") ||
                 path.endsWith(".flac") ||
                 path.endsWith(".jpg") ||

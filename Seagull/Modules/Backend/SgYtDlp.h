@@ -5,6 +5,8 @@
 #include <QStringList>
 #include <QByteArray>
 #include <QUrl>
+#include <QHash>
+#include <QJsonObject>
 #include "SgFormat.h" // StreamOption + format-selection policy
 
 class SgHlsProxy;
@@ -21,7 +23,9 @@ public:
     ~SgYtDlp();
 
     void download(const QString& url);
-    void fetchMetadataAndStreamUrl(const QString& url, const QString& formatId = QString());
+    // freshResolve bypasses the metadata cache (used when a cached stream URL went
+    // stale and VLC failed to open it).
+    void fetchMetadataAndStreamUrl(const QString& url, const QString& formatId = QString(), bool freshResolve = false);
     void probeAvailableQualities(const QString& url);
     void fetchPlaylistEntries(const QString& playlistUrl);
     void cancel();
@@ -52,6 +56,15 @@ private slots:
     void handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
 
 private:
+    void emitProbeResults(const QJsonObject& root); // thumbnail / qualities / live / info
+    void processMetadata(const QJsonObject& obj);   // the above + metadataReady + stream resolve
+
+    // -J results are cached per URL so a quality switch / replay / re-probe within
+    // the TTL is answered locally (no yt-dlp relaunch — the slow part of starting a
+    // VOD). Live streams are never cached (their URLs rotate).
+    QJsonObject cachedMetadata(const QString& url);              // fresh entry or empty
+    void storeMetadata(const QString& url, const QJsonObject& obj);
+
     QProcess* m_process;
 
     enum class JobMode { Idle, Downloading, FetchingMetadata, Probing, FetchingPlaylist };
@@ -62,6 +75,12 @@ private:
     // The chosen video format id (empty = honor the default Stream Quality
     // setting) is stashed here while the -J resolve runs.
     QString m_pendingFormatId;
+
+    // URL of the in-flight -J job, so the result can be cached when it lands.
+    QString m_pendingMetaUrl;
+
+    struct MetaCacheEntry { QJsonObject obj; qint64 atMs; };
+    QHash<QString, MetaCacheEntry> m_metaCache;
 
     SgHlsProxy* m_hlsProxy = nullptr; // shared, owned by the orchestrator (may be null)
 };

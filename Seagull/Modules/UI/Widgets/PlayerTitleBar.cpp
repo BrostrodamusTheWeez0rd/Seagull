@@ -61,7 +61,7 @@ PlayerTitleBar::PlayerTitleBar(QWidget* parent) : QWidget(parent)
 
     frameLayout->addStretch();
     frameLayout->addWidget(titleLabel);
-    frameLayout->addWidget(m_spinner); // seagull sits just right of the title
+    frameLayout->addWidget(m_spinner); // loading seagull flies just right of the title text
     frameLayout->addStretch();
     frameLayout->addWidget(infoBtn);   // actions pinned to the right of the banner
     frameLayout->addWidget(shareBtn);

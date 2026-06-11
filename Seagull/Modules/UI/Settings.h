@@ -24,6 +24,7 @@ signals:
 private slots:
     void browseHomeFolder();
     void browseDownloadFolder();
+    void browseRecordingFolder();
     void saveSettings();
     void loadSettings();
     void resetDefaults();
@@ -35,6 +36,9 @@ private:
     void updateDownloadQualityOptions(); // repopulate quality list (resolutions vs bitrates)
     void onDownloadTypeChanged();        // type toggle -> refresh formats + qualities + save
     QString currentDownloadType() const; // "Video" or "Audio"
+    void updateRecordingFormatOptions(); // repopulate record formats from the Recording Type toggle
+    void onRecordingTypeChanged();       // recording type toggle -> refresh formats + save
+    QString currentRecordingType() const;// "Video" or "Audio"
     int  currentCardWidth() const;       // px from the combo preset, or the slider if Custom
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
@@ -61,8 +65,13 @@ private:
     QComboBox* formatCombo;
     QComboBox* dlQualityCombo;
     QComboBox* streamQualityCombo;
+    QButtonGroup* recTypeGroup;  // Recording: Video | Audio toggle
+    QPushButton* recTypeVideoBtn;
+    QPushButton* recTypeAudioBtn;
+    QComboBox* recFormatCombo;   // Recording container/codec, per the type
     QLineEdit* homeFolderEdit;
     QLineEdit* dlFolderEdit;
+    QLineEdit* recFolderEdit;    // where recordings + clips are saved
 
     // Search Tab elements
     QSpinBox* searchResultsSpin; // how many results a search fetches

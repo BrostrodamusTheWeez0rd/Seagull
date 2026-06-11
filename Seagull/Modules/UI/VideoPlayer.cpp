@@ -134,6 +134,8 @@ void VideoPlayer::onMediaEndReached() {
 void VideoPlayer::playLocalFile(const QUrl& url) {
     stopRecordingIfActive(); // switching media — finalise any recording first
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
+    m_currentLocalUrl = url; // recorded via lossless ffmpeg -c copy if the user hits Record
+    m_isLive = false;
     m_isStreaming = false; // local file — playback errors are genuine, no refetch
     emit playbackStarted(); // host shows + sizes the video area
 
@@ -157,13 +159,17 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
         titleBar->setLoading(false);
         titleBar->setActionsVisible(false); // local file: no online info/share
     }
-    if (playerControls) { playerControls->setStreamingMode(false); playerControls->setLiveMode(false); }
+    if (playerControls) {
+        playerControls->setStreamingMode(false);
+        playerControls->setLiveMode(false);
+        playerControls->setRecordAvailable(true); // local files can be recorded too
+    }
     showOSD();
 }
 
 void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
     stopRecordingIfActive(); // switching media — finalise any recording first
-    m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
+    m_recordVideoUrl.clear(); m_recordAudioUrl.clear(); m_currentLocalUrl.clear();
 
     // New media — clear the old poster; the probe/resolve brings a fresh thumbnail.
     m_posterPixmap = QPixmap();
@@ -176,6 +182,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     lastRequestedFormatId.clear(); // new video — honour the default quality setting
 
     m_isStreaming = true;   // online stream — a stale cached URL can be refetched
+    m_isLive = false;       // assume VOD until the probe reports live (picks record method)
     m_streamRetried = false;
 
     // Reset the Info panel; the title is known now, the rest arrives with the probe.
@@ -198,6 +205,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     if (playerControls) {
         playerControls->setStreamingMode(true);
         playerControls->setLiveMode(false); // assume VOD until the probe says otherwise
+        playerControls->setRecordAvailable(true);
     }
 
     currentBaseUrl = rawUrl;
@@ -213,7 +221,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
         // No prefetched CDN (e.g. a Search result): resolve + start the stream. The
         // metadata job also emits the quality menu / thumbnail / info, so we skip the
         // separate probe (it would contend with this resolve on the same worker).
-        emit streamUrlRequested(rawUrl.toString(), lastRequestedFormatId);
+        emit streamUrlRequested(rawUrl.toString(), lastRequestedFormatId, false);
     }
     showOSD();
 }
@@ -266,7 +274,8 @@ void VideoPlayer::onPlaybackError() {
             titleBar->raise();
         }
         repositionOverlays();
-        emit streamUrlRequested(currentBaseUrl.toString(), lastRequestedFormatId);
+        // The cached URL is what went stale — force a fresh yt-dlp resolve.
+        emit streamUrlRequested(currentBaseUrl.toString(), lastRequestedFormatId, true);
         retryTimer->start(15000); // give the refetch+open a window, else showStreamFailed()
         return;
     }
@@ -299,7 +308,8 @@ void VideoPlayer::handleReplay() {
 
 void VideoPlayer::closePlayer() {
     stopRecordingIfActive(); // finalise any recording before tearing down playback
-    m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
+    m_recordVideoUrl.clear(); m_recordAudioUrl.clear(); m_currentLocalUrl.clear();
+    if (playerControls) playerControls->setRecordAvailable(false);
     mouseTrackerTimer->stop();
     osdTimer->stop();
     clickTimer->stop();
@@ -380,7 +390,9 @@ void VideoPlayer::hideOSD() {
     }
     if (engine->isPlaying()) {
         if (playerControls) playerControls->hide();
-        if (titleBar) titleBar->hide();
+        // Keep the title bar up while a clip is saving (seagull + "Saving clip…")
+        // and while a brief save-confirmation notice is showing.
+        if (titleBar && !m_clipBusy && !m_bannerNotice) titleBar->hide();
     }
 }
 
@@ -432,7 +444,7 @@ void VideoPlayer::changeStreamQuality(const QString& formatId) {
     if (playerControls) playerControls->setCurrentFormat(formatId);
 
     if (titleBar) { titleBar->setTitle("Buffering new quality..."); titleBar->setLoading(true); }
-    QTimer::singleShot(200, this, [this, formatId]() { emit streamUrlRequested(currentBaseUrl.toString(), formatId); });
+    QTimer::singleShot(200, this, [this, formatId]() { emit streamUrlRequested(currentBaseUrl.toString(), formatId, false); });
 }
 
 void VideoPlayer::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
@@ -464,21 +476,73 @@ void VideoPlayer::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
 }
 
 void VideoPlayer::onLiveStatus(bool isLive) {
+    m_isLive = isLive; // selects live (ffmpeg) vs VOD (yt-dlp) recording
     if (playerControls) playerControls->setLiveMode(isLive);
 }
 
 void VideoPlayer::toggleRecording() {
-    if (m_recording) {
-        emit recordStopRequested();
-    } else {
+    // Local file: lossless ffmpeg -c copy remux of the file on disk.
+    if (!m_isStreaming) {
+        if (m_recording) { emit recordStopRequested(); return; }
+        if (!m_currentLocalUrl.isValid() || m_currentLocalUrl.isEmpty()) return;
+        const QString title = QFileInfo(m_currentLocalUrl.toLocalFile()).completeBaseName();
+        emit recordStartRequested(m_currentLocalUrl, QUrl(), QString(),
+            title.isEmpty() ? QStringLiteral("video") : title);
+        return;
+    }
+
+    // Live stream: parallel ffmpeg -c copy capture of the resolved stream URL.
+    if (m_isLive) {
+        if (m_recording) { emit recordStopRequested(); return; }
         if (!m_recordVideoUrl.isValid() || m_recordVideoUrl.isEmpty()) return;
         const QString title = currentVideoTitle.isEmpty() ? QStringLiteral("stream") : currentVideoTitle;
         emit recordStartRequested(m_recordVideoUrl, m_recordAudioUrl, currentBaseUrl.toString(), title);
+        return;
     }
+
+    // VOD: record the *watched* range. 1st press marks the start (pulse); 2nd press marks
+    // the end and saves [start,end] in the background, returning the button to idle.
+    if (m_clipMarking) {
+        const qint64 endMs = engine->time();
+        m_clipMarking = false;
+        if (playerControls) playerControls->setRecording(false); // stop pulsing — marking done
+        if (!currentBaseUrl.isEmpty() && endMs > m_clipStartMs) {
+            m_clipBusy = true;
+            const QString title = currentVideoTitle.isEmpty() ? QStringLiteral("clip") : currentVideoTitle;
+            if (titleBar) {                          // seagull + "Saving clip…" until the file is ready
+                titleBar->setTitle(QStringLiteral("Saving clip…"));
+                titleBar->setLoading(true);
+                titleBar->show();
+                titleBar->raise();
+            }
+            // Pause playback while the clip downloads — the player and the grab pull
+            // from the same CDN and starve each other, crawling the cut to a halt.
+            m_resumeAfterClip = engine->isPlaying();
+            if (m_resumeAfterClip) engine->pause();
+            // Hand over the resolved CDN URLs feeding VLC so the recorder can cut the
+            // section directly (records the watched quality, no yt-dlp re-resolve).
+            emit recordClipRequested(currentBaseUrl.toString(), m_recordVideoUrl, m_recordAudioUrl,
+                m_clipStartMs, endMs, title);
+        }
+        return;
+    }
+    if (m_clipBusy) return; // a clip is still saving — ignore presses until it's ready
+    m_clipStartMs = engine->time();
+    m_clipMarking = true;
+    if (playerControls) playerControls->setRecording(true); // pulse while marking the range
+    showOSD();
 }
 
 void VideoPlayer::stopRecordingIfActive() {
-    if (m_recording) emit recordStopRequested();
+    if (m_recording) emit recordStopRequested();          // live/local ffmpeg
+    if (m_clipMarking) {                                  // abandon an unfinished mark
+        m_clipMarking = false;
+        if (playerControls) playerControls->setRecording(false);
+    }
+    if (m_clipBusy) {                                     // cancel an in-flight clip save
+        m_clipCancelled = true;                           // deliberate — no failure banner
+        emit recordClipCancelRequested();
+    }
 }
 
 void VideoPlayer::onRecordingStarted() {
@@ -486,9 +550,61 @@ void VideoPlayer::onRecordingStarted() {
     if (playerControls) playerControls->setRecording(true);
 }
 
-void VideoPlayer::onRecordingStopped() {
+void VideoPlayer::onRecordingStopped(const QString& filePath, bool ok) {
     m_recording = false;
     if (playerControls) playerControls->setRecording(false);
+    if (!filePath.isEmpty())
+        showBannerNotice(ok ? "Recording saved — " + QFileInfo(filePath).fileName()
+                            : QStringLiteral("Recording failed"));
+}
+
+void VideoPlayer::onClipFinished(const QString& filePath, bool ok) {
+    // Fires only when the clip file is fully written (or the save was cancelled on
+    // teardown) — so the seagull + "Saving clip…" stay up until the file is ready.
+    m_clipBusy = false;
+    if (playerControls) playerControls->setRecording(false);
+    if (m_clipCancelled) { // we tore it down on purpose — just put the title back
+        m_clipCancelled = false;
+        m_resumeAfterClip = false; // teardown/new media owns playback now
+        if (titleBar) titleBar->setLoading(false);
+        restoreBannerTitle();
+        return;
+    }
+    if (m_resumeAfterClip) { // we paused for the grab — pick playback back up
+        m_resumeAfterClip = false;
+        engine->play();
+    }
+    showBannerNotice(ok && !filePath.isEmpty()
+        ? "Clip saved — " + QFileInfo(filePath).fileName()
+        : QStringLiteral("Clip save failed"));
+}
+
+void VideoPlayer::restoreBannerTitle() {
+    if (!titleBar) return;
+    QString t = currentVideoTitle;
+    if (t.isEmpty() && m_currentLocalUrl.isValid() && !m_currentLocalUrl.isEmpty())
+        t = QFileInfo(m_currentLocalUrl.toLocalFile()).completeBaseName();
+    titleBar->setTitle(t.isEmpty() ? QStringLiteral("Streaming...") : t);
+}
+
+void VideoPlayer::showBannerNotice(const QString& text) {
+    // The player may already be closed when a queued recorder result lands; a
+    // banner overlay popping up over the tabs would be stray, so skip it.
+    if (!titleBar || !isVisible()) return;
+    m_bannerNotice = true;
+    titleBar->setLoading(false); // the seagull bows out — the work is done
+    titleBar->setTitle(text);
+    titleBar->show();
+    titleBar->raise();
+    repositionOverlays();
+    QTimer::singleShot(4000, this, [this]() {
+        m_bannerNotice = false;
+        if (m_clipBusy) return; // a new save started — its "Saving clip…" owns the banner
+        restoreBannerTitle();
+        // If the OSD already timed out, the banner was only up for the notice.
+        if (titleBar && engine->isPlaying() && !osdTimer->isActive())
+            titleBar->hide();
+        });
 }
 
 void VideoPlayer::onVideoInfo(const QString& title, const QString& uploader,

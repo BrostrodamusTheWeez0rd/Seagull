@@ -258,13 +258,13 @@ void PlayerControls::setLiveMode(bool isLive) {
     // slider stays fully live — the only difference is the timestamp shows a LIVE
     // badge in place of a fixed total duration. pollVlcState renders it each tick.
     if (m_isLive) timeLabel->setText(QStringLiteral("● LIVE"));
-    updateRecordVisibility(); // record is offered only for live streams
 }
 
-void PlayerControls::updateRecordVisibility() {
-    const bool show = m_isStream && m_isLive;
-    recordBtn->setVisible(show);
-    if (!show && m_recording) setRecording(false); // left live -> drop the flashing state
+void PlayerControls::setRecordAvailable(bool avail) {
+    // Offered for any playing media — live stream, VOD, or local file (the player picks
+    // the right capture method). Hidden when playback is torn down.
+    recordBtn->setVisible(avail);
+    if (!avail && m_recording) setRecording(false); // playback gone -> drop the pulse
 }
 
 void PlayerControls::setRecording(bool on) {
@@ -292,15 +292,12 @@ void PlayerControls::resetUiState() {
     positionSlider->blockSignals(false);
     timeLabel->setText("0:00 / 0:00");
     m_isLive = false;          // new media: live status re-asserted by the probe
-    updateRecordVisibility();  // hide record until we know it's live again
     startPolling();
 }
 
 void PlayerControls::setStreamingMode(bool isStream) {
-    m_isStream = isStream;
     qualityBtn->setVisible(isStream);
     if (!isStream && qualityFrame) qualityFrame->hide();
-    updateRecordVisibility();
     startPolling();
 }
 

@@ -141,6 +141,27 @@ void Settings::setupUI() {
         });
     streamQualityCombo->setMaxVisibleItems(8);
 
+    // Recording Type toggle (Video | Audio) — what the player's Record button captures.
+    recTypeVideoBtn = new QPushButton("Video");
+    recTypeAudioBtn = new QPushButton("Audio");
+    for (auto* b : { recTypeVideoBtn, recTypeAudioBtn }) { b->setCheckable(true); b->setStyleSheet(segStyle); }
+    recTypeVideoBtn->setChecked(true);
+    recTypeGroup = new QButtonGroup(this);
+    recTypeGroup->setExclusive(true);
+    recTypeGroup->addButton(recTypeVideoBtn);
+    recTypeGroup->addButton(recTypeAudioBtn);
+    auto* recTypeRow = new QHBoxLayout();
+    recTypeRow->setContentsMargins(0, 0, 0, 0);
+    recTypeRow->addWidget(recTypeVideoBtn);
+    recTypeRow->addWidget(recTypeAudioBtn);
+    recTypeRow->addStretch();
+
+    recFormatCombo = new QComboBox();
+    recFormatCombo->setMaxVisibleItems(8);
+    recFormatCombo->setToolTip("Container for recordings and clips. MKV survives an "
+        "interrupted recording best; MP4 is the most widely compatible.");
+    updateRecordingFormatOptions();
+
     auto* homeLayout = new QHBoxLayout();
     homeFolderEdit = new QLineEdit();
     homeFolderEdit->setReadOnly(true); // Don't let users type invalid paths manually
@@ -155,10 +176,21 @@ void Settings::setupUI() {
     dlFolderLayout->addWidget(dlFolderEdit);
     dlFolderLayout->addWidget(dlBtn);
 
+    auto* recFolderLayout = new QHBoxLayout();
+    recFolderEdit = new QLineEdit();
+    recFolderEdit->setReadOnly(true);
+    recFolderEdit->setToolTip("Where the Record button saves recordings and clips.");
+    auto* recBtn = new QPushButton("Choose Recording Folder");
+    recFolderLayout->addWidget(recFolderEdit);
+    recFolderLayout->addWidget(recBtn);
+
     dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
     dlLayout->addRow("Download Quality:", dlQualityCombo);
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
+    dlLayout->addRow("Recording Type:", recTypeRow);
+    dlLayout->addRow("Recording Format:", recFormatCombo);
+    dlLayout->addRow("Recording Directory:", recFolderLayout);
     dlLayout->addRow("Home Directory:", homeLayout);
     dlLayout->addRow("Download Directory:", dlFolderLayout);
 
@@ -222,6 +254,7 @@ void Settings::setupUI() {
     // Connect folder browse buttons
     connect(homeBtn, &QPushButton::clicked, this, &Settings::browseHomeFolder);
     connect(dlBtn, &QPushButton::clicked, this, &Settings::browseDownloadFolder);
+    connect(recBtn, &QPushButton::clicked, this, &Settings::browseRecordingFolder);
 
     // --- Bottom button bar: Reset to Default only (settings auto-apply) ---
     auto* buttonBar = new QHBoxLayout();
@@ -244,8 +277,13 @@ void Settings::setupUI() {
     connect(dlQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(searchResultsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
     connect(streamQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(recTypeGroup, &QButtonGroup::buttonClicked, this, [this](QAbstractButton*) {
+        onRecordingTypeChanged(); // refresh the recording format list, then save
+        });
+    connect(recFormatCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(homeFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
     connect(dlFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
+    connect(recFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
 
     // Set default tab
     sidebar->setCurrentRow(0);
@@ -296,6 +334,28 @@ void Settings::onDownloadTypeChanged() {
     saveSettings();
 }
 
+QString Settings::currentRecordingType() const {
+    return recTypeAudioBtn->isChecked() ? "Audio" : "Video";
+}
+
+void Settings::updateRecordingFormatOptions() {
+    const QString prev = recFormatCombo->currentText();
+    recFormatCombo->blockSignals(true);
+    recFormatCombo->clear();
+    if (currentRecordingType() == "Audio")
+        recFormatCombo->addItems({ "M4A", "MP3", "Opus", "FLAC", "WAV" });
+    else
+        recFormatCombo->addItems({ "MKV", "MP4", "TS" });
+    int idx = recFormatCombo->findText(prev);
+    recFormatCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    recFormatCombo->blockSignals(false);
+}
+
+void Settings::onRecordingTypeChanged() {
+    updateRecordingFormatOptions();
+    saveSettings();
+}
+
 int Settings::currentCardWidth() const {
     if (cardSizeCombo->currentText() == "Custom") return cardSizeSlider->value();
     return presetWidth(cardSizeCombo->currentText());
@@ -325,6 +385,13 @@ void Settings::browseDownloadFolder() {
     QString dir = QFileDialog::getExistingDirectory(this, "Select Download Folder", dlFolderEdit->text());
     if (!dir.isEmpty()) {
         dlFolderEdit->setText(dir);
+    }
+}
+
+void Settings::browseRecordingFolder() {
+    QString dir = QFileDialog::getExistingDirectory(this, "Select Recording Folder", recFolderEdit->text());
+    if (!dir.isEmpty()) {
+        recFolderEdit->setText(dir);
     }
 }
 
@@ -360,10 +427,20 @@ void Settings::loadSettings() {
 
     streamQualityCombo->setCurrentText(iniSettings->value("Streaming/Quality", "Best Available").toString());
 
+    // Recording: type drives the format list; the old Streaming/RecordFormat key
+    // (pre recording settings) seeds the video format for existing configs.
+    const QString recType = iniSettings->value("Recording/Type", "Video").toString();
+    (recType == "Audio" ? recTypeAudioBtn : recTypeVideoBtn)->setChecked(true);
+    updateRecordingFormatOptions();
+    const QString legacyRecFmt = iniSettings->value("Streaming/RecordFormat", "MKV").toString().toUpper();
+    recFormatCombo->setCurrentText(iniSettings->value("Recording/Format",
+        recType == "Audio" ? QStringLiteral("M4A") : legacyRecFmt).toString());
+
     searchResultsSpin->setValue(iniSettings->value("Search/ResultLimit", 20).toInt());
 
     homeFolderEdit->setText(iniSettings->value("Paths/HomeFolder", QCoreApplication::applicationDirPath()).toString());
     dlFolderEdit->setText(iniSettings->value("Paths/DownloadFolder", QCoreApplication::applicationDirPath() + "/Downloads").toString());
+    recFolderEdit->setText(iniSettings->value("Paths/RecordingFolder", dlFolderEdit->text()).toString());
 
     // Seed the "already applied" trackers so the first unrelated save doesn't trigger
     // a redundant theme re-apply / grid re-flow.
@@ -383,9 +460,12 @@ void Settings::saveSettings() {
     iniSettings->setValue("Download/Format", formatCombo->currentText());
     iniSettings->setValue("Download/Quality", dlQualityCombo->currentText());
     iniSettings->setValue("Streaming/Quality", streamQualityCombo->currentText());
+    iniSettings->setValue("Recording/Type", currentRecordingType());
+    iniSettings->setValue("Recording/Format", recFormatCombo->currentText());
     iniSettings->setValue("Search/ResultLimit", searchResultsSpin->value());
     iniSettings->setValue("Paths/HomeFolder", homeFolderEdit->text());
     iniSettings->setValue("Paths/DownloadFolder", dlFolderEdit->text());
+    iniSettings->setValue("Paths/RecordingFolder", recFolderEdit->text());
 
     // Force write to disk immediately rather than waiting for OS garbage collection
     iniSettings->sync();
@@ -422,9 +502,13 @@ void Settings::resetDefaults() {
     updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText("Best Available");
     streamQualityCombo->setCurrentText("Best Available");
+    recTypeVideoBtn->setChecked(true);
+    updateRecordingFormatOptions();
+    recFormatCombo->setCurrentText("MKV");
     searchResultsSpin->setValue(20);
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());
     dlFolderEdit->setText(QCoreApplication::applicationDirPath() + "/Downloads");
+    recFolderEdit->setText(QCoreApplication::applicationDirPath() + "/Downloads");
     m_loading = false;
     saveSettings();
 }
