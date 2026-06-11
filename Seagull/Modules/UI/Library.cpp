@@ -15,6 +15,11 @@
 #include <QFile>
 #include <QMap>
 #include <QItemSelectionModel>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QApplication>
+#include <QMimeData>
+#include <QMessageBox>
 
 Library::Library(QWidget* parent) : QWidget(parent) {
     mainLayout = new QVBoxLayout(this);
@@ -78,6 +83,13 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     fileTable->setModel(tableFilter);
     fileTable->setContextMenuPolicy(Qt::CustomContextMenu);
     fileTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    fileTable->setSelectionMode(QAbstractItemView::ExtendedSelection); // copy/delete many at once
+    // Writable model is what lets Rename work (QFileSystemModel::setData renames the
+    // file on disk); NoEditTriggers keeps double-click as Play — editing only starts
+    // programmatically from the Rename action.
+    fileModel->setReadOnly(false);
+    fileTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    folderTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     // Click a column header to sort by it (Name/Size/Type/Date), via lessThan.
     fileTable->setSortingEnabled(true);
     fileTable->sortByColumn(0, Qt::AscendingOrder);
@@ -134,6 +146,22 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     connect(fileTable, &QTableView::customContextMenuRequested, this, &Library::showContextMenu);
     connect(fileTable->selectionModel(), &QItemSelectionModel::currentRowChanged,
         this, &Library::onFileSelectionChanged);
+
+    // File-operation actions: live on the table (shortcuts active while it has focus)
+    // and reused by the context menu so the key hints show there.
+    auto makeFileAction = [this](const QString& text, const QKeySequence& seq, auto&& fn) {
+        auto* a = new QAction(text, this);
+        a->setShortcut(seq);
+        a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        connect(a, &QAction::triggered, this, std::forward<decltype(fn)>(fn));
+        fileTable->addAction(a);
+        return a;
+    };
+    actCut    = makeFileAction("Cut",    QKeySequence::Cut,    [this]() { cutCopySelection(true); });
+    actCopy   = makeFileAction("Copy",   QKeySequence::Copy,   [this]() { cutCopySelection(false); });
+    actPaste  = makeFileAction("Paste",  QKeySequence::Paste,  [this]() { pasteClipboard(); });
+    actDelete = makeFileAction("Delete", QKeySequence::Delete, [this]() { deleteSelection(); });
+    actRename = makeFileAction("Rename", QKeySequence(Qt::Key_F2), [this]() { renameSelected(); });
 
     // ffmpeg cover/thumbnail finished -> load it (ignoring results for a stale selection).
     connect(coverProc, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
@@ -353,17 +381,56 @@ void Library::updateSearch(const QString& text) {
 }
 
 void Library::showContextMenu(const QPoint& pos) {
-    QModelIndex index = fileTable->indexAt(pos);
-    if (!index.isValid())
-        return;
-
+    const QModelIndex index = fileTable->indexAt(pos);
     QMenu menu(this);
-    QAction* playAction = menu.addAction("Play");
 
-    QAction* selected = menu.exec(fileTable->viewport()->mapToGlobal(pos));
+    const QMimeData* clip = QGuiApplication::clipboard()->mimeData();
+    actPaste->setEnabled(clip && clip->hasUrls());
 
-    if (selected == playAction)
-        onFileDoubleClicked(index);
+    if (index.isValid()) {
+        // Right-click selects what's under the cursor (like Explorer) — but leave a
+        // multi-selection alone so cut/copy/delete can act on all of it.
+        if (!fileTable->selectionModel()->isSelected(index))
+            fileTable->setCurrentIndex(index);
+
+        const QModelIndex src = tableFilter->mapToSource(index);
+        const QFileInfo info = fileModel->fileInfo(src);
+        const QString path = info.absoluteFilePath();
+
+        if (info.isDir())
+            menu.addAction("Open", this, [this, path]() { navigateTo(path); });
+        else
+            menu.addAction("Play", this, [this, index]() { onFileDoubleClicked(index); });
+        menu.addSeparator();
+        menu.addAction(actCut);
+        menu.addAction(actCopy);
+        menu.addAction(actPaste);
+        menu.addSeparator();
+        menu.addAction(actRename);
+        menu.addAction(actDelete);
+        menu.addSeparator();
+        menu.addAction("Show in Explorer", this, [path]() {
+            QProcess::startDetached("explorer.exe",
+                { "/select,", QDir::toNativeSeparators(path) });
+            });
+        menu.addAction("Copy Path", this, [path]() {
+            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(path));
+            });
+    } else {
+        // Empty area: folder-level operations.
+        menu.addAction(actPaste);
+        menu.addSeparator();
+        menu.addAction("New Folder", this, &Library::createNewFolder);
+        menu.addAction("Refresh", this, &Library::refreshLibrary);
+        menu.addSeparator();
+        menu.addAction("Open Folder in Explorer", this, [this]() {
+            QProcess::startDetached("explorer.exe",
+                { QDir::toNativeSeparators(addressBar->text()) });
+            });
+    }
+
+    menu.exec(fileTable->viewport()->mapToGlobal(pos));
+    actPaste->setEnabled(true); // restore for the Ctrl+V shortcut (paste no-ops itself)
 }
 
 void Library::updateAddressBar(const QModelIndex& index) {
@@ -372,6 +439,126 @@ void Library::updateAddressBar(const QModelIndex& index) {
         return;
 
     addressBar->setText(fileModel->filePath(srcIdx));
+}
+
+// ---------------------------------------------------------------------------
+// File operations (context menu + shortcuts)
+// ---------------------------------------------------------------------------
+
+QStringList Library::selectedFilePaths() const {
+    QStringList paths;
+    const auto rows = fileTable->selectionModel()->selectedRows(0);
+    for (const QModelIndex& proxyIdx : rows) {
+        const QModelIndex src = tableFilter->mapToSource(proxyIdx);
+        if (src.isValid()) paths << fileModel->filePath(src);
+    }
+    return paths;
+}
+
+void Library::cutCopySelection(bool cut) {
+    const QStringList paths = selectedFilePaths();
+    if (paths.isEmpty()) return;
+
+    QList<QUrl> urls;
+    for (const QString& p : paths) urls << QUrl::fromLocalFile(p);
+    auto* mime = new QMimeData(); // clipboard takes ownership
+    mime->setUrls(urls);
+    // Explorer interop: the "Preferred DropEffect" DWORD marks the urls as a cut
+    // (DROPEFFECT_MOVE = 2) or a copy (COPY|LINK = 5), in both directions — our cut
+    // pastes as a move in Explorer, and Explorer's cut pastes as a move here.
+    QByteArray effect(4, '\0');
+    effect[0] = cut ? char(2) : char(5);
+    mime->setData("Preferred DropEffect", effect);
+    QGuiApplication::clipboard()->setMimeData(mime);
+}
+
+void Library::pasteClipboard() {
+    const QMimeData* mime = QGuiApplication::clipboard()->mimeData();
+    if (!mime || !mime->hasUrls()) return;
+    const QDir destDir(addressBar->text());
+    if (!destDir.exists()) return;
+
+    const QByteArray fx = mime->data("Preferred DropEffect");
+    const bool move = fx.size() >= 1 && (fx.at(0) & 2);
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QStringList failed;
+    for (const QUrl& u : mime->urls()) {
+        if (!u.isLocalFile()) continue;
+        const QString src = u.toLocalFile();
+        const QFileInfo si(src);
+        if (!si.exists()) continue;
+        // Moving into the file's own folder is a no-op; a copy there duplicates.
+        if (move && QString::compare(si.absolutePath(), destDir.absolutePath(), Qt::CaseInsensitive) == 0)
+            continue;
+        const QString dst = uniqueDestPath(destDir, si.fileName());
+        bool ok;
+        if (move) {
+            ok = si.isDir() ? QDir().rename(src, dst) : QFile::rename(src, dst);
+            if (!ok) { // rename fails across drives — fall back to copy + delete
+                ok = copyPath(src, dst);
+                if (ok) ok = si.isDir() ? QDir(src).removeRecursively() : QFile::remove(src);
+            }
+        } else {
+            ok = copyPath(src, dst);
+        }
+        if (!ok) failed << si.fileName();
+    }
+    QApplication::restoreOverrideCursor();
+
+    if (move) QGuiApplication::clipboard()->clear(); // a cut pastes once, like Explorer
+    if (!failed.isEmpty())
+        QMessageBox::warning(this, "Paste", "Could not paste:\n" + failed.join('\n'));
+}
+
+void Library::deleteSelection() {
+    const QStringList paths = selectedFilePaths();
+    if (paths.isEmpty()) return;
+
+    const QString what = paths.size() == 1
+        ? "\"" + QFileInfo(paths.first()).fileName() + "\""
+        : QString("%1 items").arg(paths.size());
+    if (QMessageBox::question(this, "Delete",
+        "Move " + what + " to the Recycle Bin?") != QMessageBox::Yes)
+        return;
+
+    QStringList failed;
+    for (const QString& p : paths)
+        if (!QFile::moveToTrash(p)) failed << QFileInfo(p).fileName();
+    if (!failed.isEmpty())
+        QMessageBox::warning(this, "Delete", "Could not delete:\n" + failed.join('\n'));
+}
+
+void Library::renameSelected() {
+    const QModelIndex cur = fileTable->currentIndex();
+    if (!cur.isValid()) return;
+    // In-place edit of the Name column; on commit QFileSystemModel renames on disk.
+    fileTable->edit(cur.siblingAtColumn(0));
+}
+
+bool Library::copyPath(const QString& src, const QString& dst) {
+    const QFileInfo si(src);
+    if (si.isDir()) {
+        if (!QDir().mkpath(dst)) return false;
+        const auto entries = QDir(src).entryInfoList(
+            QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden);
+        for (const QFileInfo& e : entries)
+            if (!copyPath(e.absoluteFilePath(), dst + "/" + e.fileName())) return false;
+        return true;
+    }
+    return QFile::copy(src, dst);
+}
+
+QString Library::uniqueDestPath(const QDir& dir, const QString& name) {
+    QString candidate = dir.filePath(name);
+    if (!QFileInfo::exists(candidate)) return candidate;
+    const QFileInfo fi(name);
+    const QString base = fi.completeBaseName();
+    const QString ext = fi.suffix().isEmpty() ? QString() : "." + fi.suffix();
+    for (int n = 2;; ++n) { // "name (2).ext", like Explorer
+        candidate = dir.filePath(QString("%1 (%2)%3").arg(base).arg(n).arg(ext));
+        if (!QFileInfo::exists(candidate)) return candidate;
+    }
 }
 
 // ---------------------------------------------------------------------------

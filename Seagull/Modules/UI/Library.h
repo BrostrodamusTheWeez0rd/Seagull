@@ -188,6 +188,17 @@ private:
     void navigateTo(const QString& path, bool recordHistory = true);
     void setTableRootSafe(const QModelIndex& sourceIndex);
 
+    // Clipboard file operations (context menu + Ctrl+X/C/V, Del, F2). Copy/cut put
+    // file URLs on the clipboard in Explorer's format, so cut/copy/paste interops
+    // with Explorer in both directions.
+    void cutCopySelection(bool cut);
+    void pasteClipboard();
+    void deleteSelection();   // to the Recycle Bin, after confirmation
+    void renameSelected();    // inline edit; QFileSystemModel::setData does the rename
+    QStringList selectedFilePaths() const;
+    static bool copyPath(const QString& src, const QString& dst); // recursive for dirs
+    static QString uniqueDestPath(const QDir& dir, const QString& name);
+
     // File-details panel (cover/thumbnail + metadata) to the right of the file table.
     void showDetailsFor(const QString& path);
     void clearDetails();
@@ -219,6 +230,14 @@ private:
     QProcess* probeProc = nullptr;   // ffprobe — metadata
     QProcess* coverProc = nullptr;   // ffmpeg — cover/thumbnail
     QString m_detailPath;            // file currently shown (guards stale async results)
+
+    // Shortcut-bearing actions, shared between the table's shortcuts and the
+    // context menu (so the menu shows the key hints).
+    QAction* actCut = nullptr;
+    QAction* actCopy = nullptr;
+    QAction* actPaste = nullptr;
+    QAction* actDelete = nullptr;
+    QAction* actRename = nullptr;
 
     QFileSystemModel* fileModel = nullptr;
     FolderOnlyFilter* treeFilter = nullptr;
