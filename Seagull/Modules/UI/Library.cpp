@@ -30,13 +30,29 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     upBtn = new QPushButton("↑");
     refreshBtn = new QPushButton("↻");
 
+    for (auto* btn : { backBtn, fwdBtn, upBtn, refreshBtn })
+        btn->setFixedSize(28, 24);
+
     // Toggle between media-only and all files (checked = media only, the default).
     filterBtn = new QPushButton("Media Only");
     filterBtn->setCheckable(true);
     filterBtn->setChecked(true);
     filterBtn->setToolTip("Toggle showing only media files or all files");
+    filterBtn->setFixedHeight(24);
 
-    addressBar = new QLineEdit();
+    addressBar = new QComboBox();
+    addressBar->setEditable(true);
+    addressBar->setInsertPolicy(QComboBox::NoInsert);
+    addressBar->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    {
+        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        const QStringList hist = cfg.value("Library/AddressHistory").toStringList();
+        for (const QString& p : hist)
+            addressBar->addItem(p);
+    }
+    goBtn = new QPushButton("→");
+    goBtn->setFixedSize(28, 24);
+    goBtn->setToolTip("Navigate to path");
     searchBar = new QLineEdit();
     searchBar->setPlaceholderText("Search...");
     searchBar->setFixedWidth(150);
@@ -47,6 +63,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     toolbarLayout->addWidget(refreshBtn);
     toolbarLayout->addWidget(filterBtn);
     toolbarLayout->addWidget(addressBar);
+    toolbarLayout->addWidget(goBtn);
     toolbarLayout->addWidget(searchBar);
 
     toolbarLayout->setStretchFactor(addressBar, 1);
@@ -137,8 +154,14 @@ Library::Library(QWidget* parent) : QWidget(parent) {
         filterBtn->setText(mediaOnly ? "Media Only" : "All Files");
         });
 
-    connect(addressBar, &QLineEdit::returnPressed, this, [this]() {
-        navigateTo(addressBar->text());
+    connect(addressBar->lineEdit(), &QLineEdit::returnPressed, this, [this]() {
+        navigateTo(addressBar->currentText());
+    });
+    connect(addressBar, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
+        navigateTo(addressBar->currentText());
+    });
+    connect(goBtn, &QPushButton::clicked, this, [this]() {
+        navigateTo(addressBar->currentText());
     });
     connect(searchBar, &QLineEdit::textChanged, this, &Library::updateSearch);
     connect(folderTree, &QTreeView::clicked, this, &Library::onTreeClicked);
@@ -243,7 +266,9 @@ void Library::navigateTo(const QString& path, bool recordHistory) {
     folderTree->setCurrentIndex(treeProxy);
 
     setTableRootSafe(srcIdx);
-    addressBar->setText(path);
+    addressBar->setEditText(path);
+    addressBar->lineEdit()->selectAll();
+    addToAddressHistory(path);
 
     if (recordHistory) {
         while (history.size() > historyIndex + 1)
@@ -344,17 +369,17 @@ void Library::goForward() {
 }
 
 void Library::goUp() {
-    QDir dir(addressBar->text());
+    QDir dir(addressBar->currentText());
     if (dir.cdUp())
         navigateTo(dir.absolutePath());
 }
 
 void Library::refreshLibrary() {
-    navigateTo(addressBar->text(), false);
+    navigateTo(addressBar->currentText(), false);
 }
 
 void Library::createNewFolder() {
-    QString currentPath = addressBar->text();
+    QString currentPath = addressBar->currentText();
     if (currentPath.isEmpty())
         return;
 
@@ -425,7 +450,7 @@ void Library::showContextMenu(const QPoint& pos) {
         menu.addSeparator();
         menu.addAction("Open Folder in Explorer", this, [this]() {
             QProcess::startDetached("explorer.exe",
-                { QDir::toNativeSeparators(addressBar->text()) });
+                { QDir::toNativeSeparators(addressBar->currentText()) });
             });
     }
 
@@ -471,7 +496,28 @@ void Library::updateAddressBar(const QModelIndex& index) {
     if (!srcIdx.isValid())
         return;
 
-    addressBar->setText(fileModel->filePath(srcIdx));
+    addressBar->setEditText(fileModel->filePath(srcIdx));
+}
+
+void Library::addToAddressHistory(const QString& path) {
+    // Remove any existing entry for this path (case-insensitive on Windows).
+    for (int i = addressBar->count() - 1; i >= 0; --i) {
+        if (addressBar->itemText(i).compare(path, Qt::CaseInsensitive) == 0)
+            addressBar->removeItem(i);
+    }
+    addressBar->insertItem(0, path);
+
+    constexpr int kMaxHistory = 50;
+    while (addressBar->count() > kMaxHistory)
+        addressBar->removeItem(addressBar->count() - 1);
+
+    QStringList hist;
+    hist.reserve(addressBar->count());
+    for (int i = 0; i < addressBar->count(); ++i)
+        hist << addressBar->itemText(i);
+
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    cfg.setValue("Library/AddressHistory", hist);
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +554,7 @@ void Library::cutCopySelection(bool cut) {
 void Library::pasteClipboard() {
     const QMimeData* mime = QGuiApplication::clipboard()->mimeData();
     if (!mime || !mime->hasUrls()) return;
-    const QDir destDir(addressBar->text());
+    const QDir destDir(addressBar->currentText());
     if (!destDir.exists()) return;
 
     const QByteArray fx = mime->data("Preferred DropEffect");

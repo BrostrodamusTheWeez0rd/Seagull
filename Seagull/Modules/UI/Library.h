@@ -11,6 +11,7 @@
 #include <QSplitter>
 #include <QPushButton>
 #include <QLineEdit>
+#include <QComboBox>
 #include <QMenu>
 #include <QInputDialog>
 #include <QDir>
@@ -188,6 +189,7 @@ private slots:
 private:
     void navigateTo(const QString& path, bool recordHistory = true);
     void setTableRootSafe(const QModelIndex& sourceIndex);
+    void addToAddressHistory(const QString& path);
 
     // Clipboard file operations (context menu + Ctrl+X/C/V, Del, F2). Copy/cut put
     // file URLs on the clipboard in Explorer's format, so cut/copy/paste interops
@@ -215,8 +217,9 @@ private:
     QPushButton* upBtn = nullptr;
     QPushButton* refreshBtn = nullptr;
     QPushButton* filterBtn = nullptr;   // toggle: media-only vs all files
+    QPushButton* goBtn = nullptr;
 
-    QLineEdit* addressBar = nullptr;
+    QComboBox* addressBar = nullptr;
     QLineEdit* searchBar = nullptr;
 
     QSplitter* mainSplitter = nullptr;
