@@ -1,4 +1,5 @@
 #include "SgRecorder.h"
+#include "SgPaths.h"
 
 #include <QProcess>
 #include <QCoreApplication>
@@ -60,10 +61,7 @@ QString SgRecorder::mergeFormat() const {
 }
 
 QString SgRecorder::outputDir() const {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-    const QString dl = cfg.value("Paths/DownloadFolder",
-        QCoreApplication::applicationDirPath() + "/Downloads").toString();
-    return cfg.value("Paths/RecordingFolder", dl).toString();
+    return SgPaths::recordingFolder();
 }
 
 bool SgRecorder::audioOnly() const {

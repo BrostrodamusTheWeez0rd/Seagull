@@ -1,4 +1,5 @@
 #include "SgOptions.h"
+#include "SgPaths.h"
 #include <QCoreApplication>
 #include <QSettings>
 #include <QRegularExpression>
@@ -12,12 +13,15 @@ QStringList SgOptions::buildDownloadArgs(const QString& url) {
     QString type = settings.value("Download/Type", "Video").toString();
     QString format = settings.value("Download/Format", "Best Available").toString();
     QString quality = settings.value("Download/Quality", "Best Available").toString();
-    QString dlFolder = settings.value("Paths/DownloadFolder",
-        QCoreApplication::applicationDirPath() + "/Downloads").toString();
+
+    // Route by media type: audio extractions and video downloads land in their
+    // own folders (yt-dlp creates the directory if needed).
+    const QString outFolder = (type == "Audio") ? SgPaths::audioFolder()
+                                                : SgPaths::videoFolder();
 
     args << "--newline"
         << "--no-playlist"
-        << "-o" << dlFolder + "/%(title)s.%(ext)s";
+        << "-o" << outFolder + "/%(title)s.%(ext)s";
 
     if (type == "Audio") {
         // Extract audio. "Best Available" keeps the source audio codec; a named

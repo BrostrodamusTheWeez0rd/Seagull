@@ -53,7 +53,7 @@ private:
     QString ffmpegPath() const;     // tools/ffmpeg.exe next to the app
     QString ytDlpPath() const;      // tools/yt-dlp.exe
     QString toolsDir() const;       // the tools/ folder
-    QString outputDir() const;      // config Paths/RecordingFolder (falls back to DownloadFolder)
+    QString outputDir() const;      // SgPaths::recordingFolder() — recordings + clips
     bool    audioOnly() const;      // config Recording/Type == "Audio"
     QString extForFormat() const;   // config Recording/Format -> container ext for the active type
     QString mergeFormat() const;    // video clip container (mp4|mkv — yt-dlp can't merge to ts)

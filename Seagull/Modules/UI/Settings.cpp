@@ -1,5 +1,6 @@
 #include "Settings.h"
 #include "Theme.h"
+#include "../Backend/SgPaths.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -162,27 +163,33 @@ void Settings::setupUI() {
         "interrupted recording best; MP4 is the most widely compatible.");
     updateRecordingFormatOptions();
 
-    auto* homeLayout = new QHBoxLayout();
-    homeFolderEdit = new QLineEdit();
-    homeFolderEdit->setReadOnly(true); // Don't let users type invalid paths manually
-    auto* homeBtn = new QPushButton("Choose Home Folder");
-    homeLayout->addWidget(homeFolderEdit);
-    homeLayout->addWidget(homeBtn);
+    // Folder rows: read-only path edit + Browse button, one per media type.
+    // (Read-only so users can't type invalid paths manually.)
+    auto makeFolderRow = [this](QLineEdit*& edit, const QString& title, const QString& tip) {
+        auto* row = new QHBoxLayout();
+        edit = new QLineEdit();
+        edit->setReadOnly(true);
+        edit->setToolTip(tip);
+        auto* btn = new QPushButton("Browse...");
+        row->addWidget(edit);
+        row->addWidget(btn);
+        QLineEdit* target = edit; // capture the pointer value, not the local ref
+        connect(btn, &QPushButton::clicked, this, [this, target, title]() {
+            browseInto(target, title);
+            });
+        return row;
+        };
 
-    auto* dlFolderLayout = new QHBoxLayout();
-    dlFolderEdit = new QLineEdit();
-    dlFolderEdit->setReadOnly(true);
-    auto* dlBtn = new QPushButton("Choose Download Folder");
-    dlFolderLayout->addWidget(dlFolderEdit);
-    dlFolderLayout->addWidget(dlBtn);
-
-    auto* recFolderLayout = new QHBoxLayout();
-    recFolderEdit = new QLineEdit();
-    recFolderEdit->setReadOnly(true);
-    recFolderEdit->setToolTip("Where the Record button saves recordings and clips.");
-    auto* recBtn = new QPushButton("Choose Recording Folder");
-    recFolderLayout->addWidget(recFolderEdit);
-    recFolderLayout->addWidget(recBtn);
+    auto* homeLayout = makeFolderRow(homeFolderEdit, "Select Home Folder",
+        "Where the Library opens on startup.");
+    auto* videoFolderLayout = makeFolderRow(videoFolderEdit, "Select Videos Folder",
+        "Where video downloads are saved.");
+    auto* audioFolderLayout = makeFolderRow(audioFolderEdit, "Select Audio Folder",
+        "Where audio downloads and extractions are saved.");
+    auto* photoFolderLayout = makeFolderRow(photoFolderEdit, "Select Photos Folder",
+        "Where saved images are stored.");
+    auto* recFolderLayout = makeFolderRow(recFolderEdit, "Select Recordings Folder",
+        "Where the Record button saves recordings and clips.");
 
     dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
@@ -190,9 +197,11 @@ void Settings::setupUI() {
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
     dlLayout->addRow("Recording Type:", recTypeRow);
     dlLayout->addRow("Recording Format:", recFormatCombo);
-    dlLayout->addRow("Recording Directory:", recFolderLayout);
+    dlLayout->addRow("Videos Folder:", videoFolderLayout);
+    dlLayout->addRow("Audio Folder:", audioFolderLayout);
+    dlLayout->addRow("Photos Folder:", photoFolderLayout);
+    dlLayout->addRow("Recordings Folder:", recFolderLayout);
     dlLayout->addRow("Home Directory:", homeLayout);
-    dlLayout->addRow("Download Directory:", dlFolderLayout);
 
     stackedWidget->addWidget(dlWidget);
 
@@ -251,11 +260,6 @@ void Settings::setupUI() {
     // Change pages when a side tab is clicked
     connect(sidebar, &QListWidget::currentRowChanged, stackedWidget, &QStackedWidget::setCurrentIndex);
 
-    // Connect folder browse buttons
-    connect(homeBtn, &QPushButton::clicked, this, &Settings::browseHomeFolder);
-    connect(dlBtn, &QPushButton::clicked, this, &Settings::browseDownloadFolder);
-    connect(recBtn, &QPushButton::clicked, this, &Settings::browseRecordingFolder);
-
     // --- Bottom button bar: Reset to Default only (settings auto-apply) ---
     auto* buttonBar = new QHBoxLayout();
     buttonBar->setContentsMargins(0, 10, 10, 10);
@@ -281,9 +285,9 @@ void Settings::setupUI() {
         onRecordingTypeChanged(); // refresh the recording format list, then save
         });
     connect(recFormatCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
-    connect(homeFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
-    connect(dlFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
-    connect(recFolderEdit, &QLineEdit::textChanged, this, &Settings::saveSettings);
+    for (auto* edit : { homeFolderEdit, videoFolderEdit, audioFolderEdit,
+                        photoFolderEdit, recFolderEdit })
+        connect(edit, &QLineEdit::textChanged, this, &Settings::saveSettings);
 
     // Set default tab
     sidebar->setCurrentRow(0);
@@ -374,25 +378,10 @@ void Settings::onCardSizeChanged() {
     saveSettings();
 }
 
-void Settings::browseHomeFolder() {
-    QString dir = QFileDialog::getExistingDirectory(this, "Select Home Folder", homeFolderEdit->text());
-    if (!dir.isEmpty()) {
-        homeFolderEdit->setText(dir);
-    }
-}
-
-void Settings::browseDownloadFolder() {
-    QString dir = QFileDialog::getExistingDirectory(this, "Select Download Folder", dlFolderEdit->text());
-    if (!dir.isEmpty()) {
-        dlFolderEdit->setText(dir);
-    }
-}
-
-void Settings::browseRecordingFolder() {
-    QString dir = QFileDialog::getExistingDirectory(this, "Select Recording Folder", recFolderEdit->text());
-    if (!dir.isEmpty()) {
-        recFolderEdit->setText(dir);
-    }
+void Settings::browseInto(QLineEdit* edit, const QString& title) {
+    QString dir = QFileDialog::getExistingDirectory(this, title, edit->text());
+    if (!dir.isEmpty())
+        edit->setText(dir); // textChanged -> saveSettings
 }
 
 void Settings::loadSettings() {
@@ -438,9 +427,13 @@ void Settings::loadSettings() {
 
     searchResultsSpin->setValue(iniSettings->value("Search/ResultLimit", 20).toInt());
 
-    homeFolderEdit->setText(iniSettings->value("Paths/HomeFolder", QCoreApplication::applicationDirPath()).toString());
-    dlFolderEdit->setText(iniSettings->value("Paths/DownloadFolder", QCoreApplication::applicationDirPath() + "/Downloads").toString());
-    recFolderEdit->setText(iniSettings->value("Paths/RecordingFolder", dlFolderEdit->text()).toString());
+    // SgPaths owns the key/default/legacy-fallback logic, so the UI always shows
+    // exactly the folder the downloader/recorder will actually use.
+    homeFolderEdit->setText(SgPaths::homeFolder());
+    videoFolderEdit->setText(SgPaths::videoFolder());
+    audioFolderEdit->setText(SgPaths::audioFolder());
+    photoFolderEdit->setText(SgPaths::photoFolder());
+    recFolderEdit->setText(SgPaths::recordingFolder());
 
     // Seed the "already applied" trackers so the first unrelated save doesn't trigger
     // a redundant theme re-apply / grid re-flow.
@@ -464,7 +457,9 @@ void Settings::saveSettings() {
     iniSettings->setValue("Recording/Format", recFormatCombo->currentText());
     iniSettings->setValue("Search/ResultLimit", searchResultsSpin->value());
     iniSettings->setValue("Paths/HomeFolder", homeFolderEdit->text());
-    iniSettings->setValue("Paths/DownloadFolder", dlFolderEdit->text());
+    iniSettings->setValue("Paths/VideoFolder", videoFolderEdit->text());
+    iniSettings->setValue("Paths/AudioFolder", audioFolderEdit->text());
+    iniSettings->setValue("Paths/PhotoFolder", photoFolderEdit->text());
     iniSettings->setValue("Paths/RecordingFolder", recFolderEdit->text());
 
     // Force write to disk immediately rather than waiting for OS garbage collection
@@ -507,8 +502,11 @@ void Settings::resetDefaults() {
     recFormatCombo->setCurrentText("MKV");
     searchResultsSpin->setValue(20);
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());
-    dlFolderEdit->setText(QCoreApplication::applicationDirPath() + "/Downloads");
-    recFolderEdit->setText(QCoreApplication::applicationDirPath() + "/Downloads");
+    const QString downloads = QCoreApplication::applicationDirPath() + "/Downloads";
+    videoFolderEdit->setText(downloads + "/Videos");
+    audioFolderEdit->setText(downloads + "/Audio");
+    photoFolderEdit->setText(downloads + "/Photos");
+    recFolderEdit->setText(downloads + "/Recordings");
     m_loading = false;
     saveSettings();
 }

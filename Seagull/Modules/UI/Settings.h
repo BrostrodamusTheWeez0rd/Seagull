@@ -22,9 +22,6 @@ signals:
     void cardWidthChanged(int width); // Display "Card size" -> Search card width (px)
 
 private slots:
-    void browseHomeFolder();
-    void browseDownloadFolder();
-    void browseRecordingFolder();
     void saveSettings();
     void loadSettings();
     void resetDefaults();
@@ -40,6 +37,7 @@ private:
     void onRecordingTypeChanged();       // recording type toggle -> refresh formats + save
     QString currentRecordingType() const;// "Video" or "Audio"
     int  currentCardWidth() const;       // px from the combo preset, or the slider if Custom
+    void browseInto(QLineEdit* edit, const QString& title); // folder picker -> edit
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
@@ -70,7 +68,9 @@ private:
     QPushButton* recTypeAudioBtn;
     QComboBox* recFormatCombo;   // Recording container/codec, per the type
     QLineEdit* homeFolderEdit;
-    QLineEdit* dlFolderEdit;
+    QLineEdit* videoFolderEdit;  // video downloads
+    QLineEdit* audioFolderEdit;  // audio downloads / extractions
+    QLineEdit* photoFolderEdit;  // saved images
     QLineEdit* recFolderEdit;    // where recordings + clips are saved
 
     // Search Tab elements

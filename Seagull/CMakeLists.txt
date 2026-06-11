@@ -56,6 +56,8 @@ add_executable(Seagull
     Modules/Backend/SgFormat.cpp
     Modules/Backend/SgOptions.h
     Modules/Backend/SgOptions.cpp
+    Modules/Backend/SgPaths.h
+    Modules/Backend/SgPaths.cpp
     Modules/Backend/SgUpdater.h
     Modules/Backend/SgUpdater.cpp
     Modules/Backend/PlaybackEngine.h

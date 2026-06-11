@@ -1,4 +1,5 @@
 #include "Library.h"
+#include "../Backend/SgPaths.h"
 #include <QTimer>
 #include <QMenu>
 #include <QInputDialog>
@@ -247,8 +248,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
 
     QTimer::singleShot(0, this, [this]() {
         // Start at the configured Home Folder (Settings), falling back to the OS home.
-        QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-        QString home = settings.value("Paths/HomeFolder", QDir::homePath()).toString();
+        QString home = SgPaths::homeFolder();
         if (home.isEmpty() || !QDir(home).exists()) home = QDir::homePath();
         navigateTo(home);
         });
