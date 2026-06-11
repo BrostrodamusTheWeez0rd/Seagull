@@ -90,7 +90,8 @@ private:
     QPixmap m_rounded; // rounded render at reference size
 };
 
-VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth, QWidget* parent)
+VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth,
+    QWidget* parent, int buttons)
     : QWidget(parent), m_result(result) {
     setObjectName("videoCard"); // themable via Theme::apply's global sheet
     setAttribute(Qt::WA_StyledBackground, true); // let the QSS background/border paint
@@ -125,28 +126,26 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
     auto* btnRow = new QHBoxLayout();
     btnRow->setSpacing(4);
 
-    auto* playBtn = new QPushButton("▶ Play", this);
-    auto* queueBtn = new QPushButton("Queue", this);
-    auto* downloadBtn = new QPushButton("Download", this);
-    for (QPushButton* b : { playBtn, queueBtn, downloadBtn }) {
+    auto addButton = [&](const QString& label, auto signal) {
+        auto* b = new QPushButton(label, this);
         b->setObjectName("videoCardButton");
         b->setCursor(Qt::PointingHandCursor);
         btnRow->addWidget(b, 1); // share the card width evenly
-    }
+        connect(b, &QPushButton::clicked, this, [this, signal]() {
+            emit (this->*signal)(QUrl(m_result.url), m_result.title);
+            });
+        };
+    if (buttons & PlayButton)     addButton("▶ Play", &VideoCard::playRequested);
+    if (buttons & QueueButton)    addButton("Queue", &VideoCard::queueRequested);
+    if (buttons & DownloadButton) addButton("Download", &VideoCard::downloadRequested);
     lay->addLayout(btnRow);
-
-    connect(playBtn, &QPushButton::clicked, this, [this]() {
-        emit playRequested(QUrl(m_result.url), m_result.title);
-        });
-    connect(queueBtn, &QPushButton::clicked, this, [this]() {
-        emit queueRequested(QUrl(m_result.url), m_result.title);
-        });
-    connect(downloadBtn, &QPushButton::clicked, this, [this]() {
-        emit downloadRequested(QUrl(m_result.url), m_result.title);
-        });
 
     setCardWidth(cardWidth);
     if (nam) loadThumbnail(nam);
+}
+
+void VideoCard::setThumbnail(const QPixmap& pm) {
+    m_thumb->setSource(pm);
 }
 
 void VideoCard::setCardWidth(int width) {

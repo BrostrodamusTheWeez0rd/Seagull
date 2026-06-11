@@ -181,7 +181,7 @@ void Settings::setupUI() {
         };
 
     auto* homeLayout = makeFolderRow(homeFolderEdit, "Select Home Folder",
-        "Where the Library opens on startup.");
+        "Where the File Explorer opens on startup.");
     auto* videoFolderLayout = makeFolderRow(videoFolderEdit, "Select Videos Folder",
         "Where video downloads are saved.");
     auto* audioFolderLayout = makeFolderRow(audioFolderEdit, "Select Audio Folder",

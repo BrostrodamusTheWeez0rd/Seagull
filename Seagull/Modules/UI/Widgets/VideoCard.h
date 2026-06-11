@@ -16,10 +16,23 @@ class RoundedThumb;
 class VideoCard : public QWidget {
     Q_OBJECT
 public:
+    // Which action buttons the card shows. The Library's local-file cards only
+    // need Play; Search results get all three.
+    enum CardButton {
+        PlayButton     = 0x1,
+        QueueButton    = 0x2,
+        DownloadButton = 0x4,
+        AllButtons     = PlayButton | QueueButton | DownloadButton,
+    };
+
     VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth,
-        QWidget* parent = nullptr);
+        QWidget* parent = nullptr, int buttons = AllButtons);
 
     void setCardWidth(int width); // grid-assigned width; thumbnail stays 16:9
+
+    // Hand the card an already-loaded thumbnail (local files: generated frames /
+    // cover art, no network involved).
+    void setThumbnail(const QPixmap& pm);
 
     static QString formatDuration(qint64 seconds);
     static QString formatViewCount(qint64 views);

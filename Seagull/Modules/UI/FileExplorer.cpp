@@ -1,4 +1,4 @@
-#include "Library.h"
+#include "FileExplorer.h"
 #include "../Backend/SgPaths.h"
 #include <QTimer>
 #include <QMenu>
@@ -22,7 +22,7 @@
 #include <QMimeData>
 #include <QMessageBox>
 
-Library::Library(QWidget* parent) : QWidget(parent) {
+FileExplorer::FileExplorer(QWidget* parent) : QWidget(parent) {
     mainLayout = new QVBoxLayout(this);
     toolbarLayout = new QHBoxLayout();
 
@@ -47,7 +47,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     addressBar->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     {
         QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-        const QStringList hist = cfg.value("Library/AddressHistory").toStringList();
+        const QStringList hist = cfg.value("FileExplorer/AddressHistory").toStringList();
         for (const QString& p : hist)
             addressBar->addItem(p);
     }
@@ -146,10 +146,10 @@ Library::Library(QWidget* parent) : QWidget(parent) {
 
     historyIndex = -1;
 
-    connect(backBtn, &QPushButton::clicked, this, &Library::goBack);
-    connect(fwdBtn, &QPushButton::clicked, this, &Library::goForward);
-    connect(upBtn, &QPushButton::clicked, this, &Library::goUp);
-    connect(refreshBtn, &QPushButton::clicked, this, &Library::refreshLibrary);
+    connect(backBtn, &QPushButton::clicked, this, &FileExplorer::goBack);
+    connect(fwdBtn, &QPushButton::clicked, this, &FileExplorer::goForward);
+    connect(upBtn, &QPushButton::clicked, this, &FileExplorer::goUp);
+    connect(refreshBtn, &QPushButton::clicked, this, &FileExplorer::refreshView);
     connect(filterBtn, &QPushButton::toggled, this, [this](bool mediaOnly) {
         tableFilter->setShowAllFiles(!mediaOnly);
         filterBtn->setText(mediaOnly ? "Media Only" : "All Files");
@@ -164,14 +164,14 @@ Library::Library(QWidget* parent) : QWidget(parent) {
     connect(goBtn, &QPushButton::clicked, this, [this]() {
         navigateTo(addressBar->currentText());
     });
-    connect(searchBar, &QLineEdit::textChanged, this, &Library::updateSearch);
-    connect(folderTree, &QTreeView::clicked, this, &Library::onTreeClicked);
-    connect(folderTree, &QTreeView::doubleClicked, this, &Library::onTreeDoubleClicked);
-    connect(folderTree, &QTreeView::customContextMenuRequested, this, &Library::showFolderContextMenu);
-    connect(fileTable, &QTableView::doubleClicked, this, &Library::onFileDoubleClicked);
-    connect(fileTable, &QTableView::customContextMenuRequested, this, &Library::showContextMenu);
+    connect(searchBar, &QLineEdit::textChanged, this, &FileExplorer::updateSearch);
+    connect(folderTree, &QTreeView::clicked, this, &FileExplorer::onTreeClicked);
+    connect(folderTree, &QTreeView::doubleClicked, this, &FileExplorer::onTreeDoubleClicked);
+    connect(folderTree, &QTreeView::customContextMenuRequested, this, &FileExplorer::showFolderContextMenu);
+    connect(fileTable, &QTableView::doubleClicked, this, &FileExplorer::onFileDoubleClicked);
+    connect(fileTable, &QTableView::customContextMenuRequested, this, &FileExplorer::showContextMenu);
     connect(fileTable->selectionModel(), &QItemSelectionModel::currentRowChanged,
-        this, &Library::onFileSelectionChanged);
+        this, &FileExplorer::onFileSelectionChanged);
 
     // File-operation actions: live on the table (shortcuts active while it has focus)
     // and reused by the context menu so the key hints show there.
@@ -254,7 +254,7 @@ Library::Library(QWidget* parent) : QWidget(parent) {
         });
 }
 
-void Library::navigateTo(const QString& path, bool recordHistory) {
+void FileExplorer::navigateTo(const QString& path, bool recordHistory) {
     if (path.isEmpty())
         return;
 
@@ -279,7 +279,7 @@ void Library::navigateTo(const QString& path, bool recordHistory) {
     }
 }
 
-void Library::setTableRootSafe(const QModelIndex& sourceIndex) {
+void FileExplorer::setTableRootSafe(const QModelIndex& sourceIndex) {
     if (!sourceIndex.isValid())
         return;
 
@@ -294,7 +294,7 @@ void Library::setTableRootSafe(const QModelIndex& sourceIndex) {
         fileTable->setRootIndex(proxyIdx);
 }
 
-void Library::onTreeClicked(const QModelIndex& index) {
+void FileExplorer::onTreeClicked(const QModelIndex& index) {
     QModelIndex srcIdx = treeFilter->mapToSource(index);
     if (!srcIdx.isValid())
         return;
@@ -302,7 +302,7 @@ void Library::onTreeClicked(const QModelIndex& index) {
     navigateTo(fileModel->filePath(srcIdx));
 }
 
-void Library::onTreeDoubleClicked(const QModelIndex& index) {
+void FileExplorer::onTreeDoubleClicked(const QModelIndex& index) {
     QModelIndex srcIdx = treeFilter->mapToSource(index);
     if (!srcIdx.isValid())
         return;
@@ -310,7 +310,7 @@ void Library::onTreeDoubleClicked(const QModelIndex& index) {
     navigateTo(fileModel->filePath(srcIdx));
 }
 
-void Library::onFileDoubleClicked(const QModelIndex& index) {
+void FileExplorer::onFileDoubleClicked(const QModelIndex& index) {
     QModelIndex srcIdx = tableFilter->mapToSource(index);
     if (!srcIdx.isValid())
         return;
@@ -337,7 +337,7 @@ void Library::onFileDoubleClicked(const QModelIndex& index) {
     emit playMediaRequested(url);
 }
 
-void Library::playNextFile() {
+void FileExplorer::playNextFile() {
     if (currentPlayIndex < 0) return;
     int nextRow = currentPlayIndex + 1;
     if (nextRow >= tableFilter->rowCount(fileTable->rootIndex())) return;
@@ -346,7 +346,7 @@ void Library::playNextFile() {
         onFileDoubleClicked(proxyIdx);
 }
 
-void Library::playPrevFile() {
+void FileExplorer::playPrevFile() {
     if (currentPlayIndex <= 0) return;
     int prevRow = currentPlayIndex - 1;
     QModelIndex proxyIdx = tableFilter->index(prevRow, 0, fileTable->rootIndex());
@@ -354,31 +354,31 @@ void Library::playPrevFile() {
         onFileDoubleClicked(proxyIdx);
 }
 
-void Library::goBack() {
+void FileExplorer::goBack() {
     if (historyIndex > 0) {
         historyIndex--;
         navigateTo(history[historyIndex], false);
     }
 }
 
-void Library::goForward() {
+void FileExplorer::goForward() {
     if (historyIndex < history.size() - 1) {
         historyIndex++;
         navigateTo(history[historyIndex], false);
     }
 }
 
-void Library::goUp() {
+void FileExplorer::goUp() {
     QDir dir(addressBar->currentText());
     if (dir.cdUp())
         navigateTo(dir.absolutePath());
 }
 
-void Library::refreshLibrary() {
+void FileExplorer::refreshView() {
     navigateTo(addressBar->currentText(), false);
 }
 
-void Library::createNewFolder() {
+void FileExplorer::createNewFolder() {
     QString currentPath = addressBar->currentText();
     if (currentPath.isEmpty())
         return;
@@ -399,13 +399,13 @@ void Library::createNewFolder() {
     }
 }
 
-void Library::updateSearch(const QString& text) {
+void FileExplorer::updateSearch(const QString& text) {
     tableFilter->setFilterRegularExpression(
         QRegularExpression(text, QRegularExpression::CaseInsensitiveOption)
     );
 }
 
-void Library::showContextMenu(const QPoint& pos) {
+void FileExplorer::showContextMenu(const QPoint& pos) {
     const QModelIndex index = fileTable->indexAt(pos);
     QMenu menu(this);
 
@@ -445,8 +445,8 @@ void Library::showContextMenu(const QPoint& pos) {
         // Empty area: folder-level operations.
         menu.addAction(actPaste);
         menu.addSeparator();
-        menu.addAction("New Folder", this, &Library::createNewFolder);
-        menu.addAction("Refresh", this, &Library::refreshLibrary);
+        menu.addAction("New Folder", this, &FileExplorer::createNewFolder);
+        menu.addAction("Refresh", this, &FileExplorer::refreshView);
         menu.addSeparator();
         menu.addAction("Open Folder in Explorer", this, [this]() {
             QProcess::startDetached("explorer.exe",
@@ -458,7 +458,7 @@ void Library::showContextMenu(const QPoint& pos) {
     actPaste->setEnabled(true); // restore for the Ctrl+V shortcut (paste no-ops itself)
 }
 
-void Library::showFolderContextMenu(const QPoint& pos) {
+void FileExplorer::showFolderContextMenu(const QPoint& pos) {
     const QModelIndex index = folderTree->indexAt(pos);
     QMenu menu(this);
 
@@ -484,14 +484,14 @@ void Library::showFolderContextMenu(const QPoint& pos) {
             QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(path));
         });
     } else {
-        menu.addAction("New Folder", this, &Library::createNewFolder);
-        menu.addAction("Refresh", this, &Library::refreshLibrary);
+        menu.addAction("New Folder", this, &FileExplorer::createNewFolder);
+        menu.addAction("Refresh", this, &FileExplorer::refreshView);
     }
 
     menu.exec(folderTree->viewport()->mapToGlobal(pos));
 }
 
-void Library::updateAddressBar(const QModelIndex& index) {
+void FileExplorer::updateAddressBar(const QModelIndex& index) {
     QModelIndex srcIdx = treeFilter->mapToSource(index);
     if (!srcIdx.isValid())
         return;
@@ -499,7 +499,7 @@ void Library::updateAddressBar(const QModelIndex& index) {
     addressBar->setEditText(fileModel->filePath(srcIdx));
 }
 
-void Library::addToAddressHistory(const QString& path) {
+void FileExplorer::addToAddressHistory(const QString& path) {
     // Remove any existing entry for this path (case-insensitive on Windows).
     for (int i = addressBar->count() - 1; i >= 0; --i) {
         if (addressBar->itemText(i).compare(path, Qt::CaseInsensitive) == 0)
@@ -517,14 +517,14 @@ void Library::addToAddressHistory(const QString& path) {
         hist << addressBar->itemText(i);
 
     QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-    cfg.setValue("Library/AddressHistory", hist);
+    cfg.setValue("FileExplorer/AddressHistory", hist);
 }
 
 // ---------------------------------------------------------------------------
 // File operations (context menu + shortcuts)
 // ---------------------------------------------------------------------------
 
-QStringList Library::selectedFilePaths() const {
+QStringList FileExplorer::selectedFilePaths() const {
     QStringList paths;
     const auto rows = fileTable->selectionModel()->selectedRows(0);
     for (const QModelIndex& proxyIdx : rows) {
@@ -534,7 +534,7 @@ QStringList Library::selectedFilePaths() const {
     return paths;
 }
 
-void Library::cutCopySelection(bool cut) {
+void FileExplorer::cutCopySelection(bool cut) {
     const QStringList paths = selectedFilePaths();
     if (paths.isEmpty()) return;
 
@@ -551,7 +551,7 @@ void Library::cutCopySelection(bool cut) {
     QGuiApplication::clipboard()->setMimeData(mime);
 }
 
-void Library::pasteClipboard() {
+void FileExplorer::pasteClipboard() {
     const QMimeData* mime = QGuiApplication::clipboard()->mimeData();
     if (!mime || !mime->hasUrls()) return;
     const QDir destDir(addressBar->currentText());
@@ -590,7 +590,7 @@ void Library::pasteClipboard() {
         QMessageBox::warning(this, "Paste", "Could not paste:\n" + failed.join('\n'));
 }
 
-void Library::deleteSelection() {
+void FileExplorer::deleteSelection() {
     const QStringList paths = selectedFilePaths();
     if (paths.isEmpty()) return;
 
@@ -608,14 +608,14 @@ void Library::deleteSelection() {
         QMessageBox::warning(this, "Delete", "Could not delete:\n" + failed.join('\n'));
 }
 
-void Library::renameSelected() {
+void FileExplorer::renameSelected() {
     const QModelIndex cur = fileTable->currentIndex();
     if (!cur.isValid()) return;
     // In-place edit of the Name column; on commit QFileSystemModel renames on disk.
     fileTable->edit(cur.siblingAtColumn(0));
 }
 
-bool Library::copyPath(const QString& src, const QString& dst) {
+bool FileExplorer::copyPath(const QString& src, const QString& dst) {
     const QFileInfo si(src);
     if (si.isDir()) {
         if (!QDir().mkpath(dst)) return false;
@@ -628,7 +628,7 @@ bool Library::copyPath(const QString& src, const QString& dst) {
     return QFile::copy(src, dst);
 }
 
-QString Library::uniqueDestPath(const QDir& dir, const QString& name) {
+QString FileExplorer::uniqueDestPath(const QDir& dir, const QString& name) {
     QString candidate = dir.filePath(name);
     if (!QFileInfo::exists(candidate)) return candidate;
     const QFileInfo fi(name);
@@ -644,7 +644,7 @@ QString Library::uniqueDestPath(const QDir& dir, const QString& name) {
 // File details panel
 // ---------------------------------------------------------------------------
 
-void Library::onFileSelectionChanged(const QModelIndex& current, const QModelIndex&) {
+void FileExplorer::onFileSelectionChanged(const QModelIndex& current, const QModelIndex&) {
     if (!current.isValid()) { clearDetails(); m_detailPath.clear(); return; }
     QModelIndex src = tableFilter->mapToSource(current);
     if (!src.isValid()) { clearDetails(); m_detailPath.clear(); return; }
@@ -656,7 +656,7 @@ void Library::onFileSelectionChanged(const QModelIndex& current, const QModelInd
     showDetailsFor(path);
 }
 
-void Library::showDetailsFor(const QString& path) {
+void FileExplorer::showDetailsFor(const QString& path) {
     m_detailPath = path;
     clearDetails();
 
@@ -706,12 +706,12 @@ void Library::showDetailsFor(const QString& path) {
     probeProc->start(ffprobe, pargs);
 }
 
-void Library::clearDetails() {
+void FileExplorer::clearDetails() {
     if (detailsTable) detailsTable->setRowCount(0);
     if (coverLabel) { coverLabel->setPixmap(QPixmap()); coverLabel->setText(""); }
 }
 
-void Library::addDetailRow(const QString& key, const QString& value) {
+void FileExplorer::addDetailRow(const QString& key, const QString& value) {
     if (value.trimmed().isEmpty()) return;
     int r = detailsTable->rowCount();
     detailsTable->insertRow(r);
@@ -723,7 +723,7 @@ void Library::addDetailRow(const QString& key, const QString& value) {
     detailsTable->setItem(r, 1, v);
 }
 
-void Library::setCover(const QPixmap& pm) {
+void FileExplorer::setCover(const QPixmap& pm) {
     coverLabel->setText("");
     int w = detailsPanel->width() - 24;
     if (w < 80) w = 200;

@@ -7,7 +7,8 @@
 #include "Modules/UI/MainWindow.h"
 #include "Modules/UI/VideoPlayer.h"
 #include "Modules/UI/Queue.h"
-#include "Modules/UI/Library.h"
+#include "Modules/UI/FileExplorer.h"
+#include "Modules/UI/MediaLibrary.h"
 #include "Modules/UI/Search.h"
 #include "Modules/UI/Settings.h"
 #include "Modules/Backend/SgYtDlp.h"
@@ -25,7 +26,8 @@ public:
     void run();
 
 private:
-    enum class ActiveSource { None, Library, Queue, Search };
+    // Library = the card-grid media library; Explorer = the file-manager tab.
+    enum class ActiveSource { None, Library, Explorer, Queue, Search };
 
     // Sequential downloader for ad-hoc downloads (e.g. Search cards). Files land in
     // the library; the Library tab shows a spinner while the queue drains.
@@ -37,7 +39,8 @@ private:
     MainWindow* mainWindow;
     VideoPlayer* videoPlayer;  // the playback feature, hosted by the shell window
     Queue* queueModule;
-    Library* libraryModule;
+    MediaLibrary* libraryModule;   // card-grid view of the saved-media folders
+    FileExplorer* explorerModule;  // the file-manager tab (was "Library")
     Search* searchModule;
     Settings* settingsModule;
     ActiveSource activeSource = ActiveSource::None;

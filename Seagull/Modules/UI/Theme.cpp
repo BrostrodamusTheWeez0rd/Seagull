@@ -227,6 +227,13 @@ void Theme::apply(const QString& name) {
         // hover is a wash so the icon stays visible)
         "QPushButton#bannerActionButton { background:transparent; border:1px solid %6; border-radius:11px; min-width:22px; min-height:22px; }"
         "QPushButton#bannerActionButton:hover { background:%5; }"
+        // Library tab: the floating translucent type-switcher pill over the card
+        // grid (same pill surface/outline language as the player overlays).
+        "QFrame#libraryTypePill { background-color:%1; border:1px solid %6; border-radius:17px; }"
+        "QPushButton#libraryTypeButton { background:transparent; color:%2; border:none; border-radius:12px; padding:5px 16px; font-weight:bold; }"
+        "QPushButton#libraryTypeButton:hover { background-color:%5; }"
+        "QPushButton#libraryTypeButton:checked { background-color:%6; color:%3; }"
+        "QLabel#libraryEmptyLabel { color:%2; background:transparent; }"
     ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line);
 
     app->setStyleSheet(ss + cards + overlay);

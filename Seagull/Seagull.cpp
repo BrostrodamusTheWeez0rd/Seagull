@@ -34,20 +34,28 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     recorder = new SgRecorder(this);
 
     // The tab modules.
-    libraryModule = new Library();
+    libraryModule = new MediaLibrary();
+    explorerModule = new FileExplorer();
     queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);
     searchModule = new Search(searchWorker);
     settingsModule = new Settings();
 
     mainWindow->addTab(libraryModule, "Library");
+    mainWindow->addTab(explorerModule, "File Explorer");
     mainWindow->addTab(queueModule, "Queue");
     mainWindow->addTab(searchModule, "Search");
     mainWindow->addTab(settingsModule, "Settings");
 
     // When a module wants something played, it tells the window. We remember which
-    // source asked, so "play next" later knows whether to walk the library or the queue.
-    connect(libraryModule, &Library::playMediaRequested, videoPlayer, [this](const QUrl& url) {
+    // source asked, so "play next" later knows whether to walk the library, the
+    // explorer's file list, or the queue.
+    connect(libraryModule, &MediaLibrary::playMediaRequested, videoPlayer, [this](const QUrl& url) {
         activeSource = ActiveSource::Library;
+        videoPlayer->playLocalFile(url);
+        });
+
+    connect(explorerModule, &FileExplorer::playMediaRequested, videoPlayer, [this](const QUrl& url) {
+        activeSource = ActiveSource::Explorer;
         videoPlayer->playLocalFile(url);
         });
 
@@ -77,8 +85,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             pumpDownloads();
         });
 
-    // Display "Card size" resizes the Search result cards live.
+    // Display "Card size" resizes the Search and Library cards live.
     connect(settingsModule, &Settings::cardWidthChanged, searchModule, &Search::setCardWidth);
+    connect(settingsModule, &Settings::cardWidthChanged, libraryModule, &MediaLibrary::setCardWidth);
 
     // Each finished ad-hoc download advances the FIFO; the Library spinner stays up
     // until the queue drains.
@@ -101,8 +110,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     // A finished video rolls into the next one from whichever source is active.
     connect(videoPlayer, &VideoPlayer::mediaEnded, this, [this]() {
-        if (activeSource == ActiveSource::Library)        libraryModule->playNextFile();
-        else if (activeSource == ActiveSource::Queue) queueModule->playNextQueuedItem();
+        if (activeSource == ActiveSource::Library)       libraryModule->playNextFile();
+        else if (activeSource == ActiveSource::Explorer) explorerModule->playNextFile();
+        else if (activeSource == ActiveSource::Queue)    queueModule->playNextQueuedItem();
         });
 
     // The skip buttons (single-click = nudge, double-click = jump tracks) land here.
@@ -110,6 +120,10 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         if (activeSource == ActiveSource::Library) {
             if (delta > 0) libraryModule->playNextFile();
             else           libraryModule->playPrevFile();
+        }
+        else if (activeSource == ActiveSource::Explorer) {
+            if (delta > 0) explorerModule->playNextFile();
+            else           explorerModule->playPrevFile();
         }
         else if (activeSource == ActiveSource::Queue) {
             if (delta > 0) queueModule->playNextQueuedItem();

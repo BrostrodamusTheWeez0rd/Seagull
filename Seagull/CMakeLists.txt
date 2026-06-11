@@ -26,8 +26,10 @@ add_executable(Seagull
     Modules/UI/MainWindow.h
     Modules/UI/VideoPlayer.cpp
     Modules/UI/VideoPlayer.h
-    Modules/UI/Library.cpp
-    Modules/UI/Library.h
+    Modules/UI/FileExplorer.cpp
+    Modules/UI/FileExplorer.h
+    Modules/UI/MediaLibrary.cpp
+    Modules/UI/MediaLibrary.h
     Modules/UI/Queue.cpp
     Modules/UI/Queue.h
     Modules/UI/Theme.cpp
@@ -58,6 +60,8 @@ add_executable(Seagull
     Modules/Backend/SgOptions.cpp
     Modules/Backend/SgPaths.h
     Modules/Backend/SgPaths.cpp
+    Modules/Backend/SgThumbnailer.h
+    Modules/Backend/SgThumbnailer.cpp
     Modules/Backend/SgUpdater.h
     Modules/Backend/SgUpdater.cpp
     Modules/Backend/PlaybackEngine.h

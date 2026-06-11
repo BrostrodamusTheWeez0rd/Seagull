@@ -1,5 +1,5 @@
-#ifndef LIBRARY_H
-#define LIBRARY_H
+#ifndef FILEEXPLORER_H
+#define FILEEXPLORER_H
 
 #include <QWidget>
 #include <QVBoxLayout>
@@ -156,13 +156,13 @@ private:
 };
 
 // -------------------------
-// Library widget
+// FileExplorer widget
 // -------------------------
-class Library : public QWidget {
+class FileExplorer : public QWidget {
     Q_OBJECT
 
 public:
-    explicit Library(QWidget* parent = nullptr);
+    explicit FileExplorer(QWidget* parent = nullptr);
 
 signals:
     void playMediaRequested(const QUrl& url);
@@ -174,7 +174,7 @@ public slots:
 private slots:
     void updateAddressBar(const QModelIndex& index);
     void createNewFolder();
-    void refreshLibrary();
+    void refreshView();
     void onFileDoubleClicked(const QModelIndex& index);
     void onTreeClicked(const QModelIndex& index);
     void onTreeDoubleClicked(const QModelIndex& index);
