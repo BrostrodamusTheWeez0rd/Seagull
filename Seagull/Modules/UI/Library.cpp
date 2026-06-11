@@ -137,6 +137,9 @@ Library::Library(QWidget* parent) : QWidget(parent) {
         filterBtn->setText(mediaOnly ? "Media Only" : "All Files");
         });
 
+    connect(addressBar, &QLineEdit::returnPressed, this, [this]() {
+        navigateTo(addressBar->text());
+    });
     connect(searchBar, &QLineEdit::textChanged, this, &Library::updateSearch);
     connect(folderTree, &QTreeView::clicked, this, &Library::onTreeClicked);
     connect(folderTree, &QTreeView::doubleClicked, this, &Library::onTreeDoubleClicked);
@@ -347,9 +350,7 @@ void Library::goUp() {
 }
 
 void Library::refreshLibrary() {
-    QModelIndex srcIdx = fileModel->index(addressBar->text());
-    if (srcIdx.isValid())
-        fileModel->fetchMore(srcIdx);
+    navigateTo(addressBar->text(), false);
 }
 
 void Library::createNewFolder() {
