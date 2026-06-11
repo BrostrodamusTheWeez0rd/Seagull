@@ -62,6 +62,7 @@ private:
 
     QStringList m_downloadQueue; // pending ad-hoc download URLs (FIFO)
     bool        m_downloading = false;
+    bool        m_setupActive = false; // first-run dialog owns the updater right now
 
     // The tool updater does slow, blocking work (network fetches, hashing, unzip),
     // so it gets its own thread to keep startup and the UI snappy.

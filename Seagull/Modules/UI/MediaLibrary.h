@@ -30,6 +30,9 @@ public:
 
     void setCardWidth(int targetWidth); // live from Settings -> Display "Card size"
 
+    // Thumbnail generation still running? Startup defers the update check on this.
+    bool thumbnailsBusy() const;
+
 signals:
     void playMediaRequested(const QUrl& url);
 

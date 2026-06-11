@@ -56,6 +56,9 @@ private:
     QListWidget* sidebar;
     QStackedWidget* stackedWidget;
 
+    // General Tab elements
+    QCheckBox* autoUpdateCheck;  // install tool updates silently vs ask first
+
     // Display Tab elements
     QComboBox* themeCombo;
     QComboBox* cardSizeCombo;   // Small / Medium / Large / Extra Large / Custom

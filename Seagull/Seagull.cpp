@@ -1,5 +1,7 @@
 ﻿#include "Seagull.h"
 #include "Modules/UI/Theme.h"
+#include "Modules/UI/SetupDialog.h"
+#include "Modules/UI/Widgets/UpdateDialog.h"
 #include <QApplication>
 #include <QSettings>
 #include <QCoreApplication>
@@ -197,11 +199,19 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     updaterThread->start();
 
-    // Give the UI a few seconds to settle, then kick the update check off on the
-    // worker thread (QueuedConnection makes sure it runs there, not here).
-    QTimer::singleShot(3000, this, [this]() {
-        QMetaObject::invokeMethod(updaterWorker, &SgUpdater::checkForUpdates, Qt::QueuedConnection);
-        });
+    // The startup check reports back here: install silently when auto-update is
+    // on, otherwise ask with the themed prompt. Ignored while the first-run
+    // setup dialog is driving the updater itself.
+    connect(updaterWorker, &SgUpdater::checkFinished, this, [this](const QStringList& pending) {
+        if (m_setupActive || pending.isEmpty()) return;
+        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        if (cfg.value("General/AutoUpdate", true).toBool()) {
+            QMetaObject::invokeMethod(updaterWorker, &SgUpdater::applyUpdates, Qt::QueuedConnection);
+            return;
+        }
+        UpdateDialog dlg(updaterWorker, pending, mainWindow);
+        dlg.exec();
+        }, Qt::QueuedConnection);
 }
 
 Seagull::~Seagull() {
@@ -230,7 +240,47 @@ void Seagull::flashLibraryTab() {
 }
 
 void Seagull::run() {
+    // The shell must be shown BEFORE the first-run dialog runs. Exec'ing an
+    // application-modal dialog before any window was shown left the whole app
+    // input-dead: deferred startup work (the player's winId()/VLC hookup)
+    // fired inside the dialog's nested event loop, creating the native window
+    // hierarchy underneath an active modal block.
     mainWindow->show();
+
+    // First run (or tools missing): folder confirmation + dependency download,
+    // modal over the fresh main window.
+    if (SetupDialog::isNeeded()) {
+        m_setupActive = true;
+        SetupDialog dlg(updaterWorker, mainWindow);
+        dlg.exec();
+        m_setupActive = false;
+
+        // The Library already scanned with the pre-setup default folders;
+        // rescan now that the user confirmed (possibly different) paths.
+        libraryModule->refresh();
+
+        // Skip this launch's startup update check entirely: setup just drove
+        // the updater itself, and probing exes that were downloaded seconds
+        // ago can misread their versions (first-run self-extract + AV scan)
+        // and silently re-download everything. And if the user clicked Not
+        // Now, downloading behind their back would override that choice;
+        // setup asks again next launch instead.
+        return;
+    }
+
+    // Defer the tool-update check until the UI has settled AND the Library's
+    // thumbnail generation is idle, so update downloads never compete with the
+    // startup ffmpeg work. Poll once a second after a short grace period.
+    auto* gate = new QTimer(this);
+    gate->setInterval(1000);
+    connect(gate, &QTimer::timeout, this, [this, gate]() {
+        if (libraryModule->thumbnailsBusy()) return;
+        gate->stop();
+        gate->deleteLater();
+        QMetaObject::invokeMethod(updaterWorker, [w = updaterWorker]() { w->checkForUpdates(); },
+            Qt::QueuedConnection);
+        });
+    QTimer::singleShot(3000, gate, [gate]() { gate->start(); });
 }
 
 int main(int argc, char* argv[]) {

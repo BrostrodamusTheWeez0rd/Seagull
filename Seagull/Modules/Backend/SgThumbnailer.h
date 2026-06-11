@@ -28,6 +28,10 @@ public:
     // The single in-flight process, if any, is left to finish.
     void cancelPending();
 
+    // Still generating? (Startup holds the tool-update check until this clears,
+    // so ffmpeg update downloads never compete with thumbnail ffmpeg runs.)
+    bool isBusy() const;
+
 signals:
     void thumbnailReady(const QString& filePath, const QPixmap& pixmap);
 

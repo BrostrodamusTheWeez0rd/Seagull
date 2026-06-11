@@ -62,6 +62,7 @@ void Settings::setupUI() {
     // --- 1. Left Sidebar ---
     sidebar = new QListWidget(this);
     sidebar->setMaximumWidth(200);
+    sidebar->addItem("General");
     sidebar->addItem("Display");
     sidebar->addItem("Download & Streaming");
     sidebar->addItem("Folders & Recording");
@@ -76,6 +77,18 @@ void Settings::setupUI() {
 
     // --- 2. Right Content Area ---
     stackedWidget = new QStackedWidget(this);
+
+    // === General Tab ===
+    auto* generalWidget = new QWidget();
+    auto* generalLayout = new QFormLayout(generalWidget);
+    generalLayout->setContentsMargins(20, 20, 20, 20);
+
+    autoUpdateCheck = new QCheckBox("Keep tools up to date automatically");
+    autoUpdateCheck->setToolTip("Install yt-dlp / ffmpeg / Deno updates in the background "
+        "at startup. When off, Seagull asks before updating.");
+    generalLayout->addRow("Auto Update:", autoUpdateCheck);
+
+    stackedWidget->addWidget(generalWidget);
 
     // === Display Tab ===
     auto* displayWidget = new QWidget();
@@ -323,6 +336,7 @@ void Settings::setupUI() {
         applyUnifyState();
         saveSettings();
         });
+    connect(autoUpdateCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
 
     // Set default tab
     sidebar->setCurrentRow(0);
@@ -435,6 +449,8 @@ void Settings::loadSettings() {
     // Populate controls without each change auto-saving back to disk.
     m_loading = true;
 
+    autoUpdateCheck->setChecked(iniSettings->value("General/AutoUpdate", true).toBool());
+
     themeCombo->setCurrentText(iniSettings->value("Display/Theme", "Seagull").toString());
 
     // Card size: stored as a pixel width. Match it to a named preset, else Custom.
@@ -500,6 +516,7 @@ void Settings::saveSettings() {
     if (m_loading) return; // ignore the change signals fired while loading
 
     // Write values to INI groups
+    iniSettings->setValue("General/AutoUpdate", autoUpdateCheck->isChecked());
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
     iniSettings->setValue("Display/CardWidth", currentCardWidth());
     iniSettings->setValue("Download/Type", currentDownloadType());
@@ -541,6 +558,7 @@ void Settings::saveSettings() {
 void Settings::resetDefaults() {
     // Set everything quietly, then write + apply once.
     m_loading = true;
+    autoUpdateCheck->setChecked(true);
     themeCombo->setCurrentText("Seagull");
     cardSizeSlider->blockSignals(true);
     cardSizeSlider->setValue(240);

@@ -78,6 +78,10 @@ void SgThumbnailer::cancelPending() {
     m_queue.clear();
 }
 
+bool SgThumbnailer::isBusy() const {
+    return !m_current.isEmpty() || !m_queue.isEmpty();
+}
+
 void SgThumbnailer::pump() {
     if (m_proc->state() != QProcess::NotRunning || m_queue.isEmpty()) return;
 

@@ -185,6 +185,10 @@ void MediaLibrary::refresh() {
     rebuild();
 }
 
+bool MediaLibrary::thumbnailsBusy() const {
+    return thumbnailer->isBusy();
+}
+
 void MediaLibrary::playNextFile() {
     if (m_files.isEmpty()) return;
     const int next = m_currentPlayIndex + 1;

@@ -21,9 +21,7 @@ SgUpdater::SgUpdater(QObject* parent) : QObject(parent) {
             onExeDownloadFinished(reply);
         else if (type == "ffmpeg-zip-stream")
         {
-        } // handled by its own finished lambda in checkForFfmpegUpdate
-        else if (type == "version-check")
-            onReleaseInfoReceived(reply);
+        } // handled by its own finished lambda in downloadFfmpeg
         else
             reply->deleteLater();
         });
@@ -33,11 +31,14 @@ SgUpdater::SgUpdater(QObject* parent) : QObject(parent) {
 // Tool version helpers
 // ---------------------------------------------------------------------------
 
+// Probe timeouts are generous: a freshly installed exe's first run can take
+// many seconds (yt-dlp self-extracts, and the AV scans the new binary).
 QString SgUpdater::localYtDlpVersion() const {
     QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
+    if (!QFile::exists(exePath)) return QString();
     QProcess p;
     p.start(exePath, { "--version" });
-    p.waitForFinished(5000);
+    p.waitForFinished(20000);
     return QString::fromLocal8Bit(p.readAllStandardOutput()).trimmed();
 }
 
@@ -46,7 +47,7 @@ QString SgUpdater::localDenoVersion() const {
     if (!QFile::exists(exePath)) return QString();
     QProcess p;
     p.start(exePath, { "--version" });
-    p.waitForFinished(5000);
+    p.waitForFinished(20000);
     QString out = QString::fromLocal8Bit(p.readAllStandardOutput());
     QRegularExpression rx("deno\\s+([0-9.]+)");
     QRegularExpressionMatch match = rx.match(out);
@@ -58,7 +59,7 @@ QString SgUpdater::localFfmpegVersion() const {
     if (!QFile::exists(exePath)) return QString();
     QProcess p;
     p.start(exePath, { "-version" });
-    p.waitForFinished(5000);
+    p.waitForFinished(20000);
     QString out = QString::fromLocal8Bit(p.readAllStandardOutput());
     QRegularExpression re("ffmpeg version ([^\\s]+)");
     auto m = re.match(out);
@@ -66,76 +67,154 @@ QString SgUpdater::localFfmpegVersion() const {
 }
 
 // ---------------------------------------------------------------------------
-// Update chain: yt-dlp -> Deno -> ffmpeg
-// All use permanent direct URLs — no GitHub API needed.
+// Phase 1 — check. Blocking, sequential, no installs.
 // ---------------------------------------------------------------------------
 
-// Helper: resolve the latest version tag by following the GitHub "latest" redirect.
-// GitHub redirects /releases/latest to /releases/tag/<VERSION>, so the final URL
-// contains the version without downloading the asset.
-void SgUpdater::resolveLatestVersion(const QString& latestReleaseUrl, const QString& kind) {
+// Resolve the latest version tag by following the GitHub "latest" redirect:
+// /releases/latest lands on /releases/tag/<VERSION>, so the final URL carries
+// the version without downloading anything. Empty string = couldn't resolve.
+QString SgUpdater::resolveLatestTag(const QString& latestReleaseUrl) const {
+    QNetworkAccessManager nam; // local: keeps these replies out of m_nam's dispatcher
     QNetworkRequest req;
     req.setUrl(QUrl(latestReleaseUrl));
     req.setRawHeader("User-Agent", "Seagull-Player");
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-    QNetworkReply* reply = m_nam->head(req);
-    reply->setProperty("downloadType", "version-check");
-    reply->setProperty("versionKind", kind);
+
+    QNetworkReply* reply = nam.head(req);
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    QString tag;
+    if (reply->error() == QNetworkReply::NoError)
+        tag = reply->url().toString().section('/', -1).trimmed(); // redirects already followed
+    reply->deleteLater();
+    return (tag == "latest") ? QString() : tag;
 }
 
-void SgUpdater::checkForUpdates() {
+void SgUpdater::checkForUpdates(bool ignoreCooldown) {
     QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     qint64 lastCheck = settings.value("Updates/LastChecked", 0).toLongLong();
     qint64 now = QDateTime::currentSecsSinceEpoch();
 
-    if (now - lastCheck < 120) {
+    if (!ignoreCooldown && now - lastCheck < 120) {
         emit updateStatus("Skipping update check (cooldown active).");
+        emit checkFinished({});
         return;
     }
 
     settings.setValue("Updates/LastChecked", now);
     settings.sync();
 
+    m_applyQueue.clear();
+    QStringList pending;
+
+    const QString toolsDir = QCoreApplication::applicationDirPath() + "/tools";
+
+    // yt-dlp — date-style tags ("2026.01.15"), plain string compare works.
     emit updateStatus("Checking yt-dlp version...");
-    resolveLatestVersion("https://github.com/yt-dlp/yt-dlp/releases/latest", "yt-dlp");
-}
-
-void SgUpdater::checkForDenoUpdate() {
-    emit updateStatus("Checking Deno version...");
-    resolveLatestVersion("https://github.com/denoland/deno/releases/latest", "deno");
-}
-
-void SgUpdater::checkForFfmpegUpdate() {
-    QString toolsDir = QCoreApplication::applicationDirPath() + "/tools";
-    bool hasFfmpeg = QFile::exists(toolsDir + "/ffmpeg.exe");
-    bool hasFfprobe = QFile::exists(toolsDir + "/ffprobe.exe");
-
-    emit updateStatus("Checking ffmpeg version...");
-
-    // gyan.dev publishes the current release version as plain text
-    QString latest = fetchRemoteText("https://www.gyan.dev/ffmpeg/builds/release-version").trimmed();
-
-    if (hasFfmpeg && hasFfprobe) {
-        QString local = localFfmpegVersion(); // e.g. "8.1.1-essentials_build-www.gyan.dev"
+    {
+        const bool present = QFile::exists(toolsDir + "/yt-dlp.exe");
+        const QString latest = resolveLatestTag("https://github.com/yt-dlp/yt-dlp/releases/latest");
+        const QString local = localYtDlpVersion();
         if (latest.isEmpty()) {
-            emit updateStatus("ffmpeg present (" + local + "), could not check latest — keeping.");
-            return;
+            emit updateStatus("yt-dlp: could not resolve latest version, skipping.");
+        } else if (present && local.isEmpty()) {
+            // The exe is there but --version produced nothing (often a freshly
+            // installed exe still being AV-scanned). Never reinstall over it.
+            emit updateStatus("yt-dlp present, could not read version, keeping.");
+        } else if (present && local >= latest) {
+            emit updateStatus("yt-dlp up to date (" + local + ").");
+        } else {
+            pending << (!present ? "yt-dlp:  not installed  →  " + latest
+                                 : "yt-dlp:  " + local + "  →  " + latest);
+            m_applyQueue << "yt-dlp";
         }
-        // Local version string begins with the published version (e.g. "8.1.1-...")
-        if (local.startsWith(latest)) {
+    }
+
+    // Deno — tags like "v2.2.0".
+    emit updateStatus("Checking Deno version...");
+    {
+        const bool present = QFile::exists(toolsDir + "/deno.exe");
+        const QString latest = resolveLatestTag("https://github.com/denoland/deno/releases/latest");
+        const QString local = localDenoVersion();
+        if (latest.isEmpty()) {
+            emit updateStatus("Deno: could not resolve latest version, skipping.");
+        } else if (present && local.isEmpty()) {
+            emit updateStatus("Deno present, could not read version, keeping.");
+        } else if (present && local >= latest) {
+            emit updateStatus("Deno up to date (" + local + ").");
+        } else {
+            pending << (!present ? "Deno:  not installed  →  " + latest
+                                 : "Deno:  " + local + "  →  " + latest);
+            m_applyQueue << "deno";
+        }
+    }
+
+    // ffmpeg — gyan.dev publishes the current release version as plain text;
+    // the local version string begins with it (e.g. "8.1.1-essentials_build-...").
+    emit updateStatus("Checking ffmpeg version...");
+    {
+        const bool present = QFile::exists(toolsDir + "/ffmpeg.exe")
+                          && QFile::exists(toolsDir + "/ffprobe.exe");
+        const QString latest = fetchRemoteText("https://www.gyan.dev/ffmpeg/builds/release-version").trimmed();
+        const QString local = localFfmpegVersion();
+        if (present && latest.isEmpty()) {
+            emit updateStatus("ffmpeg present (" + local + "), could not check latest, keeping.");
+        } else if (present && local.isEmpty()) {
+            emit updateStatus("ffmpeg present, could not read version, keeping.");
+        } else if (present && local.startsWith(latest)) {
             emit updateStatus("ffmpeg up to date (" + latest + ").");
-            return;
+        } else {
+            pending << (!present ? "ffmpeg:  not installed  →  " + (latest.isEmpty() ? QStringLiteral("latest") : latest)
+                                 : "ffmpeg:  " + local.section('-', 0, 0) + "  →  " + latest);
+            m_applyQueue << "ffmpeg";
         }
-        emit updateStatus("ffmpeg outdated (" + local + " -> " + latest + ") — downloading...");
+    }
+
+    if (pending.isEmpty()) emit updateStatus("All tools up to date.");
+    emit checkFinished(pending);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — apply. Async downloads, driven one tool at a time off m_applyQueue.
+// ---------------------------------------------------------------------------
+
+void SgUpdater::applyUpdates() {
+    if (m_applyQueue.isEmpty()) {
+        emit applyFinished(true);
+        return;
+    }
+    m_applyOk = true;
+    applyNext();
+}
+
+void SgUpdater::applyNext() {
+    if (m_applyQueue.isEmpty()) {
+        emit updateStatus(m_applyOk ? "Tool updates finished." : "Tool updates finished with errors.");
+        emit applyFinished(m_applyOk);
+        return;
+    }
+    const QString tool = m_applyQueue.takeFirst();
+    if (tool == "yt-dlp") {
+        emit updateStatus("Downloading yt-dlp...");
+        downloadNewExe("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe");
+    }
+    else if (tool == "deno") {
+        emit updateStatus("Downloading Deno...");
+        downloadNewDeno("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip");
     }
     else {
-        emit updateStatus(latest.isEmpty()
-            ? "ffmpeg not found — downloading latest..."
-            : "ffmpeg not found — downloading " + latest + "...");
+        downloadFfmpeg();
     }
+}
 
+void SgUpdater::downloadFfmpeg() {
+    QString toolsDir = QCoreApplication::applicationDirPath() + "/tools";
     QDir().mkpath(toolsDir);
     QString zipPath = toolsDir + "/ffmpeg_update.zip";
+
+    emit updateStatus("Downloading ffmpeg...");
 
     // Open the file on disk now and stream bytes into it as they arrive.
     // This avoids buffering a 100MB+ zip entirely in memory.
@@ -143,6 +222,8 @@ void SgUpdater::checkForFfmpegUpdate() {
     if (!zipFile->open(QIODevice::WriteOnly)) {
         emit updateStatus("Failed to open ffmpeg zip for writing.");
         delete zipFile;
+        m_applyOk = false;
+        applyNext();
         return;
     }
 
@@ -177,6 +258,8 @@ void SgUpdater::checkForFfmpegUpdate() {
             emit updateStatus("ffmpeg download failed: " + reply->errorString());
             QFile::remove(zipPath);
             reply->deleteLater();
+            m_applyOk = false;
+            applyNext();
             return;
         }
 
@@ -187,6 +270,8 @@ void SgUpdater::checkForFfmpegUpdate() {
             emit updateStatus("ffmpeg zip incomplete (" + QString::number(info.size() / 1024 / 1024) + " MB, expected ~103 MB) — aborting.");
             QFile::remove(zipPath);
             reply->deleteLater();
+            m_applyOk = false;
+            applyNext();
             return;
         }
         reply->deleteLater();
@@ -198,6 +283,8 @@ void SgUpdater::checkForFfmpegUpdate() {
         QString expected = shaLine.section(' ', 0, 0).trimmed();
         if (!verifyHash(zipPath, expected, "ffmpeg zip")) {
             QFile::remove(zipPath);
+            m_applyOk = false;
+            applyNext();
             return;
         }
 
@@ -250,61 +337,18 @@ void SgUpdater::checkForFfmpegUpdate() {
                     + QString::number(ffmpegSz / 1024 / 1024) + " MB) — removing.");
                 QFile::remove(exeDest);
                 QFile::remove(probeDest);
+                m_applyOk = false;
+                applyNext();
                 return;
             }
 
             emit updateStatus("ffmpeg installed ("
                 + QString::number(ffmpegSz / 1024 / 1024) + " MB), ffprobe ("
                 + QString::number(ffprobeSz / 1024 / 1024) + " MB).");
+            applyNext();
             });
         ps->start("powershell", { "-NoProfile", "-NonInteractive", "-Command", psCmd });
         });
-}
-
-void SgUpdater::onReleaseInfoReceived(QNetworkReply* reply) {
-    QString kind = reply->property("versionKind").toString();
-
-    // The redirect target URL ends in /releases/tag/<VERSION>
-    QUrl finalUrl = reply->url();
-    QVariant redirectTarget = reply->attribute(QNetworkRequest::RedirectionTargetAttribute);
-    if (redirectTarget.isValid()) {
-        finalUrl = reply->url().resolved(redirectTarget.toUrl());
-    }
-    reply->deleteLater();
-
-    QString latestVersion = finalUrl.toString().section('/', -1).trimmed();
-    // Deno tags are like "v2.2.0"; yt-dlp tags are like "2026.01.15"
-    if (latestVersion.isEmpty() || latestVersion == "latest") {
-        emit updateStatus(kind + ": could not resolve latest version, skipping.");
-        if (kind == "yt-dlp") checkForDenoUpdate();
-        else if (kind == "deno") checkForFfmpegUpdate();
-        return;
-    }
-
-    if (kind == "yt-dlp") {
-        QString local = localYtDlpVersion();
-        if (!local.isEmpty() && local >= latestVersion) {
-            emit updateStatus("yt-dlp up to date (" + local + ").");
-            checkForDenoUpdate();
-            return;
-        }
-        emit updateStatus(local.isEmpty()
-            ? "yt-dlp missing — downloading " + latestVersion + "..."
-            : "yt-dlp outdated (" + local + " -> " + latestVersion + ") — downloading...");
-        downloadNewExe("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe");
-    }
-    else if (kind == "deno") {
-        QString local = localDenoVersion(); // returns like "v2.2.0"
-        if (!local.isEmpty() && local >= latestVersion) {
-            emit updateStatus("Deno up to date (" + local + ").");
-            checkForFfmpegUpdate();
-            return;
-        }
-        emit updateStatus(local.isEmpty()
-            ? "Deno missing — downloading " + latestVersion + "..."
-            : "Deno outdated (" + local + " -> " + latestVersion + ") — downloading...");
-        downloadNewDeno("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip");
-    }
 }
 
 void SgUpdater::downloadNewExe(const QString& exeUrl) {
@@ -326,18 +370,29 @@ void SgUpdater::downloadNewDeno(const QString& zipUrl) {
 }
 
 void SgUpdater::onDownloadProgress(qint64 received, qint64 total) {
-    if (total > 0) {
-        QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
-        QString prefix = "Downloading";
-        if (reply) {
-            QString type = reply->property("downloadType").toString();
-            if (type == "yt-dlp-exe") prefix = "Downloading yt-dlp";
-            if (type == "deno-zip")   prefix = "Downloading Deno";
-            if (type == "ffmpeg-zip") prefix = "Downloading ffmpeg";
-        }
-        int pct = static_cast<int>(received * 100 / total);
-        emit updateStatus(prefix + ": " + QString::number(pct) + "%");
-    }
+    if (total <= 0) return;
+    QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+
+    // downloadProgress fires for every network chunk — thousands of times for
+    // the ffmpeg zip. Forwarding each one queues two cross-thread signals (and
+    // a Queue-console append) on the UI thread, which floods its event queue
+    // and freezes the window for the length of the download. Only forward
+    // whole-percent changes, and log every 5%.
+    int pct = static_cast<int>(received * 100 / total);
+    if (pct == reply->property("lastPct").toInt() && reply->property("lastPct").isValid())
+        return;
+    reply->setProperty("lastPct", pct);
+
+    QString tool = "tool";
+    QString type = reply->property("downloadType").toString();
+    if (type == "yt-dlp-exe")        tool = "yt-dlp";
+    if (type == "deno-zip")          tool = "Deno";
+    if (type == "ffmpeg-zip-stream") tool = "ffmpeg";
+
+    emit applyProgress(tool, pct);
+    if (pct % 5 == 0)
+        emit updateStatus("Downloading " + tool + ": " + QString::number(pct) + "%");
 }
 
 QString SgUpdater::computeFileSha256(const QString& filePath) const {
@@ -408,11 +463,15 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
 
     if (reply->error() != QNetworkReply::NoError) {
         emit updateStatus("Download failed: " + reply->errorString());
+        m_applyOk = false;
+        applyNext();
         return;
     }
 
     if (fileData.size() < 5000000) {
         emit updateStatus("Download too small — aborting update.");
+        m_applyOk = false;
+        applyNext();
         return;
     }
 
@@ -426,6 +485,8 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
         QFile tmp(tmpPath);
         if (!tmp.open(QIODevice::WriteOnly)) {
             emit updateStatus("Failed to write yt-dlp to disk.");
+            m_applyOk = false;
+            applyNext();
             return;
         }
         tmp.write(fileData);
@@ -445,7 +506,8 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
 
         if (!verifyHash(tmpPath, expected, "yt-dlp")) {
             QFile::remove(tmpPath);
-            checkForDenoUpdate();
+            m_applyOk = false;
+            applyNext();
             return;
         }
 
@@ -458,10 +520,10 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
         else {
             QFile::rename(exePath + ".bak", exePath);
             emit updateStatus("yt-dlp update failed (file in use?).");
+            m_applyOk = false;
         }
 
-        // Chain to Deno
-        checkForDenoUpdate();
+        applyNext();
     }
     else if (downloadType == "deno-zip") {
         QString zipPath = toolsDir + "/deno_temp.zip";
@@ -470,6 +532,8 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
         QFile file(zipPath);
         if (!file.open(QIODevice::WriteOnly)) {
             emit updateStatus("Failed to write Deno zip to disk.");
+            m_applyOk = false;
+            applyNext();
             return;
         }
         file.write(fileData);
@@ -484,7 +548,8 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
         QString expected = QRegularExpression("[0-9a-fA-F]{64}").match(sumBody).captured(0);
         if (!verifyHash(zipPath, expected, "Deno")) {
             QFile::remove(zipPath);
-            checkForFfmpegUpdate();
+            m_applyOk = false;
+            applyNext();
             return;
         }
 
@@ -504,9 +569,9 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
             QFile::remove(zipPath);
             if (QFile::exists(exePath + ".bak"))
                 QFile::rename(exePath + ".bak", exePath);
+            m_applyOk = false;
         }
 
-        // Chain to ffmpeg regardless of outcome
-        checkForFfmpegUpdate();
+        applyNext();
     }
 }
