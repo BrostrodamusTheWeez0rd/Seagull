@@ -34,6 +34,10 @@ public:
     // cover art, no network involved).
     void setThumbnail(const QPixmap& pm);
 
+    // Glyph drawn in the thumbnail slot until/unless an image arrives
+    // (default "…"; the Library uses "♪" for audio).
+    void setThumbnailPlaceholder(const QString& text);
+
     static QString formatDuration(qint64 seconds);
     static QString formatViewCount(qint64 views);
 

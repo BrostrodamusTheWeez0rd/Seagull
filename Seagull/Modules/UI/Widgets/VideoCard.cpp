@@ -45,6 +45,13 @@ public:
         update();
     }
 
+    // Glyph shown while there's no image (and permanently, if none arrives) —
+    // e.g. "♪" for audio files without cover art.
+    void setPlaceholderText(const QString& text) {
+        m_placeholder = text;
+        update();
+    }
+
     QSize minimumSizeHint() const override { return QSize(40, 23); }
 
 protected:
@@ -55,13 +62,17 @@ protected:
         const QRect r = rect();
 
         if (m_rounded.isNull()) {
-            // Placeholder: a themed rounded tile (palette follows the theme).
+            // Placeholder: a themed rounded tile (palette follows the theme),
+            // with the glyph scaled to the tile so a "♪" reads as artwork.
             const int radius = qMin(10, r.height() / 4);
             QPainterPath path;
             path.addRoundedRect(r, radius, radius);
             p.fillPath(path, palette().color(QPalette::AlternateBase));
             p.setPen(palette().color(QPalette::PlaceholderText));
-            p.drawText(r, Qt::AlignCenter, QStringLiteral("…"));
+            QFont f = p.font();
+            f.setPixelSize(qMax(12, r.height() / 3));
+            p.setFont(f);
+            p.drawText(r, Qt::AlignCenter, m_placeholder);
             return;
         }
         p.drawPixmap(r, m_rounded); // scaled from the reference render
@@ -88,6 +99,7 @@ private:
     }
 
     QPixmap m_rounded; // rounded render at reference size
+    QString m_placeholder = QStringLiteral("…");
 };
 
 VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth,
@@ -146,6 +158,10 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
 
 void VideoCard::setThumbnail(const QPixmap& pm) {
     m_thumb->setSource(pm);
+}
+
+void VideoCard::setThumbnailPlaceholder(const QString& text) {
+    m_thumb->setPlaceholderText(text);
 }
 
 void VideoCard::setCardWidth(int width) {

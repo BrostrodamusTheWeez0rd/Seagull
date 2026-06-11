@@ -6,6 +6,7 @@
 #include <QFormLayout>
 #include <QFileDialog>
 #include <QCoreApplication>
+#include <QStandardPaths>
 #include <QGroupBox>
 #include <QPushButton>
 #include <QTabWidget>
@@ -107,6 +108,7 @@ void Settings::setupUI() {
     auto* dlWidget = new QWidget();
     auto* dlLayout = new QFormLayout(dlWidget);
     dlLayout->setContentsMargins(20, 20, 20, 20);
+    foldersForm = dlLayout; // applyUnifyState shows/hides folder rows on it
 
     // Download Type toggle (Video | Audio) — drives which formats are offered.
     typeVideoBtn = new QPushButton("Video");
@@ -163,16 +165,19 @@ void Settings::setupUI() {
         "interrupted recording best; MP4 is the most widely compatible.");
     updateRecordingFormatOptions();
 
-    // Folder rows: read-only path edit + Browse button, one per media type.
+    // Folder rows: read-only path edit + Browse button, one per media type. Each
+    // row is a widget so the unify toggle can enable/disable it as one unit.
     // (Read-only so users can't type invalid paths manually.)
     auto makeFolderRow = [this](QLineEdit*& edit, const QString& title, const QString& tip) {
-        auto* row = new QHBoxLayout();
+        auto* row = new QWidget();
+        auto* lay = new QHBoxLayout(row);
+        lay->setContentsMargins(0, 0, 0, 0);
         edit = new QLineEdit();
         edit->setReadOnly(true);
         edit->setToolTip(tip);
         auto* btn = new QPushButton("Browse...");
-        row->addWidget(edit);
-        row->addWidget(btn);
+        lay->addWidget(edit);
+        lay->addWidget(btn);
         QLineEdit* target = edit; // capture the pointer value, not the local ref
         connect(btn, &QPushButton::clicked, this, [this, target, title]() {
             browseInto(target, title);
@@ -180,16 +185,28 @@ void Settings::setupUI() {
         return row;
         };
 
-    auto* homeLayout = makeFolderRow(homeFolderEdit, "Select Home Folder",
+    // One folder for everything: the typed folders grey out and every save —
+    // downloads, recordings, clips — lands in the single Media Folder. The
+    // Library's type buttons then act as pure file-type filters over it.
+    unifyCheck = new QCheckBox("Use one folder for all media");
+    unifyCheck->setToolTip("Save every download and recording into a single folder. "
+        "The Library's type buttons filter it by file type.");
+    unifiedFolderRow = makeFolderRow(unifiedFolderEdit, "Select Media Folder",
+        "The single folder all media is saved to.");
+
+    auto* dlFolderRow = makeFolderRow(dlFolderEdit, "Select Downloads Folder",
+        "Where downloaded files are saved. Independent of the media folders.");
+    auto* homeRow = makeFolderRow(homeFolderEdit, "Select Home Folder",
         "Where the File Explorer opens on startup.");
-    auto* videoFolderLayout = makeFolderRow(videoFolderEdit, "Select Videos Folder",
+    auto* videoFolderRow = makeFolderRow(videoFolderEdit, "Select Videos Folder",
         "Where video downloads are saved.");
-    auto* audioFolderLayout = makeFolderRow(audioFolderEdit, "Select Audio Folder",
+    auto* audioFolderRow = makeFolderRow(audioFolderEdit, "Select Audio Folder",
         "Where audio downloads and extractions are saved.");
-    auto* photoFolderLayout = makeFolderRow(photoFolderEdit, "Select Photos Folder",
+    auto* photoFolderRow = makeFolderRow(photoFolderEdit, "Select Photos Folder",
         "Where saved images are stored.");
-    auto* recFolderLayout = makeFolderRow(recFolderEdit, "Select Recordings Folder",
+    auto* recFolderRow = makeFolderRow(recFolderEdit, "Select Recordings Folder",
         "Where the Record button saves recordings and clips.");
+    typedFolderRows = { videoFolderRow, audioFolderRow, photoFolderRow, recFolderRow };
 
     dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
@@ -197,11 +214,14 @@ void Settings::setupUI() {
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
     dlLayout->addRow("Recording Type:", recTypeRow);
     dlLayout->addRow("Recording Format:", recFormatCombo);
-    dlLayout->addRow("Videos Folder:", videoFolderLayout);
-    dlLayout->addRow("Audio Folder:", audioFolderLayout);
-    dlLayout->addRow("Photos Folder:", photoFolderLayout);
-    dlLayout->addRow("Recordings Folder:", recFolderLayout);
-    dlLayout->addRow("Home Directory:", homeLayout);
+    dlLayout->addRow("Downloads Folder:", dlFolderRow);
+    dlLayout->addRow("Unify Folders:", unifyCheck);
+    dlLayout->addRow("Media Folder:", unifiedFolderRow);
+    dlLayout->addRow("Videos Folder:", videoFolderRow);
+    dlLayout->addRow("Audio Folder:", audioFolderRow);
+    dlLayout->addRow("Photos Folder:", photoFolderRow);
+    dlLayout->addRow("Recordings Folder:", recFolderRow);
+    dlLayout->addRow("Home Directory:", homeRow);
 
     stackedWidget->addWidget(dlWidget);
 
@@ -285,9 +305,13 @@ void Settings::setupUI() {
         onRecordingTypeChanged(); // refresh the recording format list, then save
         });
     connect(recFormatCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
-    for (auto* edit : { homeFolderEdit, videoFolderEdit, audioFolderEdit,
-                        photoFolderEdit, recFolderEdit })
+    for (auto* edit : { homeFolderEdit, dlFolderEdit, videoFolderEdit, audioFolderEdit,
+                        photoFolderEdit, recFolderEdit, unifiedFolderEdit })
         connect(edit, &QLineEdit::textChanged, this, &Settings::saveSettings);
+    connect(unifyCheck, &QCheckBox::toggled, this, [this](bool) {
+        applyUnifyState();
+        saveSettings();
+        });
 
     // Set default tab
     sidebar->setCurrentRow(0);
@@ -301,12 +325,14 @@ void Settings::updateDownloadFormatOptions() {
     const QString prev = formatCombo->currentText();
     formatCombo->blockSignals(true);
     formatCombo->clear();
+    // No "Best Available" here: a concrete container, mp4/m4a-first, so the saved
+    // file is always something predictable. (Quality keeps its Best option.)
     if (currentDownloadType() == "Audio")
-        formatCombo->addItems({ "Best Available", "mp3", "m4a", "flac", "wav", "opus", "aac", "vorbis" });
+        formatCombo->addItems({ "m4a", "mp3", "flac", "wav", "opus", "aac", "vorbis" });
     else
-        formatCombo->addItems({ "Best Available", "mp4", "mkv", "webm", "avi", "flv", "mov" });
+        formatCombo->addItems({ "mp4", "mkv", "webm", "avi", "flv", "mov" });
     int idx = formatCombo->findText(prev);
-    formatCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    formatCombo->setCurrentIndex(idx >= 0 ? idx : 0); // stale values (e.g. old "Best Available") fall back to index 0
     formatCombo->blockSignals(false);
 }
 
@@ -349,7 +375,7 @@ void Settings::updateRecordingFormatOptions() {
     if (currentRecordingType() == "Audio")
         recFormatCombo->addItems({ "M4A", "MP3", "Opus", "FLAC", "WAV" });
     else
-        recFormatCombo->addItems({ "MKV", "MP4", "TS" });
+        recFormatCombo->addItems({ "MP4", "MKV", "TS" }); // MP4 first = the default
     int idx = recFormatCombo->findText(prev);
     recFormatCombo->setCurrentIndex(idx >= 0 ? idx : 0);
     recFormatCombo->blockSignals(false);
@@ -384,6 +410,16 @@ void Settings::browseInto(QLineEdit* edit, const QString& title) {
         edit->setText(dir); // textChanged -> saveSettings
 }
 
+void Settings::applyUnifyState() {
+    // Swap which folder rows exist: unified mode shows just the one Media Folder
+    // row; per-type mode shows the four typed rows. (setRowVisible hides the
+    // row's label along with the field.)
+    const bool unified = unifyCheck->isChecked();
+    foldersForm->setRowVisible(unifiedFolderRow, unified);
+    for (QWidget* row : typedFolderRows)
+        foldersForm->setRowVisible(row, !unified);
+}
+
 void Settings::loadSettings() {
     // Populate controls without each change auto-saving back to disk.
     m_loading = true;
@@ -401,7 +437,7 @@ void Settings::loadSettings() {
 
     // Type -> Format -> Quality cascade: set the type, build its format list, pick
     // the saved format, build the matching quality list, pick the saved quality.
-    QString savedFormat = iniSettings->value("Download/Format", "Best Available").toString();
+    QString savedFormat = iniSettings->value("Download/Format", "mp4").toString();
     QString type = iniSettings->value("Download/Type").toString();
     if (type.isEmpty()) {
         // Migrate older configs that only stored a format: infer the type from it.
@@ -421,19 +457,25 @@ void Settings::loadSettings() {
     const QString recType = iniSettings->value("Recording/Type", "Video").toString();
     (recType == "Audio" ? recTypeAudioBtn : recTypeVideoBtn)->setChecked(true);
     updateRecordingFormatOptions();
-    const QString legacyRecFmt = iniSettings->value("Streaming/RecordFormat", "MKV").toString().toUpper();
+    const QString legacyRecFmt = iniSettings->value("Streaming/RecordFormat", "MP4").toString().toUpper();
     recFormatCombo->setCurrentText(iniSettings->value("Recording/Format",
         recType == "Audio" ? QStringLiteral("M4A") : legacyRecFmt).toString());
 
     searchResultsSpin->setValue(iniSettings->value("Search/ResultLimit", 20).toInt());
 
     // SgPaths owns the key/default/legacy-fallback logic, so the UI always shows
-    // exactly the folder the downloader/recorder will actually use.
+    // exactly the folder the downloader/recorder will actually use. The typed
+    // rows read with honourUnify=false: they show their own configured folders
+    // even while unify overrides them, so toggling unify off restores them.
     homeFolderEdit->setText(SgPaths::homeFolder());
-    videoFolderEdit->setText(SgPaths::videoFolder());
-    audioFolderEdit->setText(SgPaths::audioFolder());
-    photoFolderEdit->setText(SgPaths::photoFolder());
-    recFolderEdit->setText(SgPaths::recordingFolder());
+    dlFolderEdit->setText(SgPaths::downloadFolder());
+    videoFolderEdit->setText(SgPaths::videoFolder(false));
+    audioFolderEdit->setText(SgPaths::audioFolder(false));
+    photoFolderEdit->setText(SgPaths::photoFolder(false));
+    recFolderEdit->setText(SgPaths::recordingFolder(false));
+    unifiedFolderEdit->setText(SgPaths::unifiedFolder());
+    unifyCheck->setChecked(SgPaths::unifyMedia());
+    applyUnifyState();
 
     // Seed the "already applied" trackers so the first unrelated save doesn't trigger
     // a redundant theme re-apply / grid re-flow.
@@ -457,10 +499,13 @@ void Settings::saveSettings() {
     iniSettings->setValue("Recording/Format", recFormatCombo->currentText());
     iniSettings->setValue("Search/ResultLimit", searchResultsSpin->value());
     iniSettings->setValue("Paths/HomeFolder", homeFolderEdit->text());
+    iniSettings->setValue("Paths/DownloadFolder", dlFolderEdit->text());
     iniSettings->setValue("Paths/VideoFolder", videoFolderEdit->text());
     iniSettings->setValue("Paths/AudioFolder", audioFolderEdit->text());
     iniSettings->setValue("Paths/PhotoFolder", photoFolderEdit->text());
     iniSettings->setValue("Paths/RecordingFolder", recFolderEdit->text());
+    iniSettings->setValue("Paths/UnifyMedia", unifyCheck->isChecked());
+    iniSettings->setValue("Paths/UnifiedFolder", unifiedFolderEdit->text());
 
     // Force write to disk immediately rather than waiting for OS garbage collection
     iniSettings->sync();
@@ -493,20 +538,25 @@ void Settings::resetDefaults() {
     cardSizeSlider->hide();
     typeVideoBtn->setChecked(true);
     updateDownloadFormatOptions();
-    formatCombo->setCurrentText("Best Available");
+    formatCombo->setCurrentText("mp4");
     updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText("Best Available");
     streamQualityCombo->setCurrentText("Best Available");
     recTypeVideoBtn->setChecked(true);
     updateRecordingFormatOptions();
-    recFormatCombo->setCurrentText("MKV");
+    recFormatCombo->setCurrentText("MP4");
     searchResultsSpin->setValue(20);
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());
-    const QString downloads = QCoreApplication::applicationDirPath() + "/Downloads";
-    videoFolderEdit->setText(downloads + "/Videos");
-    audioFolderEdit->setText(downloads + "/Audio");
-    photoFolderEdit->setText(downloads + "/Photos");
-    recFolderEdit->setText(downloads + "/Recordings");
+    // The user's Windows folders, same as a fresh install's defaults.
+    dlFolderEdit->setText(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+    const QString movies = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+    videoFolderEdit->setText(movies);
+    audioFolderEdit->setText(QStandardPaths::writableLocation(QStandardPaths::MusicLocation));
+    photoFolderEdit->setText(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
+    recFolderEdit->setText(movies + "/Recordings");
+    unifyCheck->setChecked(false);
+    unifiedFolderEdit->setText(movies);
+    applyUnifyState();
     m_loading = false;
     saveSettings();
 }

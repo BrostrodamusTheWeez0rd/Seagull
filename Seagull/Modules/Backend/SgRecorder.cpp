@@ -78,11 +78,11 @@ QString SgRecorder::extForFormat() const {
     }
     // Streaming/RecordFormat is the pre-Recording-settings key; honour it as the
     // fallback so existing configs keep their choice.
-    const QString legacy = cfg.value("Streaming/RecordFormat", "MKV").toString();
+    const QString legacy = cfg.value("Streaming/RecordFormat", "MP4").toString();
     const QString fmt = cfg.value("Recording/Format", legacy).toString().toUpper();
     if (fmt == "MP4") return "mp4";
     if (fmt == "TS")  return "ts";
-    return "mkv"; // default + safest for an abrupt stop
+    return "mkv"; // unknown value — the safest container for an abrupt stop
 }
 
 QStringList SgRecorder::audioCodecArgs(const QString& ext) {

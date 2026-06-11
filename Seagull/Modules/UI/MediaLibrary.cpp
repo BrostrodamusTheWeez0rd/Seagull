@@ -156,6 +156,12 @@ void MediaLibrary::rebuild() {
         // duration/viewCount stay -1 (omitted); thumbnail "" = no network fetch.
 
         auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost, VideoCard::PlayButton);
+
+        // Audio shows a music note while (or in case no) cover art arrives.
+        static const QStringList audioExts = { "mp3", "m4a", "opus", "wav", "flac" };
+        if (audioExts.contains(fi.suffix().toLower()))
+            card->setThumbnailPlaceholder(QStringLiteral("♪"));
+
         const int index = m_files.size() - 1;
         connect(card, &VideoCard::playRequested, this, [this, index](const QUrl& url, const QString&) {
             m_currentPlayIndex = index;
