@@ -358,15 +358,14 @@ void Seagull::run() {
 
     // Tool updates, up front and modal: the UpdateDialog locks the app from
     // the version check through any installs, so nothing can spawn a tool
-    // mid-replace. The thumbnail queues stay held until it's done (an
-    // ffmpeg.exe swap must never race a running grab), then everything flows.
-    // Short delay so the first frame paints before the modal drops in.
+    // mid-replace. With AutoUpdate on it checks immediately; off, it asks
+    // before touching the network at all. The dialog drives the updater; the
+    // thumbnail queues stay held until it closes (an ffmpeg.exe swap must
+    // never race a running grab). Short delay so the first frame paints.
     QTimer::singleShot(250, this, [this]() {
         QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
         const bool autoInstall = cfg.value("General/AutoUpdate", true).toBool();
         UpdateDialog dlg(updaterWorker, autoInstall, mainWindow);
-        QMetaObject::invokeMethod(updaterWorker, [w = updaterWorker]() { w->checkForUpdates(); },
-            Qt::QueuedConnection);
         dlg.exec();
         releaseThumbnailHolds();
         });

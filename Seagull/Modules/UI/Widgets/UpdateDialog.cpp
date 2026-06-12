@@ -22,46 +22,45 @@ UpdateDialog::UpdateDialog(SgUpdater* updater, bool autoInstall, QWidget* parent
     lay->setContentsMargins(24, 20, 24, 20);
     lay->setSpacing(12);
 
-    titleLabel = new QLabel("Checking for updates", this);
+    titleLabel = new QLabel(this);
     QFont tf = titleLabel->font();
     tf.setPointSizeF(tf.pointSizeF() + 3);
     tf.setBold(true);
     titleLabel->setFont(tf);
     lay->addWidget(titleLabel);
 
-    bodyLabel = new QLabel(
-        "Making sure yt-dlp, ffmpeg and Deno are current.\n"
-        "Seagull is locked while this runs so a tool is never replaced mid-use.", this);
+    bodyLabel = new QLabel(this);
     bodyLabel->setTextFormat(Qt::PlainText);
     bodyLabel->setWordWrap(true);
     lay->addWidget(bodyLabel);
 
-    statusLabel = new QLabel("Contacting update servers...", this);
+    statusLabel = new QLabel(this);
     statusLabel->setObjectName("metaStats"); // theme's dimmed text styling
     lay->addWidget(statusLabel);
 
-    progressBar = new QProgressBar(this);  // themed by the global sheet
-    progressBar->setRange(0, 0);           // indeterminate while checking
+    progressBar = new QProgressBar(this); // themed by the global sheet
     lay->addWidget(progressBar);
 
     auto* btnRow = new QHBoxLayout();
     btnRow->addStretch(1);
     laterBtn = new QPushButton("Not Now", this);
-    updateBtn = new QPushButton("Update Now", this);
+    updateBtn = new QPushButton(this);
     updateBtn->setDefault(true);
-    laterBtn->hide();   // buttons only appear in the ask-first prompt state
-    updateBtn->hide();
     btnRow->addWidget(laterBtn);
     btnRow->addWidget(updateBtn);
     lay->addLayout(btnRow);
 
     connect(laterBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(updateBtn, &QPushButton::clicked, this, &UpdateDialog::startUpdate);
+    connect(updateBtn, &QPushButton::clicked, this, &UpdateDialog::onPrimaryClicked);
 
     // Cross-thread: the updater emits from its own thread, so these arrive queued.
     connect(m_updater, &SgUpdater::checkFinished, this, &UpdateDialog::onCheckFinished);
     connect(m_updater, &SgUpdater::applyProgress, this, &UpdateDialog::onProgress);
     connect(m_updater, &SgUpdater::applyFinished, this, &UpdateDialog::onFinished);
+
+    // Auto-update goes straight into the check; ask-first offers it instead.
+    if (m_autoInstall) beginCheck();
+    else               enterAskStage();
 }
 
 void UpdateDialog::reject() {
@@ -69,9 +68,51 @@ void UpdateDialog::reject() {
     QDialog::reject();
 }
 
+void UpdateDialog::onPrimaryClicked() {
+    switch (m_stage) {
+    case Stage::Ask:    beginCheck();  break;
+    case Stage::Prompt: startUpdate(); break;
+    case Stage::Done:   accept();      break;
+    default: break; // busy stages have no primary button showing
+    }
+}
+
+void UpdateDialog::enterAskStage() {
+    m_stage = Stage::Ask;
+    m_busy  = false;
+    titleLabel->setText("Check for updates?");
+    bodyLabel->setText(
+        "Look for new versions of yt-dlp, ffmpeg and Deno now?\n"
+        "Seagull stays locked while a check or install runs, so a tool is "
+        "never replaced mid-use.");
+    statusLabel->hide();
+    progressBar->hide();
+    updateBtn->setText("Check Now");
+    updateBtn->show();
+    laterBtn->show();
+}
+
+void UpdateDialog::beginCheck() {
+    m_stage = Stage::Checking;
+    m_busy  = true;
+    titleLabel->setText("Checking for updates");
+    bodyLabel->setText("Making sure yt-dlp, ffmpeg and Deno are current.");
+    statusLabel->setText("Contacting update servers...");
+    statusLabel->show();
+    progressBar->setRange(0, 0); // indeterminate
+    progressBar->show();
+    updateBtn->hide();
+    laterBtn->hide();
+
+    // Queued invoke so the (blocking) check runs on the updater's thread.
+    QMetaObject::invokeMethod(m_updater, [u = m_updater]() { u->checkForUpdates(); },
+        Qt::QueuedConnection);
+}
+
 void UpdateDialog::onCheckFinished(const QStringList& pending) {
     if (pending.isEmpty()) {
-        m_busy = false;
+        m_stage = Stage::Done;
+        m_busy  = false;
         titleLabel->setText("Up to date");
         bodyLabel->setText("All tools are current.");
         statusLabel->hide();
@@ -87,17 +128,20 @@ void UpdateDialog::onCheckFinished(const QStringList& pending) {
         return;
     }
 
-    // Ask-first (AutoUpdate off): unlock just enough to let them choose.
-    m_busy = false;
+    // Ask-first: unlock just enough to let them choose.
+    m_stage = Stage::Prompt;
+    m_busy  = false;
     titleLabel->setText("Updates available");
     statusLabel->hide();
     progressBar->hide();
-    laterBtn->show();
+    updateBtn->setText("Update Now");
     updateBtn->show();
+    laterBtn->show();
 }
 
 void UpdateDialog::startUpdate() {
-    m_busy = true;
+    m_stage = Stage::Installing;
+    m_busy  = true;
     laterBtn->hide();
     updateBtn->hide();
     titleLabel->setText("Installing updates");
@@ -117,7 +161,8 @@ void UpdateDialog::onProgress(const QString& tool, int percent) {
 }
 
 void UpdateDialog::onFinished(bool allOk) {
-    m_busy = false;
+    m_stage = Stage::Done;
+    m_busy  = false;
     progressBar->setValue(100);
     if (allOk) {
         titleLabel->setText("Updates installed");
@@ -129,7 +174,5 @@ void UpdateDialog::onFinished(bool allOk) {
     titleLabel->setText("Some updates failed");
     statusLabel->setText("Details are in the Queue log.");
     updateBtn->setText("Close");
-    disconnect(updateBtn, &QPushButton::clicked, this, &UpdateDialog::startUpdate);
-    connect(updateBtn, &QPushButton::clicked, this, &QDialog::accept);
     updateBtn->show();
 }

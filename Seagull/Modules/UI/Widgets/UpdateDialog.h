@@ -12,13 +12,15 @@ class SgUpdater;
 // installs, so a tool can never be replaced while something might spawn it
 // (thumbnails, searches, downloads, stream resolution).
 //
-// Flow: checking (indeterminate bar) ->
-//   - everything current: brief "Up to date" note, auto-closes
-//   - updates found, AutoUpdate on: installs immediately with live progress
-//   - updates found, AutoUpdate off: Update Now / Not Now prompt
-// Escape and the (removed) close button are swallowed while busy; "Not Now"
-// and the auto-closes are the only ways out. The updater lives on its own
-// thread; calls go over queued invokes and its signals arrive queued.
+// AutoUpdate on:  opens straight into the check (indeterminate bar), then
+//                 installs immediately with live progress.
+// AutoUpdate off: opens on an ask-first stage ("Check for updates?"); nothing
+//                 touches the network until the user says Check Now, and any
+//                 updates found get a second Update Now / Not Now prompt.
+// Either way: "Up to date" and successful installs auto-close; Escape and the
+// (removed) titlebar close are swallowed while checking/installing. The
+// updater lives on its own thread; calls go over queued invokes and its
+// signals arrive queued.
 class UpdateDialog : public QDialog {
     Q_OBJECT
 
@@ -29,19 +31,25 @@ protected:
     void reject() override; // swallowed while checking/installing
 
 private:
+    enum class Stage { Ask, Checking, Prompt, Installing, Done };
+
+    void enterAskStage();    // AutoUpdate off: offer the check before running it
+    void beginCheck();       // checking UI + kicks checkForUpdates on the worker
+    void startUpdate();      // installing UI + kicks applyUpdates on the worker
+    void onPrimaryClicked(); // the right-hand button, by stage
     void onCheckFinished(const QStringList& pending);
-    void startUpdate();   // prompt/auto -> progress state, kicks off applyUpdates
     void onProgress(const QString& tool, int percent);
     void onFinished(bool allOk);
 
     SgUpdater* m_updater;
-    bool m_autoInstall;
-    bool m_busy = true; // born checking; true again while installing
+    bool  m_autoInstall;
+    bool  m_busy = false;            // true while checking/installing (locks reject)
+    Stage m_stage = Stage::Checking;
 
     QLabel*       titleLabel;
     QLabel*       bodyLabel;
     QLabel*       statusLabel;
     QProgressBar* progressBar;
-    QPushButton*  updateBtn;
+    QPushButton*  updateBtn; // primary: Check Now / Update Now / Close, by stage
     QPushButton*  laterBtn;
 };
