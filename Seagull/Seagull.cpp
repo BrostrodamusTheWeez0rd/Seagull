@@ -301,6 +301,19 @@ void Seagull::releaseThumbnailHolds() {
     playerThumbnailer->setHeld(false);
 }
 
+void Seagull::shutdownUpdater() {
+    // Safe to call as soon as the setup/update dialog has closed: the dialogs
+    // only close after applyFinished (or with nothing started), so the worker
+    // is idle. finished -> deleteLater (wired in the ctor) frees the worker on
+    // its own thread as it winds down.
+    if (!updaterThread) return;
+    updaterThread->quit();
+    updaterThread->wait();
+    updaterThread->deleteLater();
+    updaterThread = nullptr;
+    updaterWorker = nullptr; // deleted via the finished->deleteLater connect
+}
+
 Seagull::~Seagull() {
     // Stop the updater thread cleanly before anything else goes away.
     if (updaterThread) {
@@ -353,6 +366,7 @@ void Seagull::run() {
         // Now, downloading behind their back would override that choice;
         // setup asks again next launch instead.
         releaseThumbnailHolds(); // fresh tools just landed; thumbnails may run
+        shutdownUpdater();       // setup was the updater's job this launch — done
         return;
     }
 
@@ -368,6 +382,7 @@ void Seagull::run() {
         UpdateDialog dlg(updaterWorker, autoInstall, mainWindow);
         dlg.exec();
         releaseThumbnailHolds();
+        shutdownUpdater(); // the startup flow was the updater's whole job
         });
 }
 

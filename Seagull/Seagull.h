@@ -71,6 +71,10 @@ private:
     // Release the thumbnail ffmpeg queues once tool updates can no longer race them.
     void releaseThumbnailHolds();
 
+    // The updater's only job is the startup flow; once that's done, stop its
+    // thread instead of letting it idle for the whole session.
+    void shutdownUpdater();
+
     QStringList m_downloadQueue; // pending ad-hoc download URLs (FIFO)
     bool        m_downloading = false;
     bool        m_setupActive = false; // first-run dialog owns the updater right now
