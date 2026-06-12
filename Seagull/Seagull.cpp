@@ -116,12 +116,26 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // A fresh playlist file landed in the playlist folder — flash the Library tab.
     connect(queueModule, &Queue::playlistSaved, this, [this](const QString&) { flashLibraryTab(); });
 
-    // A search result card plays through the same path as the queue. (Auto-advance
-    // for the Search source isn't wired yet — a finished search video just stops.)
+    // A search result card plays through the same path as the queue. A short
+    // additionally gets the YouTube feed behaviour: it loops at the end, and
+    // wheel-scrolling over the video walks the search results.
     connect(searchModule, &Search::playMediaRequested, videoPlayer,
         [this](const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
             activeSource = ActiveSource::Search;
+            const bool wasShorts = videoPlayer->shortsMode();
+            const bool isShort   = rawUrl.toString().contains("/shorts/", Qt::CaseInsensitive);
             videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
+            // After playVideo: starting media clears the mode, this re-arms it.
+            videoPlayer->setShortsMode(isShort);
+            // Entering shorts viewing drops the tab pane like YouTube's
+            // immersive feed; advancing within the feed leaves the user's
+            // split alone (a handle click brings the tabs back any time).
+            if (isShort && !wasShorts) mainWindow->collapseTabs();
+        });
+
+    // Shorts-feed scroll: wheel over the playing short = next/previous result.
+    connect(videoPlayer, &VideoPlayer::shortsScrolled, this, [this](int step) {
+        if (activeSource == ActiveSource::Search) searchModule->playAdjacentResult(step);
         });
 
     // Search card "Queue" adds to the Queue tab; "Download" goes to the dedicated
@@ -181,6 +195,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         else if (activeSource == ActiveSource::Queue) {
             if (delta > 0) queueModule->playNextQueuedItem();
             else           queueModule->playPrevQueuedItem();
+        }
+        else if (activeSource == ActiveSource::Search) {
+            searchModule->playAdjacentResult(delta > 0 ? 1 : -1);
         }
         });
 

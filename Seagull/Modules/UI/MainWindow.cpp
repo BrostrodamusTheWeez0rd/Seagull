@@ -65,6 +65,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     mainSplitter = new QSplitter(Qt::Vertical, this);
     mainSplitter->setOpaqueResize(true); // live resize — follow the drag, don't wait for release
+    mainSplitter->setHandleWidth(2);     // fixed: stays this width in fullscreen too (clickable)
 
     tabs = new QTabWidget(this);
     tabs->setMovable(true); // let the user drag tabs into any order
@@ -134,6 +135,27 @@ void MainWindow::captureSplit() {
     QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     settings.setValue("Display/VideoSplitRatio", m_videoSplitRatio);
     settings.sync();
+}
+
+void MainWindow::collapseTabs() {
+    if (!videoPlayer || !videoPlayer->isVisible()) return; // no video to give the space to
+    const QList<int> s = mainSplitter->sizes();
+    if (s.value(1) <= 0) return; // already fully down
+    // Remember where to return to on the next click. Fullscreen's immersive
+    // sizes are never the split the user "left it at", so don't capture there.
+    if (!isFullScreen()) captureSplit();
+    mainSplitter->setSizes({ s.value(0) + s.value(1), 0 });
+    videoPlayer->repositionOverlays();
+}
+
+void MainWindow::toggleTabsCollapsed() {
+    if (!videoPlayer || !videoPlayer->isVisible()) return;
+    if (mainSplitter->sizes().value(1) > 0) {
+        collapseTabs();
+    } else {
+        applyStoredSplit();
+        videoPlayer->repositionOverlays();
+    }
 }
 
 QWidget* MainWindow::wrapPage(QWidget* tab) {
@@ -426,6 +448,12 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
     mainSplitter->insertWidget(0, player); // video on top, tabs below
     mainSplitter->setCollapsible(0, false);
 
+    // Click-toggle on the splitter handle (collapse tabs / restore the split).
+    // Registered on RELEASE in eventFilter so a click is never confused with a
+    // drag; the handle exists now that both panes are in the splitter.
+    if (QSplitterHandle* h = mainSplitter->handle(1))
+        h->installEventFilter(this);
+
     // The overlays are top-level windows in global coordinates, so anything that
     // moves the video surface (splitter drag, window move/resize) must nudge them.
     connect(mainSplitter, &QSplitter::splitterMoved, player, &VideoPlayer::repositionOverlays);
@@ -451,7 +479,9 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
 void MainWindow::enterFullScreen() {
     m_wasMaximized = isMaximized(); // remember so we can restore it on exit
     showFullScreen();
-    mainSplitter->setHandleWidth(0);     // hide the splitter; video fills the screen
+    // The 2px handle stays (not width 0): clicking the bottom edge of the
+    // screen brings the tabs up over the fullscreen video, clicking it again
+    // drops them back down.
     mainSplitter->setSizes({ 1000, 0 }); // immersive: video fills, tabs collapsed
     QTimer::singleShot(100, this, [this]() {
         if (videoPlayer) { videoPlayer->repositionOverlays(); videoPlayer->raiseOverlays(); }
@@ -460,7 +490,6 @@ void MainWindow::enterFullScreen() {
 
 void MainWindow::exitFullScreen() {
     if (m_wasMaximized) showMaximized(); else showNormal(); // restore the prior state
-    mainSplitter->setHandleWidth(2);
     applyStoredSplit(); // land back on the remembered split, not a fixed size
     QTimer::singleShot(100, this, [this]() {
         if (videoPlayer) { videoPlayer->repositionOverlays(); videoPlayer->raiseOverlays(); }
@@ -523,6 +552,37 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // --- Click vs drag on the splitter handle ---
+    // A clean click (press + release without ever crossing the drag threshold)
+    // toggles the tabs pane: fully down / back to the remembered split. Real
+    // drags keep working untouched: nothing is consumed, and any movement past
+    // the threshold latches m_handleDragged so the release does nothing — even
+    // a drag that ends back where it started. Registered on RELEASE only.
+    if (watched == mainSplitter->handle(1)) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton) {
+                m_handlePressed  = true;
+                m_handleDragged  = false;
+                m_handlePressPos = me->globalPosition().toPoint();
+            }
+        }
+        else if (event->type() == QEvent::MouseMove && m_handlePressed) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if ((me->globalPosition().toPoint() - m_handlePressPos).manhattanLength()
+                    >= QApplication::startDragDistance())
+                m_handleDragged = true;
+        }
+        else if (event->type() == QEvent::MouseButtonRelease) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            const bool clicked = m_handlePressed && !m_handleDragged
+                              && me->button() == Qt::LeftButton;
+            m_handlePressed = false;
+            if (clicked) toggleTabsCollapsed();
+        }
+        return false; // never swallow — the splitter's own drag handling stays intact
+    }
+
     // --- Tear-off gesture on the tab bar ---
     if (watched == tabs->tabBar()) {
         auto* bar = tabs->tabBar();

@@ -64,6 +64,13 @@ public:
     // Floating Share button beside the "+", shown while an online video plays.
     void setShareAvailable(bool on);
 
+    // Splitter click-toggle: drop the tabs pane completely (video fills) or
+    // return to the split it was at before the drop. Triggered by a clean
+    // click on the splitter handle (see eventFilter) and by the orchestrator
+    // when shorts viewing starts. Works in fullscreen too.
+    void collapseTabs();
+    void toggleTabsCollapsed();
+
 signals:
     void shareRequested(); // the floating Share button was clicked
 
@@ -122,6 +129,13 @@ private:
     VideoPlayer* videoPlayer = nullptr; // hosted; owned by the widget tree
     bool m_wasMaximized = false;        // window state before going fullscreen
     double m_videoSplitRatio = 0.5;     // video fraction of the split; default 50/50
+
+    // Splitter-handle click detection: a press arms the gesture, any move past
+    // the drag threshold latches m_handleDragged (a drag, even one that returns
+    // to its start, is never a click), and only a clean release toggles.
+    bool   m_handlePressed = false;
+    bool   m_handleDragged = false;
+    QPoint m_handlePressPos;
 };
 
 #endif // MAINWINDOW_H

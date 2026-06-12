@@ -39,6 +39,10 @@ public:
 
 public slots:
     void setCardWidth(int targetWidth);
+    // Shorts-feed advance (wheel over the player / skip buttons): play the
+    // next (+1) / previous (-1) result that passes the current filter. Walking
+    // past the loaded tail pulls the next batch and continues when it lands.
+    void playAdjacentResult(int delta);
 
 signals:
     void playMediaRequested(const QUrl& rawUrl, const QUrl& cdnVideoUrl,
@@ -70,6 +74,7 @@ private:
     void setStatus(const QString& text, bool busy);
 
     void startSearch(const QString& query);
+    void playResultAt(int index);
     void pushNavEntry(const QString& query);
     void updateNavButtons();
     void addToHistory(const QString& query);
@@ -109,6 +114,12 @@ private:
 
     QList<SearchResult> m_allResults;
     FilterMode   m_filterMode  = FilterMode::All;
+
+    // Feed position: index (into m_allResults) of the playing result, -1 none.
+    // m_advancePending = a feed advance ran off the loaded tail and resumes
+    // when the next batch arrives.
+    int          m_playingIndex   = -1;
+    bool         m_advancePending = false;
 
     QStringList  m_navHistory;
     int          m_navIndex    = -1;

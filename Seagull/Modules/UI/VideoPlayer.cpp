@@ -10,6 +10,7 @@
 #include <QTimer>
 #include <QEvent>
 #include <QResizeEvent>
+#include <QWheelEvent>
 #include <QCursor>
 #include <QDialog>
 #include <QTextEdit>
@@ -100,6 +101,7 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(retryTimer, &QTimer::timeout, this, &VideoPlayer::showStreamFailed);
 
     lastMousePos = QCursor::pos();
+    m_shortsScrollClock.start();
     videoWidget->installEventFilter(this);
 
     connect(playerControls, &PlayerControls::qualitySelected, this, &VideoPlayer::changeStreamQuality);
@@ -110,8 +112,25 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
 }
 
+void VideoPlayer::setShortsMode(bool on) {
+    m_shortsMode = on;
+    m_shortsWheelAccum = 0;
+}
+
 void VideoPlayer::onMediaEndReached() {
     stopRecordingIfActive(); // the live source ended — finalise any recording
+
+    // Shorts loop like YouTube's feed: restart instead of ended mode, and no
+    // mediaEnded — auto-advance is the wheel/skip, never the clock.
+    if (m_shortsMode && engine->hasMedia()) {
+        engine->reloadLastMedia();
+        QTimer::singleShot(50, this, [this]() {
+            engine->play();
+            if (playerControls) { playerControls->resetUiState(); playerControls->startPolling(); }
+            });
+        return;
+    }
+
     osdTimer->stop();
     // Freeze the seeker/timestamp at the end so they don't snap back to 0 while
     // VLC drains the decoder. startPolling() clears this when the next item plays.
@@ -135,6 +154,7 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     m_currentLocalUrl = url; // Record clips the watched range straight from this file
     m_isLive = false;
     m_isStreaming = false; // local file — playback errors are genuine, no refetch
+    m_shortsMode = false;  // new media — the orchestrator re-enables for a short
     emit playbackStarted(); // host shows + sizes the video area
 
     engine->setOutputWindow((void*)videoWidget->winId());
@@ -184,6 +204,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     m_isStreaming = true;   // online stream — a stale cached URL can be refetched
     m_isLive = false;       // assume VOD until the probe reports live (picks record method)
     m_streamRetried = false;
+    m_shortsMode = false;   // new media — the orchestrator re-enables for a short
 
     // Reset the Info panel; the title is known now, the rest arrives with the probe.
     m_infoTitle = title;
@@ -314,6 +335,7 @@ void VideoPlayer::closePlayer() {
     if (playerControls) playerControls->setRecordAvailable(false);
     emit shareAvailableChanged(false); // nothing playing — retire Share + Description
     emit videoInfoChanged(QString(), QString(), QString(), QString(), QString());
+    m_shortsMode = false;
     mouseTrackerTimer->stop();
     osdTimer->stop();
     clickTimer->stop();
@@ -341,6 +363,21 @@ bool VideoPlayer::eventFilter(QObject* watched, QEvent* event) {
         else if (event->type() == QEvent::MouseButtonDblClick) {
             clickTimer->stop();
             emit fullscreenToggleRequested();
+        }
+        else if (event->type() == QEvent::Wheel && m_shortsMode) {
+            const int dy = static_cast<QWheelEvent*>(event)->angleDelta().y();
+            // A direction flip drops the old accumulation so opposing half-
+            // notches don't cancel each other out.
+            if ((dy > 0) != (m_shortsWheelAccum > 0)) m_shortsWheelAccum = 0;
+            m_shortsWheelAccum += dy;
+            if (qAbs(m_shortsWheelAccum) >= 120) { // one full wheel notch
+                m_shortsWheelAccum = 0;
+                if (m_shortsScrollClock.elapsed() > 350) { // one short per flick
+                    m_shortsScrollClock.restart();
+                    emit shortsScrolled(dy < 0 ? 1 : -1); // scroll down = next
+                }
+            }
+            return true;
         }
     }
     return QWidget::eventFilter(watched, event);

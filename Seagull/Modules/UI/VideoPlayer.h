@@ -7,6 +7,7 @@
 #include <QPixmap>
 #include <QPoint>
 #include <QList>
+#include <QElapsedTimer>
 
 class QFrame;
 class QLabel;
@@ -32,6 +33,13 @@ public:
     void raiseOverlays();      // re-stack overlays above the video (after fullscreen)
     void togglePlayPause();    // space-bar / single-click handler entry point
 
+    // Shorts-feed behaviour (YouTube style): the short loops at the end instead
+    // of dropping into ended mode, and wheel-scrolling over the video emits
+    // shortsScrolled so the feed owner can advance. Cleared on every new media;
+    // the orchestrator re-enables it after starting a short.
+    void setShortsMode(bool on);
+    bool shortsMode() const { return m_shortsMode; }
+
 public slots:
     void playLocalFile(const QUrl& url);
     void playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl = QUrl(), const QUrl& cdnAudioUrl = QUrl(), const QString& title = QString());
@@ -55,6 +63,7 @@ public slots:
 signals:
     void mediaEnded();
     void skipRequested(int delta);
+    void shortsScrolled(int step); // shorts mode wheel: +1 = next short, -1 = previous
     void probeQualitiesRequested(const QString& url);
     // freshResolve = true bypasses the worker's metadata cache (stale-URL refetch).
     void streamUrlRequested(const QString& url, const QString& formatId, bool freshResolve);
@@ -166,6 +175,12 @@ private:
     bool m_isStreaming = false;   // current media is an online stream (not a local file)
     bool m_isLive = false;        // online stream is live (vs VOD) — picks the record method
     bool m_streamRetried = false; // one stale-URL refetch has been spent for this stream
+
+    // Shorts feed: wheel deltas accumulate to one notch (trackpads stream tiny
+    // steps), rate-limited so a flick advances exactly one short.
+    bool          m_shortsMode = false;
+    int           m_shortsWheelAccum = 0;
+    QElapsedTimer m_shortsScrollClock;
 };
 
 #endif // VIDEOPLAYER_H
