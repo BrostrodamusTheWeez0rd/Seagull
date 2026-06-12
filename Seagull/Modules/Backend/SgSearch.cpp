@@ -88,6 +88,11 @@ QList<SearchResult> SgSearch::parseYoutube(const QJsonObject& root) const {
 
     for (const auto& it : entries) {
         const QJsonObject e = it.toObject();
+        // Skip non-video entries (channels, playlists) — their ie_key is "YoutubeTab"
+        // or similar. Regular videos use "Youtube"; Shorts use "YoutubeShorts".
+        const QString ieKey = e["ie_key"].toString();
+        if (!ieKey.isEmpty() && ieKey != "Youtube" && ieKey != "YoutubeShorts") continue;
+
         // Flat search entries put the watch URL in "url" (webpage_url is empty).
         const QString url = e["url"].toString();
         const QString title = e["title"].toString();
@@ -119,6 +124,12 @@ QList<SearchResult> SgSearch::parseYoutube(const QJsonObject& root) const {
             ? static_cast<qint64>(e["duration"].toDouble()) : -1;
         r.viewCount = e.contains("view_count") && !e["view_count"].isNull()
             ? static_cast<qint64>(e["view_count"].toDouble()) : -1;
+
+        // Shorts: primary signal is "YoutubeShorts" ie_key from yt-dlp flat search.
+        // The /shorts/ URL is a secondary fallback for older yt-dlp builds that
+        // still emit the canonical URL but the correct ie_key.
+        r.isShort = (ieKey == "YoutubeShorts")
+                 || r.url.contains("/shorts/", Qt::CaseInsensitive);
 
         out.append(r);
     }

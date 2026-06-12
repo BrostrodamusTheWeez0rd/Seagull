@@ -26,7 +26,8 @@ public:
     };
 
     VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth,
-        QWidget* parent = nullptr, int buttons = AllButtons);
+        QWidget* parent = nullptr, int buttons = AllButtons,
+        const QString& playLabel = {});
 
     void setCardWidth(int width); // grid-assigned width; thumbnail stays 16:9
 

@@ -14,8 +14,9 @@ struct SearchResult {
     QString url;
     QString channel;
     QString thumbnail;
-    qint64  duration = -1;
+    qint64  duration  = -1;
     qint64  viewCount = -1;
+    bool    isShort   = false;
 };
 
 // Backend search worker — a peer to SgYtDlp, dedicated to discovery rather than

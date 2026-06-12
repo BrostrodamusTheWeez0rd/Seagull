@@ -103,7 +103,7 @@ private:
 };
 
 VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth,
-    QWidget* parent, int buttons)
+    QWidget* parent, int buttons, const QString& playLabel)
     : QWidget(parent), m_result(result) {
     setObjectName("videoCard"); // themable via Theme::apply's global sheet
     setAttribute(Qt::WA_StyledBackground, true); // let the QSS background/border paint
@@ -147,7 +147,7 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
             emit (this->*signal)(QUrl(m_result.url), m_result.title);
             });
         };
-    if (buttons & PlayButton)     addButton("▶ Play", &VideoCard::playRequested);
+    if (buttons & PlayButton)     addButton(playLabel.isEmpty() ? QStringLiteral("▶ Play") : playLabel, &VideoCard::playRequested);
     if (buttons & QueueButton)    addButton("Queue", &VideoCard::queueRequested);
     if (buttons & DownloadButton) addButton("Download", &VideoCard::downloadRequested);
     lay->addLayout(btnRow);

@@ -186,6 +186,7 @@ void Theme::apply(const QString& name) {
         "QPushButton#videoCardButton:hover { background-color:%5; color:%6; border:1px solid %5; }"
         "QFrame#searchStatusPill { background-color:%2; border:1px solid %3; border-radius:14px; }"
         "QLabel#searchStatus { background:transparent; color:%4; }"
+        "QFrame#searchSeparator { background-color:%3; border:none; min-height:1px; max-height:1px; }"
     ).arg(c.base.name(), c.alt.name(), c.border.name(), c.text.name(),
           c.accent.name(), c.accentText.name(), c.subtext.name());
 
@@ -241,6 +242,11 @@ void Theme::apply(const QString& name) {
         "QPushButton#libraryTypeButton:hover { background-color:%5; }"
         "QPushButton#libraryTypeButton:checked { background-color:%6; color:%3; }"
         "QLabel#libraryEmptyLabel { color:%2; background:transparent; }"
+        // Search tab: small filter pill (All / Videos / Shorts) — same pill idiom.
+        "QFrame#searchFilterPill { background-color:%1; border:1px solid %6; border-radius:14px; }"
+        "QPushButton#searchFilterButton { background:transparent; color:%2; border:none; border-radius:10px; padding:3px 12px; font-weight:bold; }"
+        "QPushButton#searchFilterButton:hover { background-color:%5; }"
+        "QPushButton#searchFilterButton:checked { background-color:%6; color:%3; }"
     ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line);
 
     app->setStyleSheet(ss + cards + overlay);
