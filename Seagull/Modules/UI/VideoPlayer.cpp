@@ -15,6 +15,7 @@
 #include <QTextEdit>
 #include <QStringList>
 #include <QGuiApplication>
+#include <QWindow>
 #include <QClipboard>
 #include <QFileInfo>
 #include <QDir>
@@ -119,8 +120,7 @@ void VideoPlayer::onMediaEndReached() {
 
     // Cover the final (often black) frame with the poster, controls on top.
     showPosterOverlay();
-    if (playerControls) playerControls->raise();
-    if (titleBar) titleBar->raise();
+    raiseOverlays();
 
     repositionOverlays();
 
@@ -255,8 +255,7 @@ void VideoPlayer::showPosterOverlay() {
     if (!isVisible()) return;
     posterOverlay->show();
     repositionOverlays();              // sizes + paints the scaled pixmap
-    if (playerControls) playerControls->raise();
-    if (titleBar) titleBar->raise();
+    raiseOverlays();
 }
 
 void VideoPlayer::hidePosterOverlay() {
@@ -273,7 +272,7 @@ void VideoPlayer::onPlaybackError() {
             titleBar->setTitle("Stream link expired — refetching...");
             titleBar->setLoading(true);
             titleBar->show();
-            titleBar->raise();
+            if (videoAreaExposed()) titleBar->raise();
         }
         repositionOverlays();
         // The cached URL is what went stale — force a fresh yt-dlp resolve.
@@ -291,8 +290,9 @@ void VideoPlayer::showStreamFailed() {
     // replay button (re-uses the last media), and keep the controls/title pinned.
     retryTimer->stop();
     osdTimer->stop();
-    if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->setLoading(false); titleBar->show(); titleBar->raise(); }
-    if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); playerControls->raise(); }
+    if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->setLoading(false); titleBar->show(); }
+    if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); }
+    raiseOverlays();
     repositionOverlays();
 }
 
@@ -362,7 +362,31 @@ void VideoPlayer::repositionOverlays() {
     }
 }
 
+// The overlays are top-level tool windows, so show()/raise() stacks them above
+// EVERYTHING in the app's window band — dialogs, torn-off tabs — and can even
+// pop them over other applications' windows covering the video area. Before
+// re-stacking, verify the top-level window at the given point is actually the
+// player's surface: our own window or one of the overlays themselves. A
+// covering Seagull window returns itself; a foreign app's window returns null.
+bool VideoPlayer::overlaySurfaceExposedAt(const QPoint& globalPos) const {
+    const QWindow* top = QGuiApplication::topLevelAt(globalPos);
+    if (!top) return false;
+    if (window()->windowHandle() == top) return true;
+    for (const QWidget* w : { static_cast<const QWidget*>(playerControls),
+                              static_cast<const QWidget*>(titleBar),
+                              static_cast<const QWidget*>(posterOverlay) })
+        if (w && w->windowHandle() == top) return true;
+    return false;
+}
+
+bool VideoPlayer::videoAreaExposed() const {
+    if (!videoWidget || !videoWidget->isVisible()) return false;
+    return overlaySurfaceExposedAt(videoWidget->mapToGlobal(
+        QPoint(videoWidget->width() / 2, videoWidget->height() / 2)));
+}
+
 void VideoPlayer::raiseOverlays() {
+    if (!videoAreaExposed()) return; // something covers the video — don't pop over it
     if (playerControls) playerControls->raise();
     if (titleBar) titleBar->raise();
 }
@@ -377,10 +401,8 @@ void VideoPlayer::showOSD() {
     if (titleBar) titleBar->show();
     // Only re-stack above the poster when it's actually showing (paused / EOF).
     // Raising on every mouse-move otherwise buries the volume/quality popups.
-    if (posterOverlay && posterOverlay->isVisible()) {
-        if (playerControls) playerControls->raise();
-        if (titleBar) titleBar->raise();
-    }
+    if (posterOverlay && posterOverlay->isVisible())
+        raiseOverlays();
     repositionOverlays();
     osdTimer->start(3000);
 }
@@ -406,7 +428,11 @@ void VideoPlayer::checkMouseMovement() {
     if (currentPos != lastMousePos) {
         lastMousePos = currentPos;
         QRect videoRect(videoWidget->mapToGlobal(QPoint(0, 0)), videoWidget->size());
-        if (videoRect.contains(currentPos)) showOSD();
+        // The geometric hit isn't enough: the cursor may be over a dialog, a
+        // torn-off tab, or another app's window covering the video area — the
+        // OSD popping up would draw the overlays above that window.
+        if (videoRect.contains(currentPos) && overlaySurfaceExposedAt(currentPos))
+            showOSD();
     }
 }
 
@@ -515,7 +541,7 @@ void VideoPlayer::toggleRecording() {
                 titleBar->setTitle(QStringLiteral("Saving clip…"));
                 titleBar->setLoading(true);
                 titleBar->show();
-                titleBar->raise();
+                if (videoAreaExposed()) titleBar->raise();
             }
             // Pause playback while a STREAM clip downloads — the player and the grab
             // pull from the same CDN and starve each other, crawling the cut to a halt.
@@ -599,7 +625,7 @@ void VideoPlayer::showBannerNotice(const QString& text) {
     titleBar->setLoading(false); // the seagull bows out — the work is done
     titleBar->setTitle(text);
     titleBar->show();
-    titleBar->raise();
+    if (videoAreaExposed()) titleBar->raise();
     repositionOverlays();
     QTimer::singleShot(4000, this, [this]() {
         m_bannerNotice = false;

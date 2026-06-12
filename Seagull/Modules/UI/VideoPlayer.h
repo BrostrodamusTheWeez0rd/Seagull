@@ -95,6 +95,14 @@ private slots:
     void changeStreamQuality(const QString& formatId);
 
 private:
+    // Z-order guards for the top-level overlay windows: true when the top-level
+    // window at the point is the player's own surface (our window or one of the
+    // overlays). Covering Seagull windows (dialogs, torn-off tabs) and other
+    // applications' windows fail the test, so show/raise paths skip stacking
+    // the overlays above them.
+    bool overlaySurfaceExposedAt(const QPoint& globalPos) const;
+    bool videoAreaExposed() const; // exposure probe at the video frame's centre
+
     void showPosterOverlay();
     void hidePosterOverlay();
     void onPlaybackError();
