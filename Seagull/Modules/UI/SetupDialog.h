@@ -38,6 +38,7 @@ private:
     QLineEdit* audioEdit;
     QLineEdit* photoEdit;
     QLineEdit* recEdit;
+    QLineEdit* playlistEdit;
 
     QLabel*       statusLabel;
     QProgressBar* progressBar;

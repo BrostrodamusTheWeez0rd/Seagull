@@ -13,6 +13,7 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QFile>
+#include <QDir>
 #include <QFont>
 
 bool SetupDialog::toolsMissing() {
@@ -70,11 +71,12 @@ SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)
             });
         form->addRow(label, row);
         };
-    addFolderRow(dlEdit,    "Downloads:",  SgPaths::downloadFolder(),       "Select Downloads Folder");
-    addFolderRow(videoEdit, "Videos:",     SgPaths::videoFolder(false),     "Select Videos Folder");
-    addFolderRow(audioEdit, "Audio:",      SgPaths::audioFolder(false),     "Select Audio Folder");
-    addFolderRow(photoEdit, "Photos:",     SgPaths::photoFolder(false),     "Select Photos Folder");
-    addFolderRow(recEdit,   "Recordings:", SgPaths::recordingFolder(false), "Select Recordings Folder");
+    addFolderRow(dlEdit,       "Downloads:",  SgPaths::downloadFolder(),       "Select Downloads Folder");
+    addFolderRow(videoEdit,    "Videos:",     SgPaths::videoFolder(false),     "Select Videos Folder");
+    addFolderRow(audioEdit,    "Audio:",      SgPaths::audioFolder(false),     "Select Audio Folder");
+    addFolderRow(photoEdit,    "Photos:",     SgPaths::photoFolder(false),     "Select Photos Folder");
+    addFolderRow(recEdit,      "Recordings:", SgPaths::recordingFolder(false), "Select Recordings Folder");
+    addFolderRow(playlistEdit, "Playlists:",  SgPaths::playlistFolder(false),  "Select Playlists Folder");
     lay->addLayout(form);
 
     if (toolsMissing()) {
@@ -121,8 +123,15 @@ void SetupDialog::onGetStarted() {
     cfg.setValue("Paths/AudioFolder", audioEdit->text());
     cfg.setValue("Paths/PhotoFolder", photoEdit->text());
     cfg.setValue("Paths/RecordingFolder", recEdit->text());
+    cfg.setValue("Paths/PlaylistFolder", playlistEdit->text());
     cfg.setValue("Setup/Completed", true);
     cfg.sync();
+
+    // The Windows folders already exist, but the defaults that live in a
+    // subfolder (Videos\Recordings, Documents\Playlists) don't yet — create
+    // every confirmed folder so the Library tabs never point at nothing.
+    for (const QLineEdit* e : { dlEdit, videoEdit, audioEdit, photoEdit, recEdit, playlistEdit })
+        if (!e->text().isEmpty()) QDir().mkpath(e->text());
 
     if (toolsMissing()) startToolDownload();
     else accept();

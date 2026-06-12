@@ -1,14 +1,23 @@
 #include "Queue.h"
 #include "../Backend/SgYtDlp.h"
+#include "../Backend/SgPaths.h"
 #include <QFont>
 #include <QPixmap>
 #include <QHeaderView>
 #include <QMenu>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QUrlQuery>
 #include <QNetworkRequest>
 #include <QGraphicsOpacityEffect>
 #include <QMovie>
+#include <QFileInfo>
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QRegularExpression>
 #include <QDebug>
 #include <algorithm>
 
@@ -98,19 +107,22 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     queueBtn = new QPushButton("Add to queue");
     streamBtn = new QPushButton("Stream");
     streamQueueBtn = new QPushButton("Stream Queue");
+    createPlaylistBtn = new QPushButton("Create Playlist");
     clearQueueBtn = new QPushButton("Clear Queue");
 
     downBtn->setEnabled(false); queueBtn->setEnabled(false); streamBtn->setEnabled(false);
-    processQueueBtn->hide(); streamQueueBtn->hide(); clearQueueBtn->hide();
+    processQueueBtn->hide(); streamQueueBtn->hide(); createPlaylistBtn->hide(); clearQueueBtn->hide();
 
     downBtn->setMinimumHeight(30); processQueueBtn->setMinimumHeight(30);
     queueBtn->setMinimumHeight(30); streamBtn->setMinimumHeight(30);
-    streamQueueBtn->setMinimumHeight(30); clearQueueBtn->setMinimumHeight(30);
+    streamQueueBtn->setMinimumHeight(30); createPlaylistBtn->setMinimumHeight(30);
+    clearQueueBtn->setMinimumHeight(30);
 
     btnLayout->addStretch();
     btnLayout->addWidget(downBtn); btnLayout->addWidget(processQueueBtn);
     btnLayout->addWidget(queueBtn); btnLayout->addWidget(streamBtn);
-    btnLayout->addWidget(streamQueueBtn); btnLayout->addWidget(clearQueueBtn);
+    btnLayout->addWidget(streamQueueBtn); btnLayout->addWidget(createPlaylistBtn);
+    btnLayout->addWidget(clearQueueBtn);
     btnLayout->addStretch();
 
     queueTable = new QTableWidget(0, 3);
@@ -186,6 +198,7 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     connect(processQueueBtn, &QPushButton::clicked, this, &Queue::onProcessQueueClicked);
     connect(streamBtn, &QPushButton::clicked, this, &Queue::onStreamClicked);
     connect(streamQueueBtn, &QPushButton::clicked, this, &Queue::onStreamQueueClicked);
+    connect(createPlaylistBtn, &QPushButton::clicked, this, &Queue::onCreatePlaylistClicked);
     connect(clearQueueBtn, &QPushButton::clicked, this, &Queue::onClearQueueClicked);
     connect(queueTable, &QTableWidget::customContextMenuRequested, this, &Queue::showContextMenu);
 }
@@ -309,6 +322,113 @@ void Queue::setStreamingQueueMode(bool active) {
     isStreamingQueue = active;
 }
 
+void Queue::onCreatePlaylistClicked() {
+    if (queueTable->rowCount() == 0) return;
+
+    bool ok = false;
+    QString name = QInputDialog::getText(this, "Create Playlist", "Playlist name:",
+        QLineEdit::Normal, QString(), &ok).trimmed();
+    if (!ok || name.isEmpty()) return;
+    name.replace(QRegularExpression("[<>:\"/\\\\|?*\\r\\n\\t]"), " ");
+    name = name.simplified();
+    if (name.isEmpty()) return;
+
+    const QString dir = SgPaths::playlistFolder();
+    QDir().mkpath(dir);
+    const QString path = dir + "/" + name + ".sgpl";
+    if (QFileInfo::exists(path)
+        && QMessageBox::question(this, "Create Playlist",
+            "A playlist named \"" + name + "\" already exists. Overwrite it?") != QMessageBox::Yes)
+        return;
+
+    // Online rows store the page URL (resolved CDN links expire within hours);
+    // local rows store the absolute file path.
+    QJsonArray entries;
+    for (int i = 0; i < queueTable->rowCount(); ++i) {
+        QTableWidgetItem* item = queueTable->item(i, 0);
+        QString target = item->data(Qt::UserRole).toString();
+        if (target.isEmpty()) target = item->text();
+        QJsonObject e;
+        e["target"] = target;
+        e["title"] = item->text();
+        entries.append(e);
+    }
+    QJsonObject root;
+    root["version"] = 1;
+    root["name"] = name;
+    root["type"] = (m_queueKind == QueueKind::Local) ? "local" : "online";
+    root["created"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    root["entries"] = entries;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        QMessageBox::warning(this, "Create Playlist", "Could not write the playlist file.");
+        return;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    f.close();
+
+    logConsole->append(QString("Playlist saved: %1 (%2 items)")
+        .arg(QDir::toNativeSeparators(path)).arg(entries.size()));
+    emit playlistSaved(path); // shell flashes the Library tab
+}
+
+void Queue::loadPlaylistFile(const QString& path, bool autoPlay) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        logConsole->append("Playlist: could not open " + path);
+        return;
+    }
+    const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+
+    const QJsonArray entries = root["entries"].toArray();
+    const QString plName = root["name"].toString().isEmpty()
+        ? QFileInfo(path).completeBaseName() : root["name"].toString();
+    if (entries.isEmpty()) {
+        QMessageBox::information(this, "Playlist", "\"" + plName + "\" is empty.");
+        return;
+    }
+    const bool local = (root["type"].toString() == "local");
+
+    // A playlist IS a queue, so loading replaces — no mixing can ever occur.
+    // Confirm only when there's something to lose.
+    if (queueTable->rowCount() > 0
+        && QMessageBox::question(this, "Load Playlist",
+            "Loading \"" + plName + "\" will replace the current queue. Continue?") != QMessageBox::Yes)
+        return;
+    onClearQueueClicked();
+    m_queueKind = local ? QueueKind::Local : QueueKind::Online;
+
+    for (const auto& v : entries) {
+        const QJsonObject e = v.toObject();
+        const QString target = e["target"].toString();
+        if (target.isEmpty()) continue;
+        if (local && !QFileInfo::exists(target)) {
+            logConsole->append("Playlist: skipping missing file: " + target);
+            continue;
+        }
+        const int row = queueTable->rowCount();
+        queueTable->insertRow(row);
+        const QString title = e["title"].toString();
+        auto* item = new QTableWidgetItem(title.isEmpty() ? target : title);
+        item->setData(Qt::UserRole, target);
+        queueTable->setItem(row, 0, item);
+        queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
+        queueTable->setItem(row, 2, new QTableWidgetItem(local ? "-" : "0%"));
+    }
+    updateQueueButtonVisibility();
+    if (queueTable->rowCount() == 0) {
+        QMessageBox::information(this, "Playlist",
+            "None of \"" + plName + "\"'s files exist anymore.");
+        return;
+    }
+
+    logConsole->append(QString("Playlist loaded: %1 (%2 items)").arg(plName).arg(queueTable->rowCount()));
+    if (autoPlay) onStreamQueueClicked();
+    else if (!local) prefetchNextInQueue();
+}
+
 void Queue::playNextQueuedItem() {
     if (!isStreamingQueue) return;
     m_queuePlayIndex++;
@@ -333,6 +453,13 @@ void Queue::playQueueIndex(int index) {
     queueTable->selectRow(index);
     QueueEntry& entry = m_streamQueue[index];
 
+    // Local rows skip the whole CDN dance — straight to the player's local path.
+    if (entry.local) {
+        m_waitingForCdn = false;
+        emit playLocalFileRequested(QUrl::fromLocalFile(entry.rawUrl));
+        return;
+    }
+
     if (entry.cdnVideoUrl.isEmpty() || !isStreamUrlValid(entry.cdnVideoUrl)) {
         if (cdnCache.contains(entry.rawUrl) && isStreamUrlValid(cdnCache[entry.rawUrl].first)) {
             entry.cdnVideoUrl = cdnCache[entry.rawUrl].first;
@@ -356,10 +483,57 @@ void Queue::playQueueIndex(int index) {
 }
 
 void Queue::updateQueueButtonVisibility() {
-    bool hasItems = (queueTable->rowCount() > 0);
-    processQueueBtn->setVisible(hasItems);
+    // An emptied queue accepts either locality again.
+    if (queueTable->rowCount() == 0) m_queueKind = QueueKind::None;
+
+    const bool hasItems = (queueTable->rowCount() > 0);
+    const bool local = (m_queueKind == QueueKind::Local);
+    processQueueBtn->setVisible(hasItems && !local); // downloading local files is meaningless
     streamQueueBtn->setVisible(hasItems);
+    streamQueueBtn->setText(local ? "Play Queue" : "Stream Queue");
+    createPlaylistBtn->setVisible(hasItems);
     clearQueueBtn->setVisible(hasItems);
+}
+
+bool Queue::ensureQueueKind(QueueKind want) {
+    if (queueTable->rowCount() == 0 || m_queueKind == QueueKind::None) {
+        m_queueKind = want;
+        return true;
+    }
+    if (m_queueKind == want) return true;
+
+    // Mixing local files and online videos is deliberately not allowed — the
+    // queue's download/stream actions only make sense for one locality at a time.
+    QMessageBox box(this);
+    box.setWindowTitle("Queue Type Mismatch");
+    box.setIcon(QMessageBox::Question);
+    box.setText(m_queueKind == QueueKind::Local
+        ? "The queue currently holds local files.\n\nAdding online videos means clearing the current queue first."
+        : "The queue currently holds online videos.\n\nAdding local files means clearing the current queue first.");
+    QPushButton* clearBtn = box.addButton("Clear Queue && Add", QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() != clearBtn) return false;
+
+    onClearQueueClicked();
+    m_queueKind = want;
+    return true;
+}
+
+void Queue::addLocalFilesToQueue(const QStringList& paths) {
+    if (paths.isEmpty() || !ensureQueueKind(QueueKind::Local)) return;
+    for (const QString& p : paths) {
+        const QFileInfo fi(p);
+        if (!fi.exists() || !fi.isFile()) continue;
+        const int row = queueTable->rowCount();
+        queueTable->insertRow(row);
+        auto* item = new QTableWidgetItem(fi.completeBaseName());
+        item->setData(Qt::UserRole, fi.absoluteFilePath());
+        queueTable->setItem(row, 0, item);
+        queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
+        queueTable->setItem(row, 2, new QTableWidgetItem("-")); // no download progress for local
+    }
+    updateQueueButtonVisibility();
 }
 
 void Queue::enqueueTitleResolution(const QList<QString>& urls, int startRow) {
@@ -398,6 +572,7 @@ void Queue::handleResolverMetadataReady(const QString& title, const QString&, co
 }
 
 void Queue::prefetchNextInQueue() {
+    if (m_queueKind == QueueKind::Local) return; // nothing to resolve for files on disk
     if (!m_currentlyPrefetchingUrl.isEmpty()) return;
     for (int i = 0; i < queueTable->rowCount(); ++i) {
         QString url = queueTable->item(i, 0)->data(Qt::UserRole).toString();
@@ -491,6 +666,7 @@ void Queue::onDownloadClicked() {
 
 void Queue::onAddToQueueClicked() {
     if (urlInput->text().isEmpty()) return;
+    if (!ensureQueueKind(QueueKind::Online)) return;
     int row = queueTable->rowCount();
     queueTable->insertRow(row);
     auto* item = new QTableWidgetItem(cachedTitle.isEmpty() ? urlInput->text() : cachedTitle);
@@ -505,6 +681,7 @@ void Queue::onAddToQueueClicked() {
 
 void Queue::addUrlToQueue(const QString& url, const QString& title) {
     if (url.isEmpty()) return;
+    if (!ensureQueueKind(QueueKind::Online)) return;
     int row = queueTable->rowCount();
     queueTable->insertRow(row);
     auto* item = new QTableWidgetItem(title.isEmpty() ? url : title);
@@ -541,19 +718,25 @@ void Queue::onStreamClicked() {
 void Queue::onStreamQueueClicked() {
     if (queueTable->rowCount() == 0) return;
 
+    const bool local = (m_queueKind == QueueKind::Local);
     m_streamQueue.clear();
     for (int i = 0; i < queueTable->rowCount(); ++i) {
         QTableWidgetItem* item = queueTable->item(i, 0);
         QString url = item->data(Qt::UserRole).toString();
         if (url.isEmpty()) url = item->text();
-        QString cleanUrl = stripToVideoUrl(url);
 
         QueueEntry entry;
-        entry.rawUrl = cleanUrl;
+        entry.local = local;
         entry.title = item->text();
-        if (cdnCache.contains(cleanUrl) && isStreamUrlValid(cdnCache[cleanUrl].first)) {
-            entry.cdnVideoUrl = cdnCache[cleanUrl].first;
-            entry.cdnAudioUrl = cdnCache[cleanUrl].second;
+        if (local) {
+            entry.rawUrl = url; // absolute file path
+        } else {
+            const QString cleanUrl = stripToVideoUrl(url);
+            entry.rawUrl = cleanUrl;
+            if (cdnCache.contains(cleanUrl) && isStreamUrlValid(cdnCache[cleanUrl].first)) {
+                entry.cdnVideoUrl = cdnCache[cleanUrl].first;
+                entry.cdnAudioUrl = cdnCache[cleanUrl].second;
+            }
         }
         m_streamQueue.append(entry);
     }
@@ -571,7 +754,8 @@ void Queue::showContextMenu(const QPoint& pos) {
     QMenu menu(this);
     if (queueTable->selectionModel()->hasSelection()) {
         menu.addAction("Play", this, &Queue::playSelectedItem);
-        menu.addAction("Download", this, &Queue::downloadSelectedItems);
+        if (m_queueKind != QueueKind::Local) // local files are already on disk
+            menu.addAction("Download", this, &Queue::downloadSelectedItems);
         menu.addAction("Remove", this, &Queue::removeSelectedItems);
     }
     menu.exec(queueTable->mapToGlobal(pos));
@@ -589,6 +773,11 @@ void Queue::playSelectedItem() {
     QTableWidgetItem* item = queueTable->item(row, 0);
     QString url = item->data(Qt::UserRole).toString();
     if (url.isEmpty()) url = item->text();
+
+    if (m_queueKind == QueueKind::Local) {
+        emit playLocalFileRequested(QUrl::fromLocalFile(url));
+        return;
+    }
     QString cleanUrl = stripToVideoUrl(url);
     QString title = item->text();
 
@@ -683,6 +872,13 @@ void Queue::handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
 }
 
 void Queue::handlePlaylistEntriesReady(const QList<QString>& urls) {
+    if (!ensureQueueKind(QueueKind::Online)) { // user kept their local queue
+        urlInput->clear();
+        m_pendingPlaylistUrl.clear();
+        isFetchingMetadata = false;
+        hideLoading();
+        return;
+    }
     int startRow = queueTable->rowCount();
     for (const QString& url : urls) {
         int row = queueTable->rowCount();

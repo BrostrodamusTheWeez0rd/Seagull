@@ -186,6 +186,7 @@ public:
 
 signals:
     void playMediaRequested(const QUrl& url);
+    void enqueueRequested(const QStringList& paths); // "Add to Queue" on selected files
 
 public slots:
     void playNextFile();

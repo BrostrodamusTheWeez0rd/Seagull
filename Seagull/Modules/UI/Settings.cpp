@@ -219,7 +219,9 @@ void Settings::setupUI() {
         "Where saved images are stored.");
     auto* recFolderRow = makeFolderRow(recFolderEdit, "Select Recordings Folder",
         "Where the Record button saves recordings and clips.");
-    typedFolderRows = { videoFolderRow, audioFolderRow, photoFolderRow, recFolderRow };
+    auto* playlistFolderRow = makeFolderRow(playlistFolderEdit, "Select Playlists Folder",
+        "Where queue playlists (.sgpl) are saved.");
+    typedFolderRows = { videoFolderRow, audioFolderRow, photoFolderRow, recFolderRow, playlistFolderRow };
 
     dlLayout->addRow("Downloads Folder:", dlFolderRow);
     dlLayout->addRow("Download Type:", typeRow);
@@ -243,6 +245,7 @@ void Settings::setupUI() {
     dirsLayout->addRow("Audio Folder:", audioFolderRow);
     dirsLayout->addRow("Photos Folder:", photoFolderRow);
     dirsLayout->addRow("Recordings Folder:", recFolderRow);
+    dirsLayout->addRow("Playlists Folder:", playlistFolderRow);
     dirsLayout->addRow("Home Directory:", homeRow);
     dirsLayout->addRow("Recording Type:", recTypeRow);
     dirsLayout->addRow("Recording Format:", recFormatCombo);
@@ -500,6 +503,7 @@ void Settings::loadSettings() {
     audioFolderEdit->setText(SgPaths::audioFolder(false));
     photoFolderEdit->setText(SgPaths::photoFolder(false));
     recFolderEdit->setText(SgPaths::recordingFolder(false));
+    playlistFolderEdit->setText(SgPaths::playlistFolder(false));
     unifiedFolderEdit->setText(SgPaths::unifiedFolder());
     unifyCheck->setChecked(SgPaths::unifyMedia());
     applyUnifyState();
@@ -532,6 +536,7 @@ void Settings::saveSettings() {
     iniSettings->setValue("Paths/AudioFolder", audioFolderEdit->text());
     iniSettings->setValue("Paths/PhotoFolder", photoFolderEdit->text());
     iniSettings->setValue("Paths/RecordingFolder", recFolderEdit->text());
+    iniSettings->setValue("Paths/PlaylistFolder", playlistFolderEdit->text());
     iniSettings->setValue("Paths/UnifyMedia", unifyCheck->isChecked());
     iniSettings->setValue("Paths/UnifiedFolder", unifiedFolderEdit->text());
 

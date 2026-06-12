@@ -22,6 +22,7 @@ namespace SgPaths {
     QString audioFolder(bool honourUnify = true);     // saved audio
     QString photoFolder(bool honourUnify = true);     // saved images
     QString recordingFolder(bool honourUnify = true); // recordings + clips
+    QString playlistFolder(bool honourUnify = true);  // saved .sgpl playlists
 
     bool    unifyMedia();      // Paths/UnifyMedia — one folder for all media?
     QString unifiedFolder();   // that one folder

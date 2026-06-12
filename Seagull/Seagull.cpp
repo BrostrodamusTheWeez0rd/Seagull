@@ -67,6 +67,26 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
         });
 
+    // A local queue row plays through the player's local path; activeSource stays
+    // Queue so auto-advance walks the queue, not the Library grid.
+    connect(queueModule, &Queue::playLocalFileRequested, videoPlayer, [this](const QUrl& url) {
+        activeSource = ActiveSource::Queue;
+        videoPlayer->playLocalFile(url);
+        });
+
+    // Library "Playlists" card -> the Queue loads the .sgpl and starts playing it.
+    connect(libraryModule, &MediaLibrary::playPlaylistRequested, queueModule, [this](const QString& path) {
+        queueModule->loadPlaylistFile(path, true);
+        });
+
+    // Local files queued from Library cards / the File Explorer context menu.
+    // The queue itself enforces the local/online split (clear-first modal).
+    connect(libraryModule, &MediaLibrary::enqueueLocalRequested, queueModule, &Queue::addLocalFilesToQueue);
+    connect(explorerModule, &FileExplorer::enqueueRequested, queueModule, &Queue::addLocalFilesToQueue);
+
+    // A fresh playlist file landed in the playlist folder — flash the Library tab.
+    connect(queueModule, &Queue::playlistSaved, this, [this](const QString&) { flashLibraryTab(); });
+
     // A search result card plays through the same path as the queue. (Auto-advance
     // for the Search source isn't wired yet — a finished search video just stops.)
     connect(searchModule, &Search::playMediaRequested, videoPlayer,

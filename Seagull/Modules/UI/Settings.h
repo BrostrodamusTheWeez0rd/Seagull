@@ -80,15 +80,16 @@ private:
     QLineEdit* videoFolderEdit;  // video downloads
     QLineEdit* audioFolderEdit;  // audio downloads / extractions
     QLineEdit* photoFolderEdit;  // saved images
-    QLineEdit* recFolderEdit;    // where recordings + clips are saved
+    QLineEdit* recFolderEdit;      // where recordings + clips are saved
+    QLineEdit* playlistFolderEdit; // where queue playlists (.sgpl) are saved
 
-    // "Unify media folders": ticking swaps the four typed folder rows for one
+    // "Unify media folders": ticking swaps the typed folder rows for one
     // Media Folder row (the unified row is hidden until then). Applies only to
-    // the media folders (Videos/Audio/Photos/Recordings) — Home is untouched.
+    // the media folders (Videos/Audio/Photos/Recordings/Playlists) — Home is untouched.
     QCheckBox* unifyCheck;
     QLineEdit* unifiedFolderEdit;
     QWidget*   unifiedFolderRow;        // the row container, for show/hide
-    QList<QWidget*> typedFolderRows;    // the four per-type row containers
+    QList<QWidget*> typedFolderRows;    // the per-type row containers
     QFormLayout* foldersForm = nullptr; // the form the folder rows live in
 
     // Search Tab elements

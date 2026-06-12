@@ -13,7 +13,11 @@
 #include <QFrame>
 #include <QLabel>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QLocale>
 #include <QSettings>
 #include <QCoreApplication>
@@ -69,6 +73,7 @@ MediaLibrary::MediaLibrary(QWidget* parent) : QWidget(parent) {
         { "Audio",      MediaType::Audio },
         { "Images",     MediaType::Image },
         { "Recordings", MediaType::Recording },
+        { "Playlists",  MediaType::Playlist },
     };
     for (const auto& k : kinds) {
         auto* b = new QPushButton(k.label, typePill);
@@ -108,6 +113,7 @@ QString MediaLibrary::folderForType() const {
     case MediaType::Audio:     return SgPaths::audioFolder();
     case MediaType::Image:     return SgPaths::photoFolder();
     case MediaType::Recording: return SgPaths::recordingFolder();
+    case MediaType::Playlist:  return SgPaths::playlistFolder();
     case MediaType::Video:     break;
     }
     return SgPaths::videoFolder();
@@ -121,6 +127,7 @@ QStringList MediaLibrary::extensionsForType() const {
     case MediaType::Audio:     return audio;
     case MediaType::Image:     return image;
     case MediaType::Recording: return video + audio; // recordings can be either
+    case MediaType::Playlist:  return { "*.sgpl" };
     case MediaType::Video:     break;
     }
     return video;
@@ -145,17 +152,43 @@ void MediaLibrary::rebuild() {
     QFileInfoList entries = dir.entryInfoList(extensionsForType(), QDir::Files, QDir::Time);
     if (entries.size() > kMaxCards) entries = entries.mid(0, kMaxCards);
 
+    const bool playlists = (m_type == MediaType::Playlist);
     for (const QFileInfo& fi : entries) {
         const QString path = fi.absoluteFilePath();
-        m_files.append(path);
 
         SearchResult r;
-        r.title = fi.completeBaseName();
         r.url = QUrl::fromLocalFile(path).toString();
-        r.channel = QLocale().formattedDataSize(fi.size()); // the meta line's first slot
         // duration/viewCount stay -1 (omitted); thumbnail "" = no network fetch.
 
-        auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost, VideoCard::PlayButton);
+        if (playlists) {
+            // .sgpl card: display name + entry count from the (tiny) JSON;
+            // playing routes through the Queue tab, never the local-file path.
+            QString plName = fi.completeBaseName();
+            int count = 0;
+            QFile f(path);
+            if (f.open(QIODevice::ReadOnly)) {
+                const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+                if (!root["name"].toString().isEmpty()) plName = root["name"].toString();
+                count = root["entries"].toArray().size();
+            }
+            r.title = plName;
+            r.channel = QString("%1 item%2").arg(count).arg(count == 1 ? "" : "s");
+
+            auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost, VideoCard::PlayButton);
+            card->setThumbnailPlaceholder(QStringLiteral("≡"));
+            connect(card, &VideoCard::playRequested, this, [this, path](const QUrl&, const QString&) {
+                emit playPlaylistRequested(path);
+                });
+            cardsFlow->addWidget(card);
+            continue; // no m_files entry (advance is the Queue's job), no thumbnail
+        }
+
+        m_files.append(path);
+        r.title = fi.completeBaseName();
+        r.channel = QLocale().formattedDataSize(fi.size()); // the meta line's first slot
+
+        auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost,
+            VideoCard::PlayButton | VideoCard::QueueButton);
 
         // Audio shows a music note while (or in case no) cover art arrives.
         static const QStringList audioExts = { "mp3", "m4a", "opus", "wav", "flac" };
@@ -167,6 +200,10 @@ void MediaLibrary::rebuild() {
             m_currentPlayIndex = index;
             emit playMediaRequested(url);
             });
+        // Card "Queue" -> the Queue tab's local queue (purity handled there).
+        connect(card, &VideoCard::queueRequested, this, [this, path](const QUrl&, const QString&) {
+            emit enqueueLocalRequested({ path });
+            });
         cardsFlow->addWidget(card);
 
         m_pendingThumbs.insert(path, card);
@@ -175,10 +212,16 @@ void MediaLibrary::rebuild() {
 
     applyCardWidth();
 
-    emptyLabel->setText(QString("Nothing here yet — %1 saved to\n%2\nwill show up here.")
-        .arg(m_type == MediaType::Image ? "images" : "media", QDir::toNativeSeparators(dir.absolutePath())));
-    emptyLabel->setVisible(m_files.isEmpty());
-    if (m_files.isEmpty()) positionTypePill(); // also centers the empty note
+    // Playlist cards don't populate m_files (advance is the Queue's job), so the
+    // empty check must count cards, not files.
+    const bool noCards = (cardsFlow->count() == 0);
+    const QString what = m_type == MediaType::Image    ? "Images"
+                       : m_type == MediaType::Playlist ? "Playlists"
+                                                       : "Media";
+    emptyLabel->setText(QString("Nothing here yet.\n%1 saved to\n%2\nwill show up here.")
+        .arg(what, QDir::toNativeSeparators(dir.absolutePath())));
+    emptyLabel->setVisible(noCards);
+    if (noCards) positionTypePill(); // also centers the empty note
 }
 
 void MediaLibrary::refresh() {

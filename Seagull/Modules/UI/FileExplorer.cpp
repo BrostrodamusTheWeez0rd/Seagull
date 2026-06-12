@@ -424,8 +424,11 @@ void FileExplorer::showContextMenu(const QPoint& pos) {
 
         if (info.isDir())
             menu.addAction("Open", this, [this, path]() { navigateTo(path); });
-        else
+        else {
             menu.addAction("Play", this, [this, index]() { onFileDoubleClicked(index); });
+            // The Queue enforces its local/online split itself (clear-first modal).
+            menu.addAction("Add to Queue", this, [this]() { emit enqueueRequested(selectedFilePaths()); });
+        }
         menu.addSeparator();
         menu.addAction(actCut);
         menu.addAction(actCopy);

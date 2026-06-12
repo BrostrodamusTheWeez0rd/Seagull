@@ -46,9 +46,24 @@ public:
     // the queue table, reusing the queue's existing add flow.
     void addUrlToQueue(const QString& url, const QString& title);
 
+    // Entry point for the Library / File Explorer to queue local files. The queue
+    // holds ONE locality at a time (local files or online URLs, never mixed) —
+    // adding across that line pops the clear-queue-first modal.
+    void addLocalFilesToQueue(const QStringList& paths);
+
+    // Load a .sgpl playlist into the queue (replacing it, confirmed if non-empty);
+    // autoPlay starts it immediately (the Library's playlist cards do).
+    void loadPlaylistFile(const QString& path, bool autoPlay);
+
 signals:
     // EMITS: Raw URL, CDN Video URL, CDN Audio URL, and Title
     void playMediaRequested(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title);
+
+    // A local queue row wants playing — routed to the player's local-file path.
+    void playLocalFileRequested(const QUrl& url);
+
+    // A .sgpl was written to the playlist folder (the shell flashes the Library).
+    void playlistSaved(const QString& path);
 
 private slots:
     void onDownloadClicked();
@@ -56,6 +71,7 @@ private slots:
     void onProcessQueueClicked();
     void onStreamClicked();
     void onStreamQueueClicked();
+    void onCreatePlaylistClicked();
     void onClearQueueClicked();
     void onUrlTextChanged(const QString& text);
     void triggerMetadataFetch();
@@ -86,6 +102,11 @@ private slots:
     void updateQueueButtonVisibility();
 
 private:
+    // The queue's locality. None = empty queue, accepts either kind; once the
+    // first entry lands the queue is locked to its kind until cleared.
+    enum class QueueKind { None, Local, Online };
+    bool ensureQueueKind(QueueKind want); // purity gate; pops the clear-first modal
+
     bool    isPlaylistUrl(const QString& url) const;
     QString stripToVideoUrl(const QString& url) const;
     void    offerPlaylistQueue(const QString& fullUrl);
@@ -112,6 +133,7 @@ private:
     QPushButton* streamBtn;
     QPushButton* processQueueBtn;
     QPushButton* streamQueueBtn;
+    QPushButton* createPlaylistBtn;
     QPushButton* clearQueueBtn;
     QWidget* metadataContainer;
     QLabel* metaTitle;
@@ -151,14 +173,16 @@ private:
 
     // Stream queue playback state
     struct QueueEntry {
-        QString rawUrl;
+        QString rawUrl;        // online: page URL; local: absolute file path
         QUrl    cdnVideoUrl;
         QUrl    cdnAudioUrl;
         QString title;
+        bool    local = false; // snapshot of the kind at queue-build time
     };
     QList<QueueEntry> m_streamQueue;
     int m_queuePlayIndex = -1;
     bool m_waitingForCdn = false; // true when playQueueIndex is blocked waiting for a CDN fetch
+    QueueKind m_queueKind = QueueKind::None;
 };
 
 #endif

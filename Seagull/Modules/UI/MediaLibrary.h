@@ -16,15 +16,16 @@ class VideoCard;
 class SgThumbnailer;
 
 // The "Library" tab: a card-grid view of the user's saved media, one content
-// type at a time. The floating pill at the top switches between the four
-// SgPaths folders (Videos / Audio / Images / Recordings) — the buttons aren't
-// filters, they literally select which folder is shown. Cards reuse the Search
-// tab's VideoCard (Play only); thumbnails come from SgThumbnailer.
+// type at a time. The floating pill at the top switches between the SgPaths
+// folders (Videos / Audio / Images / Recordings / Playlists) — the buttons
+// aren't filters, they literally select which folder is shown. Cards reuse the
+// Search tab's VideoCard; thumbnails come from SgThumbnailer. Playlist cards
+// (.sgpl files) show name + entry count and play through the Queue tab.
 class MediaLibrary : public QWidget {
     Q_OBJECT
 
 public:
-    enum class MediaType { Video, Audio, Image, Recording };
+    enum class MediaType { Video, Audio, Image, Recording, Playlist };
 
     explicit MediaLibrary(QWidget* parent = nullptr);
 
@@ -35,6 +36,8 @@ public:
 
 signals:
     void playMediaRequested(const QUrl& url);
+    void playPlaylistRequested(const QString& path);       // .sgpl card -> Queue loads + plays it
+    void enqueueLocalRequested(const QStringList& paths);  // card Queue button -> Queue tab
 
 public slots:
     void playNextFile();   // auto-advance / skip, in displayed order

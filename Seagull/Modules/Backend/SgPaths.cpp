@@ -1,6 +1,7 @@
 #include "SgPaths.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -25,7 +26,8 @@ QString typedFolder(const char* key, QStandardPaths::StandardLocation loc,
 
 QString SgPaths::homeFolder() {
     QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-    return cfg.value("Paths/HomeFolder", QCoreApplication::applicationDirPath()).toString();
+    return cfg.value("Paths/HomeFolder",
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)).toString();
 }
 
 QString SgPaths::downloadFolder() {
@@ -64,4 +66,19 @@ QString SgPaths::recordingFolder(bool honourUnify) {
     if (honourUnify && unifyMedia()) return unifiedFolder();
     // No Windows standard folder for recordings — a subfolder of Videos.
     return typedFolder("Paths/RecordingFolder", QStandardPaths::MoviesLocation, "Recordings");
+}
+
+QString SgPaths::playlistFolder(bool honourUnify) {
+    if (honourUnify && unifyMedia()) return unifiedFolder();
+    // Deliberately NOT typedFolder(): its legacy Paths/DownloadFolder hop would
+    // scatter app-created .sgpl files into the Downloads folder on older configs.
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QString folder = cfg.contains("Paths/PlaylistFolder")
+        ? cfg.value("Paths/PlaylistFolder").toString()
+        : QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/Playlists";
+    // Unlike the media folders (Windows-provided), Documents\Playlists doesn't
+    // exist until someone makes it — and configs that predate this feature never
+    // ran the setup step that would. Guarantee it here; no-op when present.
+    QDir().mkpath(folder);
+    return folder;
 }
