@@ -95,6 +95,17 @@ QStringList SgRecorder::audioCodecArgs(const QString& ext) {
     return { "-c:a", "pcm_s16le" }; // wav
 }
 
+QStringList SgRecorder::adtsFixArgs(const QString& ext) {
+    // HLS/TS sources (Twitch especially) carry AAC as ADTS; copying that into an
+    // MP4/M4A container needs it repacked to ASC or the muxer rejects the very
+    // first audio packet ("Malformed AAC bitstream") and ffmpeg dies instantly.
+    // The filter is a no-op for AAC that's already ASC, so it's safe for every
+    // network source we record — but NOT for non-AAC audio (local-file clips
+    // must skip it).
+    if (ext == "mp4" || ext == "m4a") return { "-bsf:a", "aac_adtstoasc" };
+    return {};
+}
+
 QString SgRecorder::sanitize(const QString& name) {
     QString s = name;
     s.replace(QRegularExpression("[<>:\"/\\\\|?*\\r\\n\\t]"), " ");
@@ -144,6 +155,7 @@ void SgRecorder::start(const QUrl& videoUrl, const QUrl& audioUrl,
     } else {
         args << "-c" << "copy";
     }
+    args << adtsFixArgs(ext); // live sources are always network streams (AAC)
     // We stop by hard-killing ffmpeg (graceful 'q' is unreliable from a piped stdin
     // on Windows). MKV/TS already survive that; fragment MP4/M4A so they do too — an
     // empty moov up front means the file stays playable if the process is killed.
@@ -297,6 +309,10 @@ void SgRecorder::startClipSection() {
         }
         args << "-c" << "copy";
     }
+    // Same ADTS->ASC repack as live recording, but network sources only — a
+    // local file's audio may not be AAC, and the filter rejects other codecs.
+    if (!m_clipVideoUrl.isLocalFile())
+        args << adtsFixArgs(QFileInfo(m_clipFile).suffix());
     args << "-t" << durS << m_clipFile;
 
     QProcess* cp = new QProcess(this);

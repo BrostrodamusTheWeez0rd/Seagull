@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStringList>
+#include <QDateTime>
 #include <QDebug>
 #include <algorithm>
 
@@ -27,6 +28,12 @@ const QStringList kPlayerTypes = { "embed", "popout", "autoplay" };
 
 // Keep the per-stream URL dedup map from growing without bound on a long stream.
 const int kMaxTrackedSegments = 256;
+
+// Clients polling the same playlist within this window share one upstream fetch
+// (player + recorder = two pollers; doubled usher polling makes Twitch freeze
+// the playlist window, which starves every consumer). Comfortably under the
+// 2s segment duration, so the live edge never lags more than one poll.
+const qint64 kManifestReuseMs = 1200;
 
 // True if this #EXTINF segment is one of Twitch's stitched ads.
 bool isAdTitle(const QString& title) {
@@ -263,6 +270,20 @@ QString SgHlsProxy::pickVariant(const QString& masterText, int height) const {
 // ---------------------------------------------------------------------------
 
 void SgHlsProxy::serveProxied(QTcpSocket* sock, const QUrl& upstream, const QString& referer) {
+    // Fan-out: the player and the recorder poll this same playlist. Everyone
+    // inside the reuse window gets the response from one upstream fetch, so a
+    // second consumer never increases how often Twitch sees us poll (doubled
+    // polling freezes the playlist window server-side, starving every client).
+    {
+        StreamState& st = m_streams[upstream.toString()];
+        if (!st.lastBody.isEmpty()
+            && QDateTime::currentMSecsSinceEpoch() - st.lastBodyAtMs < kManifestReuseMs) {
+            writeResponse(sock, 200, kPlaylistMime, st.lastBody);
+            sock->disconnectFromHost();
+            return;
+        }
+    }
+
     QNetworkRequest req(upstream);
     req.setRawHeader("User-Agent", kUserAgent);
     if (!referer.isEmpty()) req.setRawHeader("Referer", referer.toUtf8());
@@ -283,7 +304,13 @@ void SgHlsProxy::serveProxied(QTcpSocket* sock, const QUrl& upstream, const QStr
                 if (it.value() == up) it = m_twitchVariant.erase(it);
                 else ++it;
             }
-            writeResponse(safeSock, 502, "text/plain", "upstream error");
+            // Bridge a transient upstream error with the last playlist we built —
+            // a single bad poll must not kill the player (and with it a recording).
+            const StreamState& st = m_streams[up];
+            if (!st.lastBody.isEmpty())
+                writeResponse(safeSock, 200, kPlaylistMime, st.lastBody);
+            else
+                writeResponse(safeSock, 502, "text/plain", "upstream error");
             safeSock->disconnectFromHost();
             return;
         }
@@ -297,6 +324,8 @@ void SgHlsProxy::serveProxied(QTcpSocket* sock, const QUrl& upstream, const QStr
 
         StreamState& st = m_streams[upstream.toString()];
         const QByteArray filtered = filterMedia(text, upstream, st);
+        st.lastBody = filtered;
+        st.lastBodyAtMs = QDateTime::currentMSecsSinceEpoch();
         writeResponse(safeSock, 200, kPlaylistMime, filtered);
         safeSock->disconnectFromHost();
         });

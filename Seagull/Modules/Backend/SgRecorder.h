@@ -59,6 +59,7 @@ private:
     QString mergeFormat() const;    // video clip container (mp4|mkv — yt-dlp can't merge to ts)
     static QString sanitize(const QString& name); // strip path-illegal chars
     static QStringList audioCodecArgs(const QString& ext); // -c:a … for an audio-only capture
+    static QStringList adtsFixArgs(const QString& ext);    // -bsf:a aac_adtstoasc for mp4/m4a copies (HLS ADTS audio)
 
     QProcess* m_proc = nullptr;
     QString   m_outFile;

@@ -59,6 +59,8 @@ private:
         quint64 discontinuitySeq = ~0ull;    // emit #EXT-X-DISCONTINUITY before this seq (preroll-ad -> live seam)
         int version = 3;
         int targetDuration = 2;
+        QByteArray lastBody;                 // last response built — fans out to concurrent clients
+        qint64 lastBodyAtMs = 0;             // when it was built (reuse-window check)
     };
 
     void onConnection();
