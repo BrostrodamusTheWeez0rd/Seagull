@@ -28,6 +28,10 @@ class SgSearch;
 // scrolled, reappears at the top or on hover (cursor poll like Library). Cards
 // are fixed-size VideoCards in a reflowing grow-to-fill grid. A history
 // completer drops down from the query bar.
+//
+// The Shorts pill is a source switch, not a client-side filter: shorts come
+// from a different SgSearch path (YouTube's shorts search), so toggling into
+// or out of Shorts re-runs the current query.
 class Search : public QWidget {
     Q_OBJECT
 public:

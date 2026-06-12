@@ -326,7 +326,8 @@ void Search::startSearch(const QString& query) {
     m_batchSize = qBound(5, settings.value("Search/ResultLimit", 20).toInt(), 100);
     m_lastRequested = m_batchSize;
     setStatus("Fetching results.", true);
-    m_search->search(SgSearch::Site::YouTube, query, m_lastRequested);
+    m_search->search(SgSearch::Site::YouTube, query, m_lastRequested,
+                     m_filterMode == FilterMode::Shorts);
 }
 
 void Search::loadMore() {
@@ -336,7 +337,8 @@ void Search::loadMore() {
     m_loadingMore = true;
     m_lastRequested = qMin(m_shownCount + m_batchSize, kMaxResults);
     setStatus("Loading more results", true);
-    m_search->search(SgSearch::Site::YouTube, m_currentQuery, m_lastRequested);
+    m_search->search(SgSearch::Site::YouTube, m_currentQuery, m_lastRequested,
+                     m_filterMode == FilterMode::Shorts);
 }
 
 // ---------------------------------------------------------------------------
@@ -398,9 +400,19 @@ bool Search::passesFilter(const SearchResult& r) const {
 
 void Search::setFilterMode(FilterMode mode) {
     if (m_filterMode == mode) return;
+    const bool crossesShorts = (m_filterMode == FilterMode::Shorts)
+                            || (mode == FilterMode::Shorts);
     m_filterMode = mode;
     m_filterVideosBtn->setChecked(mode == FilterMode::Videos);
     m_filterShortsBtn->setChecked(mode == FilterMode::Shorts);
+
+    // Shorts come from a different source (YouTube's shorts search, not the
+    // yt-dlp video search), so crossing into or out of Shorts re-runs the
+    // query; Videos <-> All just re-filter the cached results.
+    if (crossesShorts && !m_currentQuery.isEmpty()) {
+        startSearch(m_currentQuery);
+        return;
+    }
     rebuildCards();
 
     if (!m_endReached && !m_allResults.isEmpty()) {
