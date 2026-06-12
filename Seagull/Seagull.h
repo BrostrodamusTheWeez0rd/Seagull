@@ -17,6 +17,8 @@
 #include "Modules/Backend/SgHlsProxy.h"
 #include "Modules/Backend/SgRecorder.h"
 
+class QTextBrowser;
+
 class Seagull : public QObject {
     Q_OBJECT
 public:
@@ -43,6 +45,7 @@ private:
     FileExplorer* explorerModule;  // the file-manager tab (was "Library")
     Search* searchModule;
     Settings* settingsModule;
+    QTextBrowser* descriptionView; // the dynamic "Description" tab's page
     ActiveSource activeSource = ActiveSource::None;
 
     // The orchestrator owns every backend worker and hands them out to modules.

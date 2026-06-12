@@ -107,8 +107,6 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() { emit fullscreenToggleRequested(); });
     connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
-    connect(titleBar, &PlayerTitleBar::infoRequested, this, &VideoPlayer::showInfoModal);
-    connect(titleBar, &PlayerTitleBar::shareRequested, this, &VideoPlayer::shareLink);
 }
 
 void VideoPlayer::onMediaEndReached() {
@@ -157,8 +155,10 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     if (titleBar) {
         titleBar->setTitle(QFileInfo(nativePath).completeBaseName());
         titleBar->setLoading(false);
-        titleBar->setActionsVisible(false); // local file: no online info/share
     }
+    // Local file: nothing to share, no online description.
+    emit shareAvailableChanged(false);
+    emit videoInfoChanged(QString(), QString(), QString(), QString(), QString());
     if (playerControls) {
         playerControls->setStreamingMode(false);
         playerControls->setLiveMode(false);
@@ -199,8 +199,10 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
         if (!title.isEmpty()) titleBar->setTitle(title);
         else titleBar->setTitle((cdnVideoUrl.isValid() && !cdnVideoUrl.isEmpty()) ? "Starting stream..." : "Probing stream...");
         titleBar->setLoading(true); // seagull spins until playing
-        titleBar->setActionsVisible(true); // online stream: enable Info/Share
     }
+    emit shareAvailableChanged(true); // online stream: the page URL is shareable
+    // Clear the previous video's description until this one's probe reports in.
+    emit videoInfoChanged(QString(), QString(), QString(), QString(), QString());
 
     if (playerControls) {
         playerControls->setStreamingMode(true);
@@ -310,6 +312,8 @@ void VideoPlayer::closePlayer() {
     stopRecordingIfActive(); // finalise any recording before tearing down playback
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear(); m_currentLocalUrl.clear();
     if (playerControls) playerControls->setRecordAvailable(false);
+    emit shareAvailableChanged(false); // nothing playing — retire Share + Description
+    emit videoInfoChanged(QString(), QString(), QString(), QString(), QString());
     mouseTrackerTimer->stop();
     osdTimer->stop();
     clickTimer->stop();
@@ -614,38 +618,8 @@ void VideoPlayer::onVideoInfo(const QString& title, const QString& uploader,
     m_infoViews = views;
     m_infoDate = date;
     m_infoDescription = description;
-}
-
-void VideoPlayer::showInfoModal() {
-    QDialog dlg(this);
-    dlg.setWindowTitle("Video info");
-    dlg.resize(560, 460);
-
-    auto* lay = new QVBoxLayout(&dlg);
-
-    auto* titleLbl = new QLabel("<b>" + m_infoTitle.toHtmlEscaped() + "</b>", &dlg);
-    titleLbl->setWordWrap(true);
-    titleLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    lay->addWidget(titleLbl);
-
-    // One dimmed line of uploader • views • date (skipping any empty fields).
-    QStringList bits;
-    if (!m_infoUploader.isEmpty()) bits << m_infoUploader;
-    if (!m_infoViews.isEmpty())    bits << (m_infoViews + " views");
-    if (!m_infoDate.isEmpty())     bits << m_infoDate;
-    if (!bits.isEmpty()) {
-        auto* metaLbl = new QLabel(bits.join("   •   "), &dlg);
-        metaLbl->setObjectName("metaStats"); // dimmed by the theme
-        metaLbl->setWordWrap(true);
-        lay->addWidget(metaLbl);
-    }
-
-    auto* desc = new QTextEdit(&dlg);
-    desc->setReadOnly(true);
-    desc->setPlainText(m_infoDescription.isEmpty() ? "No description available." : m_infoDescription);
-    lay->addWidget(desc, 1);
-
-    dlg.exec();
+    // The shell opens/closes the Description tab off this.
+    emit videoInfoChanged(m_infoTitle, uploader, views, date, description);
 }
 
 void VideoPlayer::shareLink() {

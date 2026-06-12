@@ -168,8 +168,8 @@ void Theme::apply(const QString& name) {
         // trails the last tab (radii match the fixed sizes set in MainWindow).
         "QToolButton#tabCloseButton { background:transparent; color:%6; border:none; border-radius:7px; font-size:10px; font-weight:bold; padding:0; }"
         "QToolButton#tabCloseButton:hover { background:%3; color:%2; }"
-        "QToolButton#tabPlusButton { background:transparent; color:%2; border:1px solid %3; border-radius:9px; font-size:13px; font-weight:bold; padding:0; }"
-        "QToolButton#tabPlusButton:hover { background:%4; }"
+        "QToolButton#tabPlusButton, QToolButton#tabShareButton { background:transparent; color:%2; border:1px solid %3; border-radius:9px; font-size:13px; font-weight:bold; padding:0; }"
+        "QToolButton#tabPlusButton:hover, QToolButton#tabShareButton:hover { background:%4; }"
         "QToolButton#tabPlusButton::menu-indicator { image:none; }"
     ).arg(c.base.name(), c.text.name(), c.border.name(), c.alt.name(), c.accent.name(), c.subtext.name());
 

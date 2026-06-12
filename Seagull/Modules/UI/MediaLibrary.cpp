@@ -21,8 +21,10 @@
 #include <QLocale>
 #include <QSettings>
 #include <QCoreApplication>
+#include <QCursor>
 #include <QEvent>
 #include <QShowEvent>
+#include <QTimer>
 
 namespace {
 constexpr int kGridSpacing = 12;
@@ -106,6 +108,25 @@ MediaLibrary::MediaLibrary(QWidget* parent) : QWidget(parent) {
         [this](const QString& filePath, const QPixmap& pm) {
             if (auto card = m_pendingThumbs.take(filePath)) card->setThumbnail(pm);
         });
+
+    // Pill auto-hide: pinned while the grid sits at the top, gone once scrolled,
+    // peeking back when the cursor enters its strip. Cards swallow mouse-moves
+    // (they're children over the viewport), so a light cursor poll does the
+    // hover check instead of mouse tracking.
+    connect(cardsArea->verticalScrollBar(), &QScrollBar::valueChanged, this,
+        [this](int) { updatePillVisibility(); });
+    pillHoverTimer = new QTimer(this);
+    pillHoverTimer->setInterval(150);
+    connect(pillHoverTimer, &QTimer::timeout, this, &MediaLibrary::updatePillVisibility);
+}
+
+void MediaLibrary::updatePillVisibility() {
+    const bool atTop = (cardsArea->verticalScrollBar()->value() <= 0);
+    // The pill's strip across the top of the tab, slightly taller than the pill
+    // itself so recovering it isn't pixel-hunting.
+    const QRect zone(0, 0, width(), typePill->height() + 2 * kPillTopMargin);
+    const bool hovered = zone.contains(mapFromGlobal(QCursor::pos()));
+    typePill->setVisible(atTop || hovered);
 }
 
 QString MediaLibrary::folderForType() const {
@@ -286,6 +307,13 @@ void MediaLibrary::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     rebuild(); // pick up files that landed while another tab was active
     positionTypePill();
+    updatePillVisibility();
+    pillHoverTimer->start();
+}
+
+void MediaLibrary::hideEvent(QHideEvent* event) {
+    QWidget::hideEvent(event);
+    pillHoverTimer->stop(); // no cursor poll while another tab is active
 }
 
 void MediaLibrary::resizeEvent(QResizeEvent* event) {

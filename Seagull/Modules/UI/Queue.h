@@ -38,6 +38,11 @@ public:
     void playPrevQueuedItem();
     void setStreamingQueueMode(bool active);
 
+    // Media just ended somewhere (any source): queued items outrank the grids.
+    // Advances an active session, starts one if none exists, but never restarts
+    // a queue that already played to its end. Returns true if it took over.
+    bool playNextOrStart();
+
     // Clears the URL bar once a video starts playing, but leaves the metadata
     // preview up (so it shows the now-playing video until a new link is pasted).
     void clearUrlForPlayback();
@@ -182,6 +187,7 @@ private:
     QList<QueueEntry> m_streamQueue;
     int m_queuePlayIndex = -1;
     bool m_waitingForCdn = false; // true when playQueueIndex is blocked waiting for a CDN fetch
+    bool m_queueDrained = false;  // the session reached the end — don't auto-restart it
     QueueKind m_queueKind = QueueKind::None;
 };
 

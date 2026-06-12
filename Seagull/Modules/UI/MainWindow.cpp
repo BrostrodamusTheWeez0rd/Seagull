@@ -26,6 +26,7 @@
 #include <QTimer>
 #include <QCursor>
 #include <QWindow>
+#include <QPainter>
 #include <QProxyStyle>
 #include <windows.h>
 #include <winuser.h>
@@ -92,6 +93,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_plusMenu = new QMenu(m_plusBtn);
     m_plusBtn->setMenu(m_plusMenu);
     connect(m_plusMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildPlusMenu);
+
+    // Floating Share, right of the "+": appears while an online video plays.
+    m_shareBtn = new QToolButton(tabs);
+    m_shareBtn->setObjectName("tabShareButton"); // round look comes from the theme sheet
+    m_shareBtn->setFixedSize(18, 18);
+    m_shareBtn->setIconSize(QSize(12, 12));
+    m_shareBtn->setCursor(Qt::PointingHandCursor);
+    m_shareBtn->setToolTip("Copy video link");
+    m_shareBtn->hide();
+    connect(m_shareBtn, &QToolButton::clicked, this, [this]() { emit shareRequested(); });
     // Drag-reordering moves the last tab's edge without any add/remove of ours.
     connect(tabs->tabBar(), &QTabBar::tabMoved, this, [this](int, int) { schedulePlusReposition(); });
     // Ignored vertical policy gives the tabs pane a zero minimum (it still expands
@@ -125,7 +136,7 @@ void MainWindow::captureSplit() {
     settings.sync();
 }
 
-void MainWindow::addTab(QWidget* tab, const QString& label) {
+QWidget* MainWindow::wrapPage(QWidget* tab) {
     // Wrap each page in a scroll area so when the splitter squeezes the tab pane
     // (e.g. dragging the video area large), the page keeps its layout and scrolls
     // instead of its widgets overlapping each other.
@@ -139,8 +150,13 @@ void MainWindow::addTab(QWidget* tab, const QString& label) {
     scroll->viewport()->setBackgroundRole(QPalette::Window);
     scroll->setWidget(tab);
     m_tabPages.insert(tab, scroll); // remember the wrapper so we can find the tab later
-    m_tabOrder.append({ tab, scroll, label });
     installFilterRecursive(scroll, this);
+    return scroll;
+}
+
+void MainWindow::addTab(QWidget* tab, const QString& label) {
+    QWidget* scroll = wrapPage(tab);
+    m_tabOrder.append({ tab, scroll, label });
 
     // Honour the remembered closed set (default empty: one of each tab open).
     // The page still lives — parented to the tab widget, just never inserted —
@@ -153,6 +169,45 @@ void MainWindow::addTab(QWidget* tab, const QString& label) {
     }
     const int idx = tabs->addTab(scroll, label);
     tabs->tabBar()->setTabButton(idx, QTabBar::RightSide, makeTabCloseButton(scroll));
+    schedulePlusReposition();
+}
+
+void MainWindow::openDynamicTab(QWidget* tab, const QString& label) {
+    QWidget* wrapper = m_tabPages.value(tab, nullptr);
+    if (!wrapper) wrapper = wrapPage(tab); // first appearance — wrap + register
+    if (tabs->indexOf(wrapper) >= 0) return; // already open
+    // Not appended to m_tabOrder: dynamic tabs aren't persisted and the "+"
+    // menu never offers them — they exist only while their content does.
+    const int idx = tabs->addTab(wrapper, label); // at the end of the bar
+    tabs->tabBar()->setTabButton(idx, QTabBar::RightSide, makeTabCloseButton(wrapper));
+    schedulePlusReposition();
+}
+
+void MainWindow::closeDynamicTab(QWidget* tab) {
+    QWidget* wrapper = m_tabPages.value(tab, nullptr);
+    if (!wrapper) return;
+    const int idx = tabs->indexOf(wrapper);
+    if (idx < 0) return;
+    tabs->removeTab(idx);
+    wrapper->hide();
+    wrapper->setParent(tabs); // keep the page alive for its next appearance
+    schedulePlusReposition();
+}
+
+void MainWindow::setShareAvailable(bool on) {
+    m_shareAvailable = on;
+    if (on) {
+        // Tint the glyph to the theme's text colour at show time (a stylesheet
+        // can't recolour an icon; re-shown per video, so theme switches catch up).
+        QPixmap pm = QIcon(":/Assets/icons/share.svg").pixmap(QSize(12, 12));
+        if (!pm.isNull()) {
+            QPainter p(&pm);
+            p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+            p.fillRect(pm.rect(), palette().color(QPalette::Text));
+            p.end();
+            m_shareBtn->setIcon(QIcon(pm));
+        }
+    }
     schedulePlusReposition();
 }
 
@@ -174,16 +229,25 @@ QWidget* MainWindow::makeTabCloseButton(QWidget* wrapper) {
 
 void MainWindow::positionPlusButton() {
     QTabBar* bar = tabs->tabBar();
-    if (bar->count() == 0) { m_plusBtn->hide(); return; }
+    if (bar->count() == 0) { m_plusBtn->hide(); m_shareBtn->hide(); return; }
     const QRect last = bar->tabRect(bar->count() - 1);
     // Tab-bar coords -> tab-widget coords; clamp so a crowded bar can't push
-    // the button out of view.
+    // the buttons out of view.
+    const int reserved = m_plusBtn->width() + (m_shareAvailable ? m_shareBtn->width() + 4 : 0);
     int x = bar->pos().x() + last.right() + 6;
-    x = qMin(x, tabs->width() - m_plusBtn->width() - 4);
+    x = qMin(x, tabs->width() - reserved - 4);
     const int y = bar->pos().y() + last.top() + (last.height() - m_plusBtn->height()) / 2;
     m_plusBtn->move(x, y);
     m_plusBtn->raise();
     m_plusBtn->show();
+
+    if (m_shareAvailable) {
+        m_shareBtn->move(x + m_plusBtn->width() + 4, y);
+        m_shareBtn->raise();
+        m_shareBtn->show();
+    } else {
+        m_shareBtn->hide();
+    }
 }
 
 void MainWindow::schedulePlusReposition() {

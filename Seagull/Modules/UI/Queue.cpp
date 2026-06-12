@@ -304,6 +304,7 @@ void Queue::onClearQueueClicked() {
     isProcessingQueue = false;
     m_waitingForCdn = false;
     m_queuePlayIndex = -1;
+    m_queueDrained = false;
 
     // Stop any download/fetch currently running on the worker.
     downloader->cancel();
@@ -435,6 +436,19 @@ void Queue::playNextQueuedItem() {
     playQueueIndex(m_queuePlayIndex);
 }
 
+bool Queue::playNextOrStart() {
+    if (queueTable->rowCount() == 0) return false;
+    if (isStreamingQueue) { // active session — advance it
+        m_queuePlayIndex++;
+        const bool more = (m_queuePlayIndex < m_streamQueue.size());
+        playQueueIndex(m_queuePlayIndex); // also runs the end-of-queue cleanup
+        return more;
+    }
+    if (m_queueDrained) return false; // already played to the end — don't loop
+    onStreamQueueClicked();           // queued-but-never-started: take over now
+    return true;
+}
+
 void Queue::playPrevQueuedItem() {
     if (!isStreamingQueue) return;
     m_queuePlayIndex = qMax(0, m_queuePlayIndex - 1);
@@ -446,6 +460,7 @@ void Queue::playQueueIndex(int index) {
         isStreamingQueue = false;
         m_queuePlayIndex = -1;
         m_waitingForCdn = false;
+        m_queueDrained = true; // played to the end — auto-advance won't loop it
         logConsole->append("Stream queue finished.");
         return;
     }
@@ -522,6 +537,7 @@ bool Queue::ensureQueueKind(QueueKind want) {
 
 void Queue::addLocalFilesToQueue(const QStringList& paths) {
     if (paths.isEmpty() || !ensureQueueKind(QueueKind::Local)) return;
+    m_queueDrained = false; // new content re-arms auto-advance
     for (const QString& p : paths) {
         const QFileInfo fi(p);
         if (!fi.exists() || !fi.isFile()) continue;
@@ -667,6 +683,7 @@ void Queue::onDownloadClicked() {
 void Queue::onAddToQueueClicked() {
     if (urlInput->text().isEmpty()) return;
     if (!ensureQueueKind(QueueKind::Online)) return;
+    m_queueDrained = false; // new content re-arms auto-advance
     int row = queueTable->rowCount();
     queueTable->insertRow(row);
     auto* item = new QTableWidgetItem(cachedTitle.isEmpty() ? urlInput->text() : cachedTitle);
@@ -682,6 +699,7 @@ void Queue::onAddToQueueClicked() {
 void Queue::addUrlToQueue(const QString& url, const QString& title) {
     if (url.isEmpty()) return;
     if (!ensureQueueKind(QueueKind::Online)) return;
+    m_queueDrained = false; // new content re-arms auto-advance
     int row = queueTable->rowCount();
     queueTable->insertRow(row);
     auto* item = new QTableWidgetItem(title.isEmpty() ? url : title);
@@ -743,6 +761,7 @@ void Queue::onStreamQueueClicked() {
 
     m_queuePlayIndex = 0;
     m_waitingForCdn = false;
+    m_queueDrained = false; // fresh session
     isStreamingQueue = true;
     playQueueIndex(0);
 }
@@ -879,6 +898,7 @@ void Queue::handlePlaylistEntriesReady(const QList<QString>& urls) {
         hideLoading();
         return;
     }
+    m_queueDrained = false; // new content re-arms auto-advance
     int startRow = queueTable->rowCount();
     for (const QString& url : urls) {
         int row = queueTable->rowCount();

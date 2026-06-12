@@ -55,6 +55,18 @@ public:
     // download runs). Identified by the page widget so it survives tab reordering.
     void setTabBusy(QWidget* tab, bool busy);
 
+    // Dynamic tabs: pages that come and go with app state (e.g. the playing
+    // video's Description). They sit at the end of the bar, close like any tab,
+    // but are never persisted to Tabs/Closed and never listed in the "+" menu.
+    void openDynamicTab(QWidget* tab, const QString& label);
+    void closeDynamicTab(QWidget* tab);
+
+    // Floating Share button beside the "+", shown while an online video plays.
+    void setShareAvailable(bool on);
+
+signals:
+    void shareRequested(); // the floating Share button was clicked
+
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -79,7 +91,8 @@ private:
     void rebuildPlusMenu();         // fills the "+" menu with the closed tabs
     void saveOpenTabs();            // persist which tabs are closed (Tabs/Closed)
     QWidget* makeTabCloseButton(QWidget* wrapper); // small round x for one tab
-    void positionPlusButton();      // snug the "+" against the last tab
+    QWidget* wrapPage(QWidget* tab);               // QScrollArea shell every page gets
+    void positionPlusButton();      // snug the "+" (and Share) against the last tab
     void schedulePlusReposition();  // ...after the pending layout pass settles
 
     // Tear-off: dragging a tab off the bar floats it in its own window.
@@ -100,6 +113,8 @@ private:
     QHash<QWidget*, QWidget*> m_tabPages; // inner page widget -> its QScrollArea wrapper
     QList<TabInfo> m_tabOrder;            // every registered tab, in addTab order
     QToolButton* m_plusBtn = nullptr;     // "+" corner button (reopen menu)
+    QToolButton* m_shareBtn = nullptr;    // floating Share, right of the "+"
+    bool m_shareAvailable = false;
     QMenu* m_plusMenu = nullptr;
     QList<FloatingTab*> m_floating;       // torn-off tabs currently in own windows
     QWidget* m_pressedWrapper = nullptr;  // tab page under the mouse press (tear-off)

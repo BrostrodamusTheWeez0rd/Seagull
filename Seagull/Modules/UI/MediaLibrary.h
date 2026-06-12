@@ -11,6 +11,7 @@ class QPushButton;
 class QButtonGroup;
 class QFrame;
 class QLabel;
+class QTimer;
 class FlowLayout;
 class VideoCard;
 class SgThumbnailer;
@@ -46,6 +47,7 @@ public slots:
 
 protected:
     void showEvent(QShowEvent* event) override;       // refresh on tab switch
+    void hideEvent(QHideEvent* event) override;       // pause the pill hover poll
     void resizeEvent(QResizeEvent* event) override;   // reposition the floating pill
     bool eventFilter(QObject* obj, QEvent* event) override; // viewport resize -> refit cards
 
@@ -57,6 +59,7 @@ private:
     QString folderForType() const;       // the SgPaths folder for the active type
     QStringList extensionsForType() const;
     void positionTypePill();
+    void updatePillVisibility(); // visible at scroll-top or when its strip is hovered
 
     MediaType m_type = MediaType::Video;
 
@@ -69,6 +72,7 @@ private:
 
     SgThumbnailer* thumbnailer = nullptr;
     QHash<QString, QPointer<VideoCard>> m_pendingThumbs; // file path -> its card
+    QTimer* pillHoverTimer = nullptr; // cursor poll for the pill's auto-hide
 
     QStringList m_files;          // displayed order (newest first)
     int m_currentPlayIndex = -1;

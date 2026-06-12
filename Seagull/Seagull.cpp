@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QSettings>
 #include <QCoreApplication>
+#include <QTextBrowser>
 #include <QTimer>
 
 Seagull::Seagull(QObject* parent) : QObject(parent) {
@@ -47,6 +48,34 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     mainWindow->addTab(queueModule, "Queue");
     mainWindow->addTab(searchModule, "Search");
     mainWindow->addTab(settingsModule, "Settings");
+
+    // --- Description tab + Share button (replaced the banner's Info/Share) ---
+    // The Description page appears as a dynamic tab whenever the playing video's
+    // probe reports a description, and retires with it (local files, teardown).
+    descriptionView = new QTextBrowser();
+    descriptionView->setOpenExternalLinks(true);
+    descriptionView->setReadOnly(true);
+
+    connect(videoPlayer, &VideoPlayer::videoInfoChanged, this,
+        [this](const QString& title, const QString& uploader, const QString& views,
+               const QString& date, const QString& description) {
+            if (description.trimmed().isEmpty()) {
+                mainWindow->closeDynamicTab(descriptionView);
+                return;
+            }
+            QStringList bits;
+            if (!uploader.isEmpty())                 bits << uploader;
+            if (!views.isEmpty() && views != "0")    bits << views + " views";
+            if (!date.isEmpty())                     bits << date;
+            descriptionView->setHtml(
+                "<h3>" + title.toHtmlEscaped() + "</h3>"
+                + (bits.isEmpty() ? QString()
+                    : "<p>" + bits.join(QStringLiteral("   |   ")).toHtmlEscaped() + "</p><hr>")
+                + "<p style=\"white-space: pre-wrap;\">" + description.toHtmlEscaped() + "</p>");
+            mainWindow->openDynamicTab(descriptionView, "Description");
+        });
+    connect(videoPlayer, &VideoPlayer::shareAvailableChanged, mainWindow, &MainWindow::setShareAvailable);
+    connect(mainWindow, &MainWindow::shareRequested, videoPlayer, &VideoPlayer::shareLink);
 
     // When a module wants something played, it tells the window. We remember which
     // source asked, so "play next" later knows whether to walk the library, the
@@ -130,11 +159,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         if (activeSource == ActiveSource::Queue) queueModule->clearUrlForPlayback();
         });
 
-    // A finished video rolls into the next one from whichever source is active.
+    // A finished video rolls into the next one — but anything waiting in the
+    // queue outranks the grids: it plays next no matter where the finished item
+    // came from (the queue's play signals re-point activeSource at Queue).
     connect(videoPlayer, &VideoPlayer::mediaEnded, this, [this]() {
+        if (queueModule->playNextOrStart()) return;
         if (activeSource == ActiveSource::Library)       libraryModule->playNextFile();
         else if (activeSource == ActiveSource::Explorer) explorerModule->playNextFile();
-        else if (activeSource == ActiveSource::Queue)    queueModule->playNextQueuedItem();
         });
 
     // The skip buttons (single-click = nudge, double-click = jump tracks) land here.

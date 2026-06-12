@@ -50,6 +50,8 @@ public slots:
     void onRecordingStopped(const QString& filePath, bool ok);
     void onClipFinished(const QString& filePath, bool ok); // VOD clip done (or cancelled)
 
+    void shareLink(); // copy the source URL to the clipboard (shell's Share button)
+
 signals:
     void mediaEnded();
     void skipRequested(int delta);
@@ -60,6 +62,13 @@ signals:
     void fullscreenToggleRequested(); // host performs the actual window fullscreen
     void playbackStarted();           // host shows/sizes the video area
     void closed();                    // host hides the video area / leaves fullscreen
+
+    // Drive the shell's dynamic Description tab + floating Share button: full
+    // metadata when the probe reports it, empty values when media has none or
+    // playback resets/tears down.
+    void videoInfoChanged(const QString& title, const QString& uploader,
+        const QString& views, const QString& date, const QString& description);
+    void shareAvailableChanged(bool available);
 
     // Recording (handled by the orchestrator's SgRecorder), dispatched by source type:
     //  - live: ffmpeg -c copy (recordStart / recordStop).
@@ -91,8 +100,6 @@ private:
     void onPlaybackError();
     void showStreamFailed(); // pin the "stream failed — replay" message + ended mode
     void closePlayer();
-    void showInfoModal();    // pop the playing video's metadata + description
-    void shareLink();        // copy the source URL to the clipboard
 
     PlaybackEngine* engine;
     QFrame* videoWidget;

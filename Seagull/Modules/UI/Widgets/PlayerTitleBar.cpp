@@ -40,57 +40,12 @@ PlayerTitleBar::PlayerTitleBar(QWidget* parent) : QWidget(parent)
     titleLabel->setObjectName("playerTitleLabel"); // styled by Theme::apply
     titleLabel->setAlignment(Qt::AlignCenter);
 
-    // Info / Share actions (icons tinted to overlayFg; shown only for online streams).
-    infoBtn = new QPushButton(pillFrame);
-    infoBtn->setObjectName("bannerActionButton");
-    infoBtn->setIconSize(QSize(18, 18));
-    infoBtn->setCursor(Qt::PointingHandCursor);
-    infoBtn->setToolTip("Video info");
-    infoBtn->hide();
-    connect(infoBtn, &QPushButton::clicked, this, &PlayerTitleBar::infoRequested);
-
-    shareBtn = new QPushButton(pillFrame);
-    shareBtn->setObjectName("bannerActionButton");
-    shareBtn->setIconSize(QSize(18, 18));
-    shareBtn->setCursor(Qt::PointingHandCursor);
-    shareBtn->setToolTip("Copy link");
-    shareBtn->hide();
-    connect(shareBtn, &QPushButton::clicked, this, &PlayerTitleBar::shareRequested);
-
-    refreshActionIcons();
-
     frameLayout->addStretch();
     frameLayout->addWidget(titleLabel);
     frameLayout->addWidget(m_spinner); // loading seagull flies just right of the title text
     frameLayout->addStretch();
-    frameLayout->addWidget(infoBtn);   // actions pinned to the right of the banner
-    frameLayout->addWidget(shareBtn);
 
     setFixedSize(500, 40);
-}
-
-void PlayerTitleBar::refreshActionIcons()
-{
-    // SVG glyphs flat-tinted to the theme's overlay foreground (a stylesheet can't
-    // recolour an icon). Matches the control-bar buttons' look.
-    const QColor col = palette().color(QPalette::BrightText);
-    auto tint = [&](const QString& path) -> QIcon {
-        QPixmap pm = QIcon(path).pixmap(QSize(18, 18));
-        if (pm.isNull()) return QIcon(path);
-        QPainter p(&pm);
-        p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-        p.fillRect(pm.rect(), col);
-        p.end();
-        return QIcon(pm);
-    };
-    if (infoBtn)  infoBtn->setIcon(tint(":/Assets/icons/info.svg"));
-    if (shareBtn) shareBtn->setIcon(tint(":/Assets/icons/share.svg"));
-}
-
-void PlayerTitleBar::changeEvent(QEvent* event)
-{
-    QWidget::changeEvent(event);
-    if (event->type() == QEvent::PaletteChange) refreshActionIcons();
 }
 
 void PlayerTitleBar::setTitle(const QString& title)
@@ -108,10 +63,4 @@ void PlayerTitleBar::setLoading(bool loading)
         m_spinner->hide();
         m_movie->stop();
     }
-}
-
-void PlayerTitleBar::setActionsVisible(bool on)
-{
-    if (infoBtn)  infoBtn->setVisible(on);
-    if (shareBtn) shareBtn->setVisible(on);
 }
