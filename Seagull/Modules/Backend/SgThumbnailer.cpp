@@ -83,6 +83,33 @@ void SgThumbnailer::setHeld(bool held) {
     if (!m_held) pump(); // resume whatever queued up during the hold
 }
 
+void SgThumbnailer::decodeViaFfmpeg(const QByteArray& data, QObject* context,
+                                    std::function<void(const QPixmap&)> done) {
+    if (data.isEmpty() || !context) { if (done) done(QPixmap()); return; }
+
+    const QString base = QDir::temp().filePath(
+        QString("sg_imgdec_%1_%2").arg(QCoreApplication::applicationPid())
+                                  .arg(QDateTime::currentMSecsSinceEpoch()));
+    const QString in  = base + ".img";
+    const QString out = base + ".png";
+    QFile f(in);
+    if (!f.open(QIODevice::WriteOnly)) { done(QPixmap()); return; }
+    f.write(data);
+    f.close();
+
+    auto* p = new QProcess(context);
+    QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+        context, [p, in, out, done](int, QProcess::ExitStatus) {
+            const QPixmap pm(out); // null if ffmpeg couldn't decode either
+            QFile::remove(in);
+            QFile::remove(out);
+            p->deleteLater();
+            if (done) done(pm);
+        });
+    p->start(ffmpegPath(), { "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                             "-i", in, "-frames:v", "1", out });
+}
+
 bool SgThumbnailer::isBusy() const {
     return !m_current.isEmpty() || !m_queue.isEmpty();
 }

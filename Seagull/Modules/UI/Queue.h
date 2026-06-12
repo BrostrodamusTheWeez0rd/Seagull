@@ -122,6 +122,7 @@ private:
     bool    isStreamUrlValid(const QUrl& cdnUrl) const;
     void    enqueueTitleResolution(const QList<QString>& urls, int startRow);
     void    resetHeroToBanner();  // restore the big banner, hide the thumbnail hero
+    void    applyHeroPixmap(const QPixmap& pm); // swap the banner for the loaded hero thumbnail
     void    showLoading(const QString& text); // show the fetching message + seagull spinner
     void    hideLoading();                     // hide the message and stop the spinner
 

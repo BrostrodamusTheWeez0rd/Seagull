@@ -1,4 +1,5 @@
 #include "Queue.h"
+#include "../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP fallback)
 #include "../Backend/SgYtDlp.h"
 #include "../Backend/SgPaths.h"
 #include <QFont>
@@ -846,22 +847,35 @@ void Queue::handleMetadataReady(const QString& t, const QString& u, const QStrin
     if (!thumbUrl.isEmpty()) {
         QNetworkRequest req((QUrl(thumbUrl)));
         req.setRawHeader("User-Agent", "Seagull-Player");
+        // Hotlink-protected CDNs (phncdn etc.) want the page URL as Referer.
+        const QString pageUrl = urlInput->text().trimmed();
+        if (!pageUrl.isEmpty()) req.setRawHeader("Referer", pageUrl.toUtf8());
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
         QNetworkReply* reply = m_thumbNam->get(req);
         connect(reply, &QNetworkReply::finished, this, [this, reply, thumbUrl]() {
             reply->deleteLater();
             if (thumbUrl != m_currentThumbUrl) return;          // a newer URL superseded this one
             if (reply->error() != QNetworkReply::NoError) return;
+            const QByteArray data = reply->readAll();
             QPixmap pm;
-            if (!pm.loadFromData(reply->readAll())) return;     // e.g. webp without the plugin
-            heroThumb->setPixmap(pm.scaled(heroThumb->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            banner->hide();
-            heroThumb->show();
-            bannerWatermark->show();
+            if (pm.loadFromData(data)) { applyHeroPixmap(pm); return; }
+            // QPixmap couldn't decode (WebP sites like PornHub, without the Qt
+            // imageformats plugin) — round-trip the bytes through ffmpeg.
+            SgThumbnailer::decodeViaFfmpeg(data, this, [this, thumbUrl](const QPixmap& dec) {
+                if (dec.isNull() || thumbUrl != m_currentThumbUrl) return;
+                applyHeroPixmap(dec);
+                });
             });
     }
 
     metadataContainer->show();
+}
+
+void Queue::applyHeroPixmap(const QPixmap& pm) {
+    heroThumb->setPixmap(pm.scaled(heroThumb->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    banner->hide();
+    heroThumb->show();
+    bannerWatermark->show();
 }
 
 void Queue::resetHeroToBanner() {

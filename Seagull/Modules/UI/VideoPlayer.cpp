@@ -1,6 +1,7 @@
 #include "VideoPlayer.h"
 #include "../Backend/PlaybackEngine.h"
 #include "../Backend/SgYtDlp.h"          // StreamOption
+#include "../Backend/SgThumbnailer.h"    // decodeViaFfmpeg (WebP fallback)
 #include "Widgets/PlayerControls.h"
 #include "Widgets/PlayerTitleBar.h"
 
@@ -361,20 +362,32 @@ void VideoPlayer::onThumbnailResolved(const QString& thumbUrl) {
     if (thumbUrl.isEmpty()) return;
     QNetworkRequest req((QUrl(thumbUrl)));
     req.setRawHeader("User-Agent", "Seagull-Player");
+    // Hotlink-protected CDNs (phncdn etc.) want the page URL as Referer.
+    if (!currentBaseUrl.isEmpty())
+        req.setRawHeader("Referer", currentBaseUrl.toString().toUtf8());
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply = m_thumbNam->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) return;
+        const QByteArray data = reply->readAll();
         QPixmap pm;
-        if (!pm.loadFromData(reply->readAll())) return; // e.g. webp w/o plugin
-        m_posterPixmap = pm;
-        // Fetch placeholder: stand in for the (black) video until it starts.
-        if (m_fetching) showPosterOverlay();
-        // If the poster is already up (EOF replay), paint the pixmap in now.
-        else if (posterOverlay && posterOverlay->isVisible())
-            repositionOverlays();
+        if (pm.loadFromData(data)) { applyPosterPixmap(pm); return; }
+        // QPixmap couldn't decode (WebP sites, without the Qt imageformats
+        // plugin) — round-trip the bytes through ffmpeg.
+        SgThumbnailer::decodeViaFfmpeg(data, this, [this](const QPixmap& dec) {
+            if (!dec.isNull()) applyPosterPixmap(dec);
+            });
         });
+}
+
+void VideoPlayer::applyPosterPixmap(const QPixmap& pm) {
+    m_posterPixmap = pm;
+    // Fetch placeholder: stand in for the (black) video until it starts; if
+    // the poster is already up (EOF replay), paint the pixmap in now.
+    if (m_fetching) showPosterOverlay();
+    else if (posterOverlay && posterOverlay->isVisible())
+        repositionOverlays();
 }
 
 void VideoPlayer::onLocalPosterReady(const QString& filePath, const QPixmap& pixmap) {

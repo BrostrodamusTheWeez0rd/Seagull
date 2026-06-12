@@ -125,6 +125,7 @@ private:
 
     void showPosterOverlay();
     void hidePosterOverlay();
+    void applyPosterPixmap(const QPixmap& pm); // stream thumbnail decoded (direct or via ffmpeg)
     void updateSplitterToggle(const QPoint& globalPos); // show/hide the chevron by cursor proximity
     void positionSplitterToggle();                      // bottom-centre, perched above the pill when it's up
     void onPlaybackError();

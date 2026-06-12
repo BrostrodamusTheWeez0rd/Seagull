@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QPixmap>
 #include <QStringList>
+#include <functional>
 
 class QProcess;
 
@@ -31,6 +32,13 @@ public:
     // Hold the ffmpeg queue (e.g. while the updater may replace ffmpeg.exe).
     // Cache hits and plain images still answer; releasing pumps the queue.
     void setHeld(bool held);
+
+    // Decode image bytes QPixmap can't handle (e.g. WebP when the Qt image-
+    // formats plugin isn't installed) by round-tripping through ffmpeg.
+    // Async; `done` is invoked on `context`'s thread with a null pixmap on
+    // failure. Standalone (own QProcess), independent of the thumbnail FIFO.
+    static void decodeViaFfmpeg(const QByteArray& data, QObject* context,
+                                std::function<void(const QPixmap&)> done);
 
     // Still generating? (Startup holds the tool-update check until this clears,
     // so ffmpeg update downloads never compete with thumbnail ffmpeg runs.)

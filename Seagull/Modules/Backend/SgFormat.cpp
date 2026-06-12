@@ -160,6 +160,16 @@ namespace {
 }
 
 QString SgFormat::pickThumbnail(const QJsonObject& root) {
+    // YouTube's thumbnails[] is a lottery: the signed variants ("sqp=" URLs)
+    // are .jpg-NAMED but SERVED as WebP (QPixmap can't decode those), and the
+    // generated /vi/ size ladder includes entries that 404 for many videos
+    // (maxresdefault, sddefault). The id-built hqdefault.jpg always exists and
+    // is a genuine JPEG, so build that instead of picking from the list.
+    const QString id = root["id"].toString();
+    if (!id.isEmpty()
+        && root["extractor"].toString().startsWith("youtube", Qt::CaseInsensitive))
+        return QString("https://i.ytimg.com/vi/%1/hqdefault.jpg").arg(id);
+
     QString thumb;
     const QJsonArray thumbs = root["thumbnails"].toArray();
     int bestW = -1;
@@ -168,6 +178,7 @@ QString SgFormat::pickThumbnail(const QJsonObject& root) {
         QString u = t["url"].toString();
         if (u.isEmpty()) continue;
         if (!u.contains(".jpg", Qt::CaseInsensitive)) continue;
+        if (u.contains("sqp=")) continue; // .jpg-named but serves WebP
         int w = t["width"].toInt();
         if (w > bestW) { bestW = w; thumb = u; }
     }
