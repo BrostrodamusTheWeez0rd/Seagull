@@ -8,23 +8,38 @@ class QProgressBar;
 class QPushButton;
 class SgUpdater;
 
-// Themed modal asking whether to install the tool updates the startup check
-// found, then showing live progress if accepted. Inherits the app palette/
-// stylesheet from Theme::apply like every other widget. The updater lives on
-// its own thread; calls go over queued invokes and its signals arrive queued.
+// Startup update modal. Locks the app from the version check through any
+// installs, so a tool can never be replaced while something might spawn it
+// (thumbnails, searches, downloads, stream resolution).
+//
+// Flow: checking (indeterminate bar) ->
+//   - everything current: brief "Up to date" note, auto-closes
+//   - updates found, AutoUpdate on: installs immediately with live progress
+//   - updates found, AutoUpdate off: Update Now / Not Now prompt
+// Escape and the (removed) close button are swallowed while busy; "Not Now"
+// and the auto-closes are the only ways out. The updater lives on its own
+// thread; calls go over queued invokes and its signals arrive queued.
 class UpdateDialog : public QDialog {
     Q_OBJECT
 
 public:
-    UpdateDialog(SgUpdater* updater, const QStringList& pending, QWidget* parent = nullptr);
+    UpdateDialog(SgUpdater* updater, bool autoInstall, QWidget* parent = nullptr);
+
+protected:
+    void reject() override; // swallowed while checking/installing
 
 private:
-    void startUpdate();   // prompt state -> progress state, kicks off applyUpdates
+    void onCheckFinished(const QStringList& pending);
+    void startUpdate();   // prompt/auto -> progress state, kicks off applyUpdates
     void onProgress(const QString& tool, int percent);
     void onFinished(bool allOk);
 
     SgUpdater* m_updater;
+    bool m_autoInstall;
+    bool m_busy = true; // born checking; true again while installing
 
+    QLabel*       titleLabel;
+    QLabel*       bodyLabel;
     QLabel*       statusLabel;
     QProgressBar* progressBar;
     QPushButton*  updateBtn;

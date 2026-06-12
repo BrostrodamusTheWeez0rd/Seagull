@@ -18,6 +18,7 @@
 #include "Modules/Backend/SgRecorder.h"
 
 class QTextBrowser;
+class SgThumbnailer;
 
 class Seagull : public QObject {
     Q_OBJECT
@@ -62,6 +63,13 @@ private:
 
     // Records the currently-playing live stream to disk (parallel ffmpeg).
     SgRecorder* recorder;
+
+    // Answers the player's local-file poster requests (frame grab / cover art).
+    // Held with the Library's thumbnailer until the startup update modal is done.
+    SgThumbnailer* playerThumbnailer;
+
+    // Release the thumbnail ffmpeg queues once tool updates can no longer race them.
+    void releaseThumbnailHolds();
 
     QStringList m_downloadQueue; // pending ad-hoc download URLs (FIFO)
     bool        m_downloading = false;

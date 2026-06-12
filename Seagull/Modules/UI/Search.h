@@ -122,7 +122,7 @@ private:
     QStringListModel*      m_historyModel;
 
     QList<SearchResult> m_allResults;
-    FilterMode   m_filterMode  = FilterMode::All;
+    FilterMode   m_filterMode  = FilterMode::Videos; // Videos is the launch default
 
     // Feed position: index (into m_allResults) of the playing result, -1 none.
     // m_advancePending = a feed advance ran off the loaded tail and resumes

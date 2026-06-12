@@ -149,6 +149,7 @@ Search::Search(SgSearch* searchWorker, QWidget* parent)
         b->setCursor(Qt::PointingHandCursor);
         pillLay->addWidget(b);
     }
+    m_filterVideosBtn->setChecked(true); // always launch on Videos
 
     // Reserve top space in the flow layout so the first card row clears the pill.
     // Done after sizeHint() is meaningful (pill is fully laid out).
@@ -526,9 +527,17 @@ void Search::setFilterMode(FilterMode mode) {
 
     // Shorts come from a different source (YouTube's shorts search, not the
     // yt-dlp video search), so crossing into or out of Shorts re-runs the
-    // query; Videos <-> All just re-filter the cached results.
-    if (crossesShorts && !m_currentQuery.isEmpty()) {
-        startSearch(m_currentQuery);
+    // query — but ONLY the query still sitting in the bar. A cleared or
+    // edited bar means the user is lining up a different search; re-running
+    // the old term would burn a YouTube request they never asked for.
+    if (crossesShorts) {
+        const QString barText = queryBar->currentText().trimmed();
+        if (!barText.isEmpty() && barText == m_currentQuery) {
+            startSearch(m_currentQuery);
+        } else {
+            m_endReached = true; // freeze paging on the stale results too
+            rebuildCards();      // typically empties the grid until they search
+        }
         return;
     }
     rebuildCards();

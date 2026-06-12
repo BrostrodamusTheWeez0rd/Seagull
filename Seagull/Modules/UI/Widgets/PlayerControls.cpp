@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QTime>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QApplication>
 #include <QCursor>
 #include <QHideEvent>
@@ -471,6 +472,14 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
     }
 
     if (watched == muteBtn || watched == volumeFrame) {
+        if (event->type() == QEvent::Wheel) {
+            // Scrolling the volume button (or the popup body) steps the volume;
+            // the slider chain applies it to the engine and persists it.
+            const int dy = static_cast<QWheelEvent*>(event)->angleDelta().y();
+            if (dy != 0 && volumeSlider)
+                volumeSlider->setValue(qBound(0, volumeSlider->value() + (dy > 0 ? 5 : -5), 100));
+            return true;
+        }
         if (event->type() == QEvent::Enter) {
             volumeHideTimer->stop();
             if (volumeFrame->isHidden()) {
@@ -482,7 +491,9 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
             }
         }
         else if (event->type() == QEvent::Leave) {
-            volumeHideTimer->start(3000);
+            // Quick exit — and always quicker than the controls' own 3s OSD
+            // timeout, so a popup is never left hanging past its bar.
+            volumeHideTimer->start(800);
         }
     }
 
@@ -498,7 +509,7 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
             }
         }
         else if (event->type() == QEvent::Leave) {
-            qualityHideTimer->start(3000);
+            qualityHideTimer->start(800); // same quick exit as the volume popup
         }
     }
 

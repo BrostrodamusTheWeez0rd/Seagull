@@ -78,12 +78,17 @@ void SgThumbnailer::cancelPending() {
     m_queue.clear();
 }
 
+void SgThumbnailer::setHeld(bool held) {
+    m_held = held;
+    if (!m_held) pump(); // resume whatever queued up during the hold
+}
+
 bool SgThumbnailer::isBusy() const {
     return !m_current.isEmpty() || !m_queue.isEmpty();
 }
 
 void SgThumbnailer::pump() {
-    if (m_proc->state() != QProcess::NotRunning || m_queue.isEmpty()) return;
+    if (m_held || m_proc->state() != QProcess::NotRunning || m_queue.isEmpty()) return;
 
     QDir().mkpath(thumbsDir());
     m_current = m_queue.takeFirst();

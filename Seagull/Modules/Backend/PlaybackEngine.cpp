@@ -54,6 +54,12 @@ void PlaybackEngine::setOutputWindow(void* hwnd) {
 
 void PlaybackEngine::loadLocalFile(const QString& path) {
     m_lastMedia = std::make_shared<VLC::Media>(*m_instance, path.toUtf8().constData(), VLC::Media::FromPath);
+    // AV1 must decode in software (dav1d): VLC 3's AV1-over-D3D11VA hwaccel has
+    // a broken frame pool (get_buffer()/"Failed to allocate space for current
+    // frame" spam), which plays as constant stutter and a big hitch on
+    // pause/unpause. dav1d claims ONLY AV1, so every other codec falls through
+    // to "any" and keeps hardware decoding.
+    m_lastMedia->addOption(":codec=dav1d,any");
     m_player->setMedia(*m_lastMedia);
 }
 
@@ -83,6 +89,7 @@ void PlaybackEngine::loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint
     m_lastMedia->addOption(":network-caching=300");
     m_lastMedia->addOption(":http-reconnect=true");      // auto-reconnect dropped HTTP
     m_lastMedia->addOption(":adaptive-logic=highest");   // top rendition for native HLS / DASH
+    m_lastMedia->addOption(":codec=dav1d,any");          // AV1 in software — see loadLocalFile
 
     // Many CDNs (PornHub, xvideos, ...) hotlink-protect their streams: VLC must
     // send the page URL as Referer, like yt-dlp does, or the request is rejected.

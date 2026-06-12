@@ -32,8 +32,12 @@ public:
 
     void setCardWidth(int targetWidth); // live from Settings -> Display "Card size"
 
-    // Thumbnail generation still running? Startup defers the update check on this.
+    // Thumbnail generation still running?
     bool thumbnailsBusy() const;
+
+    // Hold/release the thumbnail ffmpeg queue. Startup holds it until the
+    // update modal finishes so an ffmpeg.exe swap never races a running grab.
+    void setThumbnailsHeld(bool held);
 
 signals:
     void playMediaRequested(const QUrl& url);

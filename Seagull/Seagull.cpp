@@ -218,11 +218,17 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // The player's stop/EOF poster for LOCAL files: a dedicated thumbnailer
     // (it shares the disk cache with the Library's, so anything the Library
     // already thumbed answers instantly) grabs a frame / cover art per play.
-    auto* playerThumbnailer = new SgThumbnailer(this);
+    playerThumbnailer = new SgThumbnailer(this);
     connect(videoPlayer, &VideoPlayer::localPosterRequested,
             playerThumbnailer, &SgThumbnailer::requestThumbnail);
     connect(playerThumbnailer, &SgThumbnailer::thumbnailReady,
             videoPlayer, &VideoPlayer::onLocalPosterReady);
+
+    // Hold every thumbnail ffmpeg queue until the startup update modal is done:
+    // updates run FIRST now (the modal locks the app), and an ffmpeg.exe swap
+    // must never race a running grab. releaseThumbnailHolds() lifts both.
+    libraryModule->setThumbnailsHeld(true);
+    playerThumbnailer->setHeld(true);
 
     // Player asks the backend to resolve qualities and stream URLs on demand.
     connect(videoPlayer, &VideoPlayer::probeQualitiesRequested, playerWorker, &SgYtDlp::probeAvailableQualities);
@@ -286,19 +292,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     updaterThread->start();
 
-    // The startup check reports back here: install silently when auto-update is
-    // on, otherwise ask with the themed prompt. Ignored while the first-run
-    // setup dialog is driving the updater itself.
-    connect(updaterWorker, &SgUpdater::checkFinished, this, [this](const QStringList& pending) {
-        if (m_setupActive || pending.isEmpty()) return;
-        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-        if (cfg.value("General/AutoUpdate", true).toBool()) {
-            QMetaObject::invokeMethod(updaterWorker, &SgUpdater::applyUpdates, Qt::QueuedConnection);
-            return;
-        }
-        UpdateDialog dlg(updaterWorker, pending, mainWindow);
-        dlg.exec();
-        }, Qt::QueuedConnection);
+    // The startup check/install is driven by the modal UpdateDialog in run();
+    // it owns checkFinished/applyProgress/applyFinished for the whole flow.
+}
+
+void Seagull::releaseThumbnailHolds() {
+    libraryModule->setThumbnailsHeld(false);
+    playerThumbnailer->setHeld(false);
 }
 
 Seagull::~Seagull() {
@@ -352,22 +352,24 @@ void Seagull::run() {
         // and silently re-download everything. And if the user clicked Not
         // Now, downloading behind their back would override that choice;
         // setup asks again next launch instead.
+        releaseThumbnailHolds(); // fresh tools just landed; thumbnails may run
         return;
     }
 
-    // Defer the tool-update check until the UI has settled AND the Library's
-    // thumbnail generation is idle, so update downloads never compete with the
-    // startup ffmpeg work. Poll once a second after a short grace period.
-    auto* gate = new QTimer(this);
-    gate->setInterval(1000);
-    connect(gate, &QTimer::timeout, this, [this, gate]() {
-        if (libraryModule->thumbnailsBusy()) return;
-        gate->stop();
-        gate->deleteLater();
+    // Tool updates, up front and modal: the UpdateDialog locks the app from
+    // the version check through any installs, so nothing can spawn a tool
+    // mid-replace. The thumbnail queues stay held until it's done (an
+    // ffmpeg.exe swap must never race a running grab), then everything flows.
+    // Short delay so the first frame paints before the modal drops in.
+    QTimer::singleShot(250, this, [this]() {
+        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        const bool autoInstall = cfg.value("General/AutoUpdate", true).toBool();
+        UpdateDialog dlg(updaterWorker, autoInstall, mainWindow);
         QMetaObject::invokeMethod(updaterWorker, [w = updaterWorker]() { w->checkForUpdates(); },
             Qt::QueuedConnection);
+        dlg.exec();
+        releaseThumbnailHolds();
         });
-    QTimer::singleShot(3000, gate, [gate]() { gate->start(); });
 }
 
 int main(int argc, char* argv[]) {

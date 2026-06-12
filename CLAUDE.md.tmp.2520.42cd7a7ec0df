@@ -1,0 +1,89 @@
+# Seagull
+
+A Qt6/C++20 media player and downloader for Windows. Uses yt-dlp for streaming/downloading online video, VLC SDK for local media playback, and ffmpeg for stream processing.
+
+## Build
+
+**Requirements:** Qt 6.11.1 (MSVC 2022 64-bit), MSVC 2022, CMake 3.20+
+
+```powershell
+# Configure and build (from repo root)
+cd C:\Users\Ryan\source\repos\Seagull
+cmake -S Seagull -B Seagull/out/build/x64-Debug -G "Visual Studio 17 2022" -A x64
+cmake --build Seagull/out/build/x64-Debug --config Debug
+```
+
+Or open the repo in Visual Studio and use the built-in CMake integration (CMakeSettings.json is already configured for x64-Debug).
+
+**Qt path:** `C:/Qt/6.11.1/msvc2022_64`  
+**VLC SDK:** `Seagull/sdk/` (headers in `include/vlc/`, libs in `lib/`, plugins in `plugins/`)  
+**Build output:** `Seagull/out/build/x64-Debug/`
+
+Post-build steps (run automatically via CMake):
+- `windeployqt` copies Qt runtime DLLs
+- VLC DLLs (`libvlc.dll`, `libvlccore.dll`) and plugins folder are copied to output
+- `Tools/` folder (contains yt-dlp, ffmpeg, deno) is copied to output
+
+## Architecture
+
+`Seagull` (in `Seagull.cpp/.h`) is the top-level orchestrator — it owns the `MainWindow`, the `VideoPlayer`, the tab modules, and the backend workers, and wires up all the signals/slots between them.
+
+The player is layered: **`Seagull` orchestrates → `MainWindow` is a window shell → `VideoPlayer` is the playback feature widget → `PlaybackEngine` wraps VLC.** `MainWindow` holds no playback/VLC logic; the orchestrator creates the `VideoPlayer` and hands it to the shell via `mainWindow->setVideoPlayer(player)`.
+
+### Modules (`Seagull/Modules/`)
+
+**UI (`Modules/UI/`)**
+- `MainWindow` — pure window shell: chrome, the vertical `QSplitter` (video on top, tabs below), the tab widget, and window-level concerns only (fullscreen, forwarding window move/resize to the player's overlay repositioning). Tab pages are wrapped in `QScrollArea`s. Tabs are closable (min. one stays open) with a floating "+" button after the last tab listing closed tabs to reopen at their canonical spot; closing only removes the page from the tab widget — the module widget stays alive and working. Tabs can also be torn off by dragging them off the bar into their own `FloatingTab` window; dragging that window over the tab strip (or closing it) docks it back. The closed set is persisted (`Tabs/Closed`, floating counts as open), default all open. Dynamic tabs (`openDynamicTab`/`closeDynamicTab`, e.g. the playing video's Description) sit at the end of the bar, are never persisted and never offered by the "+". A floating Share button appears right of the "+" while an online video plays (`setShareAvailable` → `shareRequested` → `VideoPlayer::shareLink`). The video/tabs split ratio is persisted to `config.ini` (`Display/VideoSplitRatio`). A clean click on the splitter handle (registered on release, never confused with a drag — any move past the drag threshold latches it as a drag) toggles the tabs pane fully down / back to the remembered split (`toggleTabsCollapsed`); works in fullscreen too (the 2px handle is kept, not hidden), and starting shorts viewing force-drops the pane (`collapseTabs` from the orchestrator). A YouTube-style circular chevron overlay (owned by `VideoPlayer`) appears when the cursor nears the bottom of the video (not over the controls pill) and does the same toggle (`tabsToggleRequested`); the shell pushes the pane state (`syncTabsPaneState` → `setTabsPaneOpen`) so the arrow points the way the pane will move.
+- `VideoPlayer` (`Modules/UI/VideoPlayer.*`) — the video feature widget. Owns the `PlaybackEngine`, the video render frame, the overlays (controls/title/poster), OSD, mouse handling, poster/thumbnail, and quality logic. Emits `fullscreenToggleRequested` / `playbackStarted` / `closed` for the shell.
+- `MediaLibrary` — the "Library" tab: card-grid view of the saved-media folders, with a floating type pill (Videos/Audio/Images/Recordings/Playlists) that switches between the `SgPaths` folders; the pill auto-hides while scrolled down (back at the top or hovering its strip shows it). Cards reuse `Widgets/VideoCard` (Play + Queue; the Queue button feeds the Queue tab's local queue); thumbnails via `SgThumbnailer`. Playlist cards (`.sgpl` JSON, name + entry count) play through the Queue tab (`playPlaylistRequested` → `Queue::loadPlaylistFile`)
+- `FileExplorer` — the "File Explorer" tab: local file browser/player (folder tree, file table, details panel, clipboard ops)
+- `Queue` (`Modules/UI/Queue.*`) — paste-a-URL preview, download/stream, and queue tab (labeled "Queue" in the UI). The queue holds ONE locality at a time (local files or online URLs, never mixed — crossing the line pops a clear-queue-first modal); local rows come from the Library cards' Queue button / File Explorer's "Add to Queue" and play via `playLocalFileRequested`. "Create Playlist" saves the queue as `.sgpl` JSON (`{version,name,type,created,entries[{target,title}]}`) into `SgPaths::playlistFolder()`; `loadPlaylistFile` repopulates (replace, confirmed) and optionally auto-plays. A local queue relabels "Stream Queue" to "Play Queue" and hides "Download Queue"
+- `Search` — search tab. The floating Videos/Shorts pill is a source switch: Videos/All filter the yt-dlp search results client-side, while Shorts re-runs the query through `SgSearch`'s shorts path (YouTube's internal `youtubei/v1/search` API via QNAM, since yt-dlp cannot parse shorts search results). Playing a search result makes the results the active feed: the player's skip buttons walk it (`playAdjacentResult`), and a playing short additionally gets YouTube's feed behaviour — it loops at the end and wheel-scrolling over the video advances to the next/previous result (`VideoPlayer::setShortsMode` → `shortsScrolled`), auto-fetching more pages past the loaded tail. The query bar is an editable combo like the File Explorer's address bar: the arrow drops the full search history, typing filters it (`MatchContains` completer), and it persists to `search_history.txt` next to config.ini; the Search settings section offers "Clear History Now" and an auto-clear-on-exit checkbox (`Search/ClearHistoryOnExit`)
+- `Settings` — settings tab (General / Display / Download & Streaming / Folders & Recording / Search / Info)
+- `SetupDialog` — first-run modal: confirm/edit the default folders + download missing tools with progress. Shown by the orchestrator modally over the just-shown main window when `Setup/Completed` is unset or any tool exe is missing (must be shown after the main window, never before — see Seagull::run)
+- `Widgets/UpdateDialog` — the startup update modal: locks the app from the version check through any installs (no close button, Escape swallowed while busy) so a tool is never replaced while something might spawn it. Checking (indeterminate) → "Up to date" auto-close, or auto-install with progress (`General/AutoUpdate` on), or an Update Now / Not Now prompt (off)
+- `Widgets/PlayerControls` — playback controls bar (takes a `PlaybackEngine*`, not a VLC type)
+- `Widgets/PlayerTitleBar` — title bar / banner overlay for the player
+
+**Backend (`Modules/Backend/`)**
+- `SgYtDlp` — Qt wrapper around the yt-dlp process. Handles downloading, metadata fetching, stream URL resolution, quality probing, and auto-updating yt-dlp/ffmpeg/deno
+- `SgPaths` — central resolver for the save folders (config.ini `Paths/*`). `DownloadFolder` is the dedicated yt-dlp downloads folder (defaults to the user's Windows Downloads), deliberately outside the unify system. The four media folders (`VideoFolder`, `AudioFolder`, `PhotoFolder`, `RecordingFolder`) fall back: explicit key → legacy `DownloadFolder` → the user's Windows folders (Videos/Music/Pictures, recordings under Videos/Recordings). `Paths/UnifyMedia` + `UnifiedFolder` collapse the four media folders into one (typed accessors take `honourUnify=false` to read the raw per-type values); recordings/clips go to the recording folder. `PlaylistFolder` (default `Documents/Playlists`) holds the `.sgpl` queue playlists and deliberately skips the legacy `DownloadFolder` fallback
+- `SgThumbnailer` — local-file thumbnail generator (one ffmpeg at a time, FIFO): video frame grabs + audio cover art, disk-cached in `cache/thumbs/`
+- `PlaybackEngine` — Qt wrapper around libVLC (peer to `SgYtDlp`). Owns the VLC instance + media player, exposes a neutral transport API (no vlcpp types leak out) and Qt signals for the player events. The only view coupling is `setOutputWindow(void*)`, which `VideoPlayer` feeds with its render frame's `winId()`.
+
+### Workers
+
+The orchestrator creates four `SgYtDlp` worker instances to avoid process contention:
+- `downloaderWorker` — handles file downloads
+- `resolverWorker` — resolves stream URLs
+- `prefetcherWorker` — prefetches next item
+- `playerWorker` — dedicated to the player's probe/stream-url traffic
+- `updaterWorker` — runs on its own `QThread`; two-phase (`checkForUpdates()` → `checkFinished` signal → `applyUpdates()` with progress signals). The startup check runs FIRST, inside the modal `UpdateDialog` (locks the app); the thumbnail ffmpeg queues (Library + the player's poster thumbnailer) are held via `SgThumbnailer::setHeld` until the modal closes so an ffmpeg.exe swap never races a running grab. `General/AutoUpdate` (default on) installs without asking; off shows the Update Now / Not Now prompt inside the same modal
+
+### Key signals
+
+| Signal | From | To | Purpose |
+|--------|------|----|---------|
+| `playMediaRequested` | MediaLibrary / FileExplorer | VideoPlayer | Play a local file |
+| `playMediaRequested` | Queue | VideoPlayer | Play online video |
+| `mediaEnded` | VideoPlayer | Seagull | Auto-advance to next track |
+| `skipRequested` | VideoPlayer | Seagull | Skip forward/back |
+| `probeQualitiesRequested` | VideoPlayer | playerWorker | Get available stream qualities |
+| `streamUrlRequested` | VideoPlayer | playerWorker | Resolve stream URL for a format |
+| `fullscreenToggleRequested` | VideoPlayer | MainWindow | Toggle window fullscreen |
+
+## External Tools
+
+Located in `Seagull/Tools/` (copied to build output):
+- `yt-dlp.exe` — video download/stream resolution
+- `ffmpeg.exe` — stream processing
+- `deno.exe` — used by some yt-dlp scripts
+
+`SgUpdater` (own thread) checks versions for all three at startup inside the modal `UpdateDialog`, which locks the app until the check (and any installs) finish — installing without asking if `General/AutoUpdate` is on, otherwise prompting first.
+
+## Code Style
+
+- C++20, Qt6 signals/slots with lambdas
+- `Qt::QueuedConnection` for all cross-thread signal connections
+- Workers have no parent when moved to a thread (`new SgYtDlp(nullptr)`)
+- Module classes inherit from `QWidget`; backend classes inherit from `QObject`

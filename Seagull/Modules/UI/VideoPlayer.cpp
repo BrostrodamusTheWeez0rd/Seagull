@@ -239,7 +239,10 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     hidePosterOverlay();
 
     QString nativePath = QDir::toNativeSeparators(url.toLocalFile());
-    emit localPosterRequested(nativePath);
+    // Request with the forward-slash form the Library uses: the thumbnail disk
+    // cache is keyed on the raw path STRING, so the native (backslash) form
+    // would never hit the Library's cached entry and re-run ffmpeg every time.
+    emit localPosterRequested(url.toLocalFile());
     engine->loadLocalFile(nativePath);
 
     QTimer::singleShot(50, this, [this]() {
@@ -340,6 +343,12 @@ void VideoPlayer::handleStopRequest() {
         if (playerControls) { playerControls->stopPolling(); playerControls->setEndedMode(true); }
         pinOverlayWindow(playerControls, controlsFade);
         pinOverlayWindow(titleBar, titleFade);
+        // Local file whose poster grab hasn't landed (or got lost): ask again
+        // now. A disk-cache hit answers synchronously, so the poster goes up
+        // in this same pass; slower grabs show late via the m_stopped check.
+        if (!m_isStreaming && m_posterPixmap.isNull()
+            && m_currentLocalUrl.isValid() && !m_currentLocalUrl.isEmpty())
+            emit localPosterRequested(m_currentLocalUrl.toLocalFile());
         showPosterOverlay();
         raiseOverlays();
         repositionOverlays();
