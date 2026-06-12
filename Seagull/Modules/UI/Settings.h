@@ -24,6 +24,7 @@ public:
 
 signals:
     void cardWidthChanged(int width); // Display "Card size" -> Search card width (px)
+    void clearHistoryRequested();     // General "Clear History Now" -> Search wipes its history
 
 private slots:
     void saveSettings();
@@ -93,7 +94,9 @@ private:
     QFormLayout* foldersForm = nullptr; // the form the folder rows live in
 
     // Search Tab elements
-    QSpinBox* searchResultsSpin; // how many results a search fetches
+    QSpinBox* searchResultsSpin;         // how many results a search fetches
+    QPushButton* clearHistoryBtn;        // wipe the search history right now
+    QCheckBox* clearHistoryOnCloseCheck; // wipe it automatically on every exit
 
     QPushButton* resetBtn;
 

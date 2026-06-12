@@ -8,6 +8,8 @@
 #include <QIcon>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <QComboBox>
+#include <QAbstractSpinBox>
 #include <QScrollArea>
 #include <QTabBar>
 #include <QToolButton>
@@ -65,7 +67,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     mainSplitter = new QSplitter(Qt::Vertical, this);
     mainSplitter->setOpaqueResize(true); // live resize — follow the drag, don't wait for release
-    mainSplitter->setHandleWidth(2);     // fixed: stays this width in fullscreen too (clickable)
+    mainSplitter->setHandleWidth(2);     // syncTabsPaneState hides it (0) only in fullscreen, pane down
 
     tabs = new QTabWidget(this);
     tabs->setMovable(true); // let the user drag tabs into any order
@@ -124,6 +126,16 @@ void MainWindow::applyStoredSplit() {
     // available height, so the proportion holds regardless of window size.
     const int v = qBound(1, int(m_videoSplitRatio * 1000), 999);
     mainSplitter->setSizes({ v, 1000 - v });
+    syncTabsPaneState();
+}
+
+void MainWindow::syncTabsPaneState() {
+    const bool open = mainSplitter->sizes().value(1) > 0;
+    // Fullscreen with the pane down hides the handle completely (no grey seam
+    // across the bottom of the screen); the hover chevron remains the way in.
+    // With the pane up, and always in windowed mode, the 2px handle shows.
+    mainSplitter->setHandleWidth(isFullScreen() && !open ? 0 : 2);
+    if (videoPlayer) videoPlayer->setTabsPaneOpen(open);
 }
 
 void MainWindow::captureSplit() {
@@ -145,6 +157,7 @@ void MainWindow::collapseTabs() {
     // sizes are never the split the user "left it at", so don't capture there.
     if (!isFullScreen()) captureSplit();
     mainSplitter->setSizes({ s.value(0) + s.value(1), 0 });
+    syncTabsPaneState();
     videoPlayer->repositionOverlays();
 }
 
@@ -457,6 +470,12 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
     // The overlays are top-level windows in global coordinates, so anything that
     // moves the video surface (splitter drag, window move/resize) must nudge them.
     connect(mainSplitter, &QSplitter::splitterMoved, player, &VideoPlayer::repositionOverlays);
+    // Keep the toggle chevron's arrow honest while the user drags the handle.
+    connect(mainSplitter, &QSplitter::splitterMoved, this, [this](int, int) { syncTabsPaneState(); });
+
+    // The chevron near the splitter toggles the pane like a handle click does.
+    connect(player, &VideoPlayer::tabsToggleRequested, this, &MainWindow::toggleTabsCollapsed);
+    syncTabsPaneState(); // initial arrow direction
 
     connect(player, &VideoPlayer::fullscreenToggleRequested, this, &MainWindow::toggleFullScreen);
     connect(player, &VideoPlayer::playbackStarted, this, [this]() {
@@ -479,10 +498,8 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
 void MainWindow::enterFullScreen() {
     m_wasMaximized = isMaximized(); // remember so we can restore it on exit
     showFullScreen();
-    // The 2px handle stays (not width 0): clicking the bottom edge of the
-    // screen brings the tabs up over the fullscreen video, clicking it again
-    // drops them back down.
     mainSplitter->setSizes({ 1000, 0 }); // immersive: video fills, tabs collapsed
+    syncTabsPaneState(); // hides the handle (pane is down); the chevron brings the tabs up
     QTimer::singleShot(100, this, [this]() {
         if (videoPlayer) { videoPlayer->repositionOverlays(); videoPlayer->raiseOverlays(); }
         });
@@ -615,10 +632,16 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
     if (event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
-        // Don't steal typing in text inputs (except Escape, which leaves fullscreen).
-        if (qobject_cast<QLineEdit*>(watched) || qobject_cast<QTextEdit*>(watched)) {
-            if (keyEvent->key() != Qt::Key_Escape) return false;
-        }
+        // Don't steal typing in text inputs (except Escape, which leaves
+        // fullscreen). Check the actual FOCUS widget, not just `watched`: the
+        // press can arrive via any filtered widget while an editable combo's
+        // line edit, a spin box, or a text field owns the keyboard.
+        QWidget* fw = QApplication::focusWidget();
+        const bool typing = qobject_cast<QLineEdit*>(watched) || qobject_cast<QTextEdit*>(watched)
+                         || qobject_cast<QLineEdit*>(fw)      || qobject_cast<QTextEdit*>(fw)
+                         || qobject_cast<QAbstractSpinBox*>(fw)
+                         || qobject_cast<QComboBox*>(fw);
+        if (typing && keyEvent->key() != Qt::Key_Escape) return false;
         keyPressEvent(keyEvent);
         if (keyEvent->key() == Qt::Key_Space || keyEvent->key() == Qt::Key_Escape) return true;
         return false;

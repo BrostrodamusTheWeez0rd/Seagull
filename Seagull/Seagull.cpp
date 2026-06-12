@@ -2,6 +2,7 @@
 #include "Modules/UI/Theme.h"
 #include "Modules/UI/SetupDialog.h"
 #include "Modules/UI/Widgets/UpdateDialog.h"
+#include "Modules/Backend/SgThumbnailer.h"
 #include <QApplication>
 #include <QSettings>
 #include <QCoreApplication>
@@ -154,6 +155,15 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     connect(settingsModule, &Settings::cardWidthChanged, searchModule, &Search::setCardWidth);
     connect(settingsModule, &Settings::cardWidthChanged, libraryModule, &MediaLibrary::setCardWidth);
 
+    // Search history wipes: the Search settings' "Clear History Now" button,
+    // and the on-close auto-clear when Search/ClearHistoryOnExit is ticked.
+    connect(settingsModule, &Settings::clearHistoryRequested, searchModule, &Search::clearSearchHistory);
+    connect(qApp, &QCoreApplication::aboutToQuit, searchModule, [this]() {
+        QSettings s(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        if (s.value("Search/ClearHistoryOnExit", false).toBool())
+            searchModule->clearSearchHistory();
+        });
+
     // Each finished ad-hoc download advances the FIFO; the Library spinner stays up
     // until the queue drains.
     connect(downloadWorker, &SgYtDlp::finished, this, [this](bool /*ok*/) {
@@ -204,6 +214,15 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Surface the player worker's logs (stream resolution, yt-dlp errors) in the
     // same dev console as the others, by re-emitting through the downloader.
     connect(playerWorker, &SgYtDlp::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+
+    // The player's stop/EOF poster for LOCAL files: a dedicated thumbnailer
+    // (it shares the disk cache with the Library's, so anything the Library
+    // already thumbed answers instantly) grabs a frame / cover art per play.
+    auto* playerThumbnailer = new SgThumbnailer(this);
+    connect(videoPlayer, &VideoPlayer::localPosterRequested,
+            playerThumbnailer, &SgThumbnailer::requestThumbnail);
+    connect(playerThumbnailer, &SgThumbnailer::thumbnailReady,
+            videoPlayer, &VideoPlayer::onLocalPosterReady);
 
     // Player asks the backend to resolve qualities and stream URLs on demand.
     connect(videoPlayer, &VideoPlayer::probeQualitiesRequested, playerWorker, &SgYtDlp::probeAvailableQualities);

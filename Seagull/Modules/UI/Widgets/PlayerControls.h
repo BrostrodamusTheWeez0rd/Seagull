@@ -34,7 +34,9 @@ public:
     void setVolumeUi(int volume);
     void setStreamingMode(bool isStream);
     void applyAudioState();
-    bool hasOpenPopup() const; // true while the volume or quality popup is showing
+    bool hasOpenPopup() const;     // true while the volume or quality popup is showing
+    bool popupUnderCursor() const; // the cursor is on an open popup (mid-interaction)
+    void closePopups();            // shut both popups (they close before the bar fades)
 
     void stopPolling();
     void startPolling();

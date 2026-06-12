@@ -340,6 +340,18 @@ bool PlayerControls::hasOpenPopup() const {
     return (volumeFrame && volumeFrame->isVisible()) || (qualityFrame && qualityFrame->isVisible());
 }
 
+bool PlayerControls::popupUnderCursor() const {
+    const QPoint gp = QCursor::pos();
+    if (volumeFrame && volumeFrame->isVisible() && volumeFrame->geometry().contains(gp)) return true;
+    if (qualityFrame && qualityFrame->isVisible() && qualityFrame->geometry().contains(gp)) return true;
+    return false;
+}
+
+void PlayerControls::closePopups() {
+    if (volumeFrame)  volumeFrame->hide();
+    if (qualityFrame) qualityFrame->hide();
+}
+
 void PlayerControls::hideEvent(QHideEvent* event) {
     if (volumeFrame)  volumeFrame->hide();
     if (qualityFrame) qualityFrame->hide();

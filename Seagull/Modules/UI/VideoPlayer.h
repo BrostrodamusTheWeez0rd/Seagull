@@ -11,6 +11,8 @@
 
 class QFrame;
 class QLabel;
+class QPushButton;
+class QPropertyAnimation;
 class QTimer;
 class QNetworkAccessManager;
 class PlaybackEngine;
@@ -40,6 +42,10 @@ public:
     void setShortsMode(bool on);
     bool shortsMode() const { return m_shortsMode; }
 
+    // The shell pushes the tabs-pane state so the splitter-toggle chevron
+    // points the way the pane will move: down to drop it, up to bring it back.
+    void setTabsPaneOpen(bool open);
+
 public slots:
     void playLocalFile(const QUrl& url);
     void playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl = QUrl(), const QUrl& cdnAudioUrl = QUrl(), const QString& title = QString());
@@ -48,6 +54,9 @@ public slots:
 
     void handleAvailableQualities(const QList<StreamOption>& options);
     void onThumbnailResolved(const QString& thumbUrl);
+    // Local-file poster (frame grab / cover art) answered by the orchestrator's
+    // SgThumbnailer; used by the stop/EOF poster like a stream's thumbnail.
+    void onLocalPosterReady(const QString& filePath, const QPixmap& pixmap);
     void onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl);
     void onVideoInfo(const QString& title, const QString& uploader,
         const QString& views, const QString& date, const QString& description);
@@ -71,6 +80,8 @@ signals:
     void fullscreenToggleRequested(); // host performs the actual window fullscreen
     void playbackStarted();           // host shows/sizes the video area
     void closed();                    // host hides the video area / leaves fullscreen
+    void tabsToggleRequested();       // splitter-toggle chevron clicked — host toggles the pane
+    void localPosterRequested(const QString& filePath); // thumbnailer answers via onLocalPosterReady
 
     // Drive the shell's dynamic Description tab + floating Share button: full
     // metadata when the probe reports it, empty values when media has none or
@@ -114,6 +125,8 @@ private:
 
     void showPosterOverlay();
     void hidePosterOverlay();
+    void updateSplitterToggle(const QPoint& globalPos); // show/hide the chevron by cursor proximity
+    void positionSplitterToggle();                      // bottom-centre, perched above the pill when it's up
     void onPlaybackError();
     void showStreamFailed(); // pin the "stream failed — replay" message + ended mode
     void closePlayer();
@@ -123,6 +136,26 @@ private:
 
     PlayerControls* playerControls;
     PlayerTitleBar* titleBar;
+
+    // OSD fades: controls and banner ease in/out on the same clock as the
+    // splitter chevron (kOverlayFadeInMs/kOverlayFadeOutMs). Event-driven
+    // "pinned" shows (EOF, stream failed, banner notices) bypass the fade via
+    // pinOverlayWindow so a mid-fade hide can't swallow them.
+    QPropertyAnimation* controlsFade = nullptr;
+    QPropertyAnimation* titleFade = nullptr;
+    void fadeOverlayWindow(QWidget* w, QPropertyAnimation* anim, bool in);
+    void pinOverlayWindow(QWidget* w, QPropertyAnimation* anim); // instant, full opacity
+
+    // Circular chevron near the splitter (YouTube-style): appears when the
+    // cursor nears the bottom of the video (not over the controls pill), sits
+    // underneath the controls (which nudge up to clear it), and toggles the
+    // tabs pane. Lingers briefly after the cursor leaves the trigger zone so
+    // it can actually be reached and clicked. Top-level like the other overlays.
+    QPushButton* splitterToggleBtn = nullptr;
+    QTimer* splitterBtnHideTimer = nullptr;
+    QPropertyAnimation* splitterBtnFade = nullptr; // windowOpacity fade in/out
+    void fadeSplitterToggle(bool in);
+    bool m_tabsPaneOpen = true;
 
     // Poster shown over the video when paused / at end-of-stream. A separate
     // top-level window (like the other overlays) because the VLC HWND draws over
@@ -175,6 +208,8 @@ private:
     bool m_isStreaming = false;   // current media is an online stream (not a local file)
     bool m_isLive = false;        // online stream is live (vs VOD) — picks the record method
     bool m_streamRetried = false; // one stale-URL refetch has been spent for this stream
+    bool m_fetching = false;      // resolving/loading a stream — poster stands in for the video
+    bool m_stopped = false;       // stopped/ended, replay-ready: play = replay, next Stop = teardown
 
     // Shorts feed: wheel deltas accumulate to one notch (trackpads stream tiny
     // steps), rate-limited so a flick advances exactly one short.

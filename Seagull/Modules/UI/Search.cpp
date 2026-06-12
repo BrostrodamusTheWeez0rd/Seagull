@@ -6,6 +6,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
+#include <QComboBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -25,6 +26,8 @@
 #include <QPixmapCache>
 #include <QTimer>
 #include <QCursor>
+#include <QFile>
+#include <QTextStream>
 
 namespace { constexpr int kGridSpacing = 12; }
 
@@ -76,18 +79,28 @@ Search::Search(SgSearch* searchWorker, QWidget* parent)
     navRow->addWidget(goBtn);
     chromeLay->addLayout(navRow);
 
-    // Query bar with history completer
-    queryBar = new QLineEdit();
+    // Query bar: an editable combo like the File Explorer's address bar — the
+    // arrow drops the full search history, typing filters it via the completer.
+    queryBar = new QComboBox();
     queryBar->setObjectName("searchQueryBar");
-    queryBar->setPlaceholderText("Search YouTube\xe2\x80\xa6");
-    queryBar->setClearButtonEnabled(true);
+    queryBar->setEditable(true);
+    queryBar->setInsertPolicy(QComboBox::NoInsert); // we manage the items (addToHistory)
+    queryBar->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    queryBar->lineEdit()->setPlaceholderText("Search YouTube\xe2\x80\xa6");
+    queryBar->lineEdit()->setClearButtonEnabled(true);
 
     m_historyModel     = new QStringListModel(this);
     m_historyCompleter = new QCompleter(m_historyModel, this);
-    m_historyCompleter->setCompletionMode(QCompleter::UnfilteredPopupCompletion);
+    // Search-engine style: the history drops down while typing, filtered to
+    // entries containing what's typed (not the whole list regardless of text).
+    m_historyCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_historyCompleter->setFilterMode(Qt::MatchContains);
     m_historyCompleter->setCaseSensitivity(Qt::CaseInsensitive);
-    queryBar->setCompleter(m_historyCompleter);
+    queryBar->lineEdit()->setCompleter(m_historyCompleter);
     chromeLay->addWidget(queryBar);
+
+    loadHistory(); // history persists across sessions (plain-text file)
+    queryBar->setCurrentIndex(-1); // start with an empty bar, not the newest entry
 
     root->addWidget(chromeWidget);
 
@@ -178,14 +191,16 @@ Search::Search(SgSearch* searchWorker, QWidget* parent)
     root->addWidget(statusFrame);
 
     // --- Connections ---
-    connect(goBtn,    &QPushButton::clicked,     this, &Search::performSearch);
-    connect(queryBar, &QLineEdit::returnPressed, this, &Search::performSearch);
+    connect(goBtn,    &QPushButton::clicked, this, &Search::performSearch);
+    connect(queryBar->lineEdit(), &QLineEdit::returnPressed, this, &Search::performSearch);
+    // Picking a history entry from the arrow dropdown searches it right away.
+    connect(queryBar, &QComboBox::textActivated, this, &Search::performSearch);
     connect(siteBar,  &QLineEdit::returnPressed, this, [this]() { queryBar->setFocus(); });
 
     connect(backBtn, &QPushButton::clicked, this, [this]() {
         if (m_navIndex <= 0) return;
         --m_navIndex;
-        queryBar->setText(m_navHistory[m_navIndex]);
+        queryBar->setCurrentText(m_navHistory[m_navIndex]);
         startSearch(m_navHistory[m_navIndex]);
         updateNavButtons();
     });
@@ -193,7 +208,7 @@ Search::Search(SgSearch* searchWorker, QWidget* parent)
     connect(forwardBtn, &QPushButton::clicked, this, [this]() {
         if (m_navIndex >= m_navHistory.size() - 1) return;
         ++m_navIndex;
-        queryBar->setText(m_navHistory[m_navIndex]);
+        queryBar->setCurrentText(m_navHistory[m_navIndex]);
         startSearch(m_navHistory[m_navIndex]);
         updateNavButtons();
     });
@@ -287,6 +302,57 @@ void Search::addToHistory(const QString& query) {
     m_searchHistory.prepend(query);
     if (m_searchHistory.size() > 50) m_searchHistory.removeLast();
     m_historyModel->setStringList(m_searchHistory);
+
+    // Mirror into the combo's item list incrementally (a full rebuild would
+    // disturb the edit text mid-search).
+    queryBar->blockSignals(true);
+    const int dup = queryBar->findText(query, Qt::MatchFixedString);
+    if (dup >= 0) queryBar->removeItem(dup);
+    queryBar->insertItem(0, query);
+    while (queryBar->count() > 50) queryBar->removeItem(queryBar->count() - 1);
+    queryBar->setCurrentIndex(0); // the bar keeps showing the running query
+    queryBar->blockSignals(false);
+
+    saveHistory();
+}
+
+// History lives in a plain-text file the user can open and read: one query
+// per line, most recent first, next to config.ini.
+QString Search::historyFilePath() {
+    return QCoreApplication::applicationDirPath() + "/search_history.txt";
+}
+
+void Search::loadHistory() {
+    QFile f(historyFilePath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return; // none yet
+    m_searchHistory.clear();
+    QTextStream in(&f);
+    while (!in.atEnd() && m_searchHistory.size() < 50) {
+        const QString line = in.readLine().trimmed();
+        if (!line.isEmpty()) m_searchHistory.append(line);
+    }
+    m_historyModel->setStringList(m_searchHistory);
+    queryBar->blockSignals(true);
+    queryBar->clear();
+    queryBar->addItems(m_searchHistory);
+    queryBar->setCurrentIndex(-1);
+    queryBar->blockSignals(false);
+}
+
+void Search::saveHistory() {
+    QFile f(historyFilePath());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) return;
+    QTextStream out(&f);
+    for (const QString& q : m_searchHistory) out << q << '\n';
+}
+
+void Search::clearSearchHistory() {
+    m_searchHistory.clear();
+    m_historyModel->setStringList(m_searchHistory);
+    queryBar->blockSignals(true);
+    queryBar->clear(); // items and edit text both go
+    queryBar->blockSignals(false);
+    QFile::remove(historyFilePath());
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +360,13 @@ void Search::addToHistory(const QString& query) {
 // ---------------------------------------------------------------------------
 
 void Search::performSearch() {
-    const QString query = queryBar->text().trimmed();
+    // Enter on a query that matches a history item fires returnPressed AND
+    // textActivated back-to-back; collapse the pair into one search.
+    if (m_searchFiring) return;
+    m_searchFiring = true;
+    QTimer::singleShot(0, this, [this]() { m_searchFiring = false; });
+
+    const QString query = queryBar->currentText().trimmed();
 
     if (!siteIsYoutube()) {
         setStatus("Only YouTube is supported for now — try \"youtube\" in the site bar.", false);

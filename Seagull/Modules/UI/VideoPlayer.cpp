@@ -7,6 +7,7 @@
 #include <QVBoxLayout>
 #include <QFrame>
 #include <QLabel>
+#include <QPushButton>
 #include <QTimer>
 #include <QEvent>
 #include <QResizeEvent>
@@ -21,6 +22,7 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QRect>
 #include <QSettings>
 #include <QCoreApplication>
@@ -28,6 +30,12 @@
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+
+namespace {
+    // One clock for every overlay fade: chevron, controls bar, banner.
+    constexpr int kOverlayFadeInMs  = 150;
+    constexpr int kOverlayFadeOutMs = 350;
+}
 
 VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     // Floor for the video area so the splitter can't squeeze it away at small
@@ -49,8 +57,11 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
         });
 
     connect(engine, &PlaybackEngine::endReached, this, &VideoPlayer::onMediaEndReached);
-    connect(engine, &PlaybackEngine::paused, this, &VideoPlayer::showPosterOverlay);
+    // Pause deliberately shows the frozen frame (VLC keeps it on screen) — the
+    // poster/thumbnail is only for EOF (replay) and the fetch placeholder.
     connect(engine, &PlaybackEngine::playing, this, [this]() {
+        m_fetching = false;
+        m_stopped  = false; // playing again — Stop is back to stage one
         hidePosterOverlay();
         if (titleBar) titleBar->setLoading(false); // playback started — stop the seagull
         });
@@ -70,6 +81,22 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     titleBar->setWindowFlags(overlayFlags);
     titleBar->setAttribute(Qt::WA_TranslucentBackground);
 
+    // OSD fade animations (window opacity — these are top-level windows). A
+    // completed fade-out hides the window and resets it to full opacity, so
+    // every direct show() elsewhere starts from a clean, fully opaque state.
+    auto makeOverlayFade = [this](QWidget* w) {
+        auto* anim = new QPropertyAnimation(w, "windowOpacity", this);
+        connect(anim, &QPropertyAnimation::finished, this, [w, anim]() {
+            if (anim->endValue().toDouble() == 0.0) {
+                w->hide();
+                w->setWindowOpacity(1.0);
+            }
+            });
+        return anim;
+    };
+    controlsFade = makeOverlayFade(playerControls);
+    titleFade    = makeOverlayFade(titleBar);
+
     // Poster overlay: opaque image window that covers the video frame. Mouse
     // events pass straight through so clicking the video still toggles playback.
     posterOverlay = new QLabel(this);
@@ -79,6 +106,40 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     posterOverlay->setAlignment(Qt::AlignCenter);
     posterOverlay->setScaledContents(false);
     posterOverlay->hide();
+
+    // Splitter-toggle chevron (YouTube-style): a small circular button that
+    // appears when the cursor nears the splitter (bottom strip of the video,
+    // not the controls pill) and toggles the tabs pane via the shell. The
+    // arrow mirrors the move the pane will make (see setTabsPaneOpen).
+    splitterToggleBtn = new QPushButton(this);
+    splitterToggleBtn->setWindowFlags(overlayFlags);
+    splitterToggleBtn->setAttribute(Qt::WA_TranslucentBackground);
+    splitterToggleBtn->setObjectName("splitterToggleButton");
+    splitterToggleBtn->setFixedSize(30, 30); // same circle as the control buttons
+    splitterToggleBtn->setCursor(Qt::PointingHandCursor);
+    splitterToggleBtn->hide();
+    setTabsPaneOpen(true);
+    connect(splitterToggleBtn, &QPushButton::clicked, this, [this]() { emit tabsToggleRequested(); });
+
+    // Leaving the trigger zone doesn't hide the chevron instantly — it lingers
+    // so the cursor can travel down to it; re-entering cancels the countdown.
+    splitterBtnHideTimer = new QTimer(this);
+    splitterBtnHideTimer->setSingleShot(true);
+    splitterBtnHideTimer->setInterval(1000);
+    connect(splitterBtnHideTimer, &QTimer::timeout, this, [this]() {
+        fadeSplitterToggle(false); // ease out; hidden for real when the fade lands
+        });
+
+    // Fade on the window opacity (it's a top-level overlay); reversible
+    // mid-flight so a re-entry during the fade-out eases straight back in.
+    splitterBtnFade = new QPropertyAnimation(splitterToggleBtn, "windowOpacity", this);
+    connect(splitterBtnFade, &QPropertyAnimation::finished, this, [this]() {
+        if (splitterBtnFade->endValue().toDouble() == 0.0) {
+            splitterToggleBtn->hide();
+            splitterToggleBtn->setWindowOpacity(1.0);
+            repositionOverlays(); // the controls drop back down to the edge
+        }
+        });
 
     m_thumbNam = new QNetworkAccessManager(this);
 
@@ -117,6 +178,14 @@ void VideoPlayer::setShortsMode(bool on) {
     m_shortsWheelAccum = 0;
 }
 
+void VideoPlayer::setTabsPaneOpen(bool open) {
+    m_tabsPaneOpen = open;
+    // Arrow shows the direction the splitter will move: pane open = clicking
+    // drops it (down), pane down = clicking brings it back up.
+    if (splitterToggleBtn) splitterToggleBtn->setText(open ? QStringLiteral("▼")
+                                                           : QStringLiteral("▲"));
+}
+
 void VideoPlayer::onMediaEndReached() {
     stopRecordingIfActive(); // the live source ended — finalise any recording
 
@@ -132,10 +201,12 @@ void VideoPlayer::onMediaEndReached() {
     }
 
     osdTimer->stop();
+    m_stopped = true; // ended = replay-ready, same as a first-stage Stop
     // Freeze the seeker/timestamp at the end so they don't snap back to 0 while
     // VLC drains the decoder. startPolling() clears this when the next item plays.
-    if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); }
-    if (titleBar) titleBar->show();
+    if (playerControls) playerControls->setEndedMode(true);
+    pinOverlayWindow(playerControls, controlsFade);
+    pinOverlayWindow(titleBar, titleFade);
 
     // Cover the final (often black) frame with the poster, controls on top.
     showPosterOverlay();
@@ -154,17 +225,21 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     m_currentLocalUrl = url; // Record clips the watched range straight from this file
     m_isLive = false;
     m_isStreaming = false; // local file — playback errors are genuine, no refetch
+    m_fetching = false;    // local files load instantly, no placeholder phase
+    m_stopped = false;
     m_shortsMode = false;  // new media — the orchestrator re-enables for a short
     emit playbackStarted(); // host shows + sizes the video area
 
     engine->setOutputWindow((void*)videoWidget->winId());
     mouseTrackerTimer->start(100);
 
-    // New media — drop any old poster (local files have no thumbnail to fetch).
+    // New media — drop the old poster; the orchestrator's thumbnailer answers
+    // with this file's frame grab / cover art for the stop/EOF poster.
     m_posterPixmap = QPixmap();
     hidePosterOverlay();
 
     QString nativePath = QDir::toNativeSeparators(url.toLocalFile());
+    emit localPosterRequested(nativePath);
     engine->loadLocalFile(nativePath);
 
     QTimer::singleShot(50, this, [this]() {
@@ -204,6 +279,8 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     m_isStreaming = true;   // online stream — a stale cached URL can be refetched
     m_isLive = false;       // assume VOD until the probe reports live (picks record method)
     m_streamRetried = false;
+    m_fetching = true;      // poster stands in for the video until playback starts
+    m_stopped = false;
     m_shortsMode = false;   // new media — the orchestrator re-enables for a short
 
     // Reset the Info panel; the title is known now, the rest arrives with the probe.
@@ -250,6 +327,24 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
 }
 
 void VideoPlayer::handleStopRequest() {
+    // Two-stage Stop. First press: halt playback and poster the video — the
+    // player stays up with the media loaded, replay-ready. Second press (or a
+    // stop with nothing loaded): tear the player down and release the media.
+    if (!m_stopped && engine->hasMedia()) {
+        m_stopped = true;
+        stopRecordingIfActive();
+        retryTimer->stop();
+        osdTimer->stop();
+        m_fetching = false;
+        engine->stop(); // media stays loaded; releaseMedia() is press #2
+        if (playerControls) { playerControls->stopPolling(); playerControls->setEndedMode(true); }
+        pinOverlayWindow(playerControls, controlsFade);
+        pinOverlayWindow(titleBar, titleFade);
+        showPosterOverlay();
+        raiseOverlays();
+        repositionOverlays();
+        return;
+    }
     closePlayer();
 }
 
@@ -265,10 +360,26 @@ void VideoPlayer::onThumbnailResolved(const QString& thumbUrl) {
         QPixmap pm;
         if (!pm.loadFromData(reply->readAll())) return; // e.g. webp w/o plugin
         m_posterPixmap = pm;
-        // If we're already sitting paused/ended, paint it in now.
-        if (posterOverlay && posterOverlay->isVisible())
+        // Fetch placeholder: stand in for the (black) video until it starts.
+        if (m_fetching) showPosterOverlay();
+        // If the poster is already up (EOF replay), paint the pixmap in now.
+        else if (posterOverlay && posterOverlay->isVisible())
             repositionOverlays();
         });
+}
+
+void VideoPlayer::onLocalPosterReady(const QString& filePath, const QPixmap& pixmap) {
+    if (pixmap.isNull()) return;
+    // Stale answers (a previous file, or we've moved on to a stream) don't apply.
+    if (m_isStreaming || !m_currentLocalUrl.isValid() || m_currentLocalUrl.isEmpty()) return;
+    if (QString::compare(QDir::toNativeSeparators(m_currentLocalUrl.toLocalFile()),
+                         QDir::toNativeSeparators(filePath), Qt::CaseInsensitive) != 0) return;
+    m_posterPixmap = pixmap;
+    // Stopped/ended before the grab finished — poster it in now.
+    if (m_stopped) {
+        showPosterOverlay();
+        raiseOverlays();
+    }
 }
 
 void VideoPlayer::showPosterOverlay() {
@@ -289,10 +400,12 @@ void VideoPlayer::onPlaybackError() {
     // more before giving up.
     if (m_isStreaming && !m_streamRetried) {
         m_streamRetried = true;
+        m_fetching = true; // poster stands in again while the fresh URL resolves
+        if (!m_posterPixmap.isNull()) showPosterOverlay();
         if (titleBar) {
             titleBar->setTitle("Stream link expired — refetching...");
             titleBar->setLoading(true);
-            titleBar->show();
+            pinOverlayWindow(titleBar, titleFade);
             if (videoAreaExposed()) titleBar->raise();
         }
         repositionOverlays();
@@ -311,8 +424,10 @@ void VideoPlayer::showStreamFailed() {
     // replay button (re-uses the last media), and keep the controls/title pinned.
     retryTimer->stop();
     osdTimer->stop();
-    if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->setLoading(false); titleBar->show(); }
-    if (playerControls) { playerControls->setEndedMode(true); playerControls->show(); }
+    m_fetching = false;
+    m_stopped = true; // replay-ready; a Stop press now tears down
+    if (titleBar) { titleBar->setTitle("Stream failed to load — press replay to retry."); titleBar->setLoading(false); pinOverlayWindow(titleBar, titleFade); }
+    if (playerControls) { playerControls->setEndedMode(true); pinOverlayWindow(playerControls, controlsFade); }
     raiseOverlays();
     repositionOverlays();
 }
@@ -341,10 +456,20 @@ void VideoPlayer::closePlayer() {
     clickTimer->stop();
     updateOverlayTimer->stop();
     if (playerControls) { playerControls->stopPolling(); playerControls->setEndedMode(false); }
-    engine->stop();
+    m_fetching = false;
+    m_stopped = false;
+    engine->releaseMedia(); // stop AND unload — space bar must not resurrect it
     hidePosterOverlay();
+    if (controlsFade) controlsFade->stop();
+    if (titleFade) titleFade->stop();
     playerControls->hide();
+    playerControls->setWindowOpacity(1.0);
     titleBar->hide();
+    titleBar->setWindowOpacity(1.0);
+    videoWidget->unsetCursor(); // in case we stopped while fullscreen-hidden
+    if (splitterBtnHideTimer) splitterBtnHideTimer->stop();
+    if (splitterBtnFade) splitterBtnFade->stop();
+    if (splitterToggleBtn) splitterToggleBtn->hide();
     emit closed(); // host hides the video area + leaves fullscreen
 }
 
@@ -353,6 +478,12 @@ void VideoPlayer::onSingleClickTimeout() {
 }
 
 void VideoPlayer::togglePlayPause() {
+    // Nothing playing or player closed: a stray space bar must stay a no-op.
+    if (!isVisible() || !engine->hasMedia()) return;
+    // Stopped/ended: play = a clean replay from the top (resets the ended-mode
+    // controls and restarts polling — a bare engine->play() would leave the
+    // seeker frozen and the poster up).
+    if (m_stopped) { handleReplay(); return; }
     if (engine->isPlaying()) engine->pause();
     else engine->play();
 }
@@ -395,8 +526,12 @@ void VideoPlayer::repositionOverlays() {
     if (playerControls && playerControls->isVisible()) {
         int controlX = globalPos.x() + (videoWidget->width() - playerControls->width()) / 2;
         int controlY = globalPos.y() + videoWidget->height() - playerControls->height() - 5;
+        // The chevron slides in underneath; nudge the controls up to clear it.
+        if (splitterToggleBtn && splitterToggleBtn->isVisible())
+            controlY -= splitterToggleBtn->height() + 4;
         playerControls->move(controlX, controlY);
     }
+    if (splitterToggleBtn && splitterToggleBtn->isVisible()) positionSplitterToggle();
 }
 
 // The overlays are top-level tool windows, so show()/raise() stacks them above
@@ -411,7 +546,8 @@ bool VideoPlayer::overlaySurfaceExposedAt(const QPoint& globalPos) const {
     if (window()->windowHandle() == top) return true;
     for (const QWidget* w : { static_cast<const QWidget*>(playerControls),
                               static_cast<const QWidget*>(titleBar),
-                              static_cast<const QWidget*>(posterOverlay) })
+                              static_cast<const QWidget*>(posterOverlay),
+                              static_cast<const QWidget*>(splitterToggleBtn) })
         if (w && w->windowHandle() == top) return true;
     return false;
 }
@@ -434,8 +570,9 @@ void VideoPlayer::resizeEvent(QResizeEvent* event) {
 }
 
 void VideoPlayer::showOSD() {
-    if (playerControls) playerControls->show();
-    if (titleBar) titleBar->show();
+    videoWidget->unsetCursor(); // fullscreen idle-hide: movement brings the cursor back
+    fadeOverlayWindow(playerControls, controlsFade, true);
+    fadeOverlayWindow(titleBar, titleFade, true);
     // Only re-stack above the poster when it's actually showing (paused / EOF).
     // Raising on every mouse-move otherwise buries the volume/quality popups.
     if (posterOverlay && posterOverlay->isVisible())
@@ -445,17 +582,26 @@ void VideoPlayer::showOSD() {
 }
 
 void VideoPlayer::hideOSD() {
-    // Keep the OSD up while a volume/quality popup is open, otherwise hiding the
-    // controls also tears down the popup the user is interacting with.
+    // The volume/quality popups always close BEFORE the controls go. If the
+    // cursor is actually on one (mid-interaction), keep everything and re-arm;
+    // otherwise shut the popups now and let the bars fade out after them.
     if (playerControls && playerControls->hasOpenPopup()) {
-        osdTimer->start(3000); // re-arm so it hides once the popup closes
-        return;
+        if (playerControls->popupUnderCursor()) {
+            osdTimer->start(3000);
+            return;
+        }
+        playerControls->closePopups();
     }
     if (engine->isPlaying()) {
-        if (playerControls) playerControls->hide();
+        fadeOverlayWindow(playerControls, controlsFade, false);
         // Keep the title bar up while a clip is saving (seagull + "Saving clip…")
         // and while a brief save-confirmation notice is showing.
-        if (titleBar && !m_clipBusy && !m_bannerNotice) titleBar->hide();
+        if (titleBar && !m_clipBusy && !m_bannerNotice)
+            fadeOverlayWindow(titleBar, titleFade, false);
+        // Fullscreen: the cursor goes with the chrome (YouTube-style); any
+        // mouse movement brings both back via showOSD.
+        if (window()->isFullScreen())
+            videoWidget->setCursor(Qt::BlankCursor);
     }
 }
 
@@ -471,6 +617,96 @@ void VideoPlayer::checkMouseMovement() {
         if (videoRect.contains(currentPos) && overlaySurfaceExposedAt(currentPos))
             showOSD();
     }
+    // Re-evaluated every tick (not just on movement): the zone itself moves
+    // under a stationary cursor — toggling resizes the video, the controls
+    // pill comes and goes with the OSD.
+    updateSplitterToggle(currentPos);
+}
+
+void VideoPlayer::updateSplitterToggle(const QPoint& globalPos) {
+    if (!splitterToggleBtn) return;
+    bool inTrigger = false;
+    if (videoWidget && videoWidget->isVisible() && overlaySurfaceExposedAt(globalPos)) {
+        const QPoint tl = videoWidget->mapToGlobal(QPoint(0, 0));
+        const QRect videoRect(tl, videoWidget->size());
+        // "Hovering the splitter": only the centre of the seam, where a
+        // splitter's grip dots sit — a small band spanning the bottom sliver
+        // of the video plus the handle just below it. The button's own rect
+        // counts too so hovering it doesn't start the hide.
+        const int zoneW = 120;
+        const QRect zone(videoRect.left() + (videoRect.width() - zoneW) / 2,
+                         videoRect.bottom() - 10, zoneW, 10 + 8);
+        const bool overControls = playerControls && playerControls->isVisible()
+                               && playerControls->geometry().contains(globalPos);
+        inTrigger = !overControls
+                 && (zone.contains(globalPos)
+                     || (splitterToggleBtn->isVisible()
+                         && splitterToggleBtn->geometry().contains(globalPos)));
+    }
+
+    if (inTrigger) {
+        splitterBtnHideTimer->stop();
+        const bool appearing = !splitterToggleBtn->isVisible();
+        if (appearing) positionSplitterToggle(); // place it before it becomes visible
+        fadeSplitterToggle(true);
+        // Appearing nudges the controls up to clear the chevron (YouTube-style),
+        // so run the full pass; otherwise just keep the button glued.
+        if (appearing) repositionOverlays();
+        else positionSplitterToggle();
+    }
+    else if (splitterToggleBtn->isVisible()) {
+        // While the cursor is parked on the lifted controls, keep the chevron:
+        // hiding it would drop the pill mid-interaction (e.g. during a seek).
+        const bool onControls = playerControls && playerControls->isVisible()
+                             && playerControls->geometry().contains(globalPos);
+        if (onControls) splitterBtnHideTimer->stop();
+        else if (!splitterBtnHideTimer->isActive()) splitterBtnHideTimer->start();
+    }
+}
+
+// Shared fade for the top-level overlay windows; reversible mid-flight (a
+// fade-in picks up from wherever a running fade-out left the opacity).
+void VideoPlayer::fadeOverlayWindow(QWidget* w, QPropertyAnimation* anim, bool in) {
+    if (!w || !anim) return;
+    anim->stop();
+    if (in) {
+        if (!w->isVisible()) { w->setWindowOpacity(0.0); w->show(); }
+        if (w->windowOpacity() >= 1.0) return; // already settled
+    }
+    else if (!w->isVisible()) return;
+    anim->setDuration(in ? kOverlayFadeInMs : kOverlayFadeOutMs);
+    anim->setStartValue(w->windowOpacity());
+    anim->setEndValue(in ? 1.0 : 0.0);
+    anim->start();
+}
+
+// Pinned show: instant and fully opaque, cancelling any in-flight fade-out
+// (otherwise the fade's finished handler would hide the freshly shown window).
+void VideoPlayer::pinOverlayWindow(QWidget* w, QPropertyAnimation* anim) {
+    if (!w) return;
+    if (anim) anim->stop();
+    w->setWindowOpacity(1.0);
+    w->show();
+}
+
+void VideoPlayer::fadeSplitterToggle(bool in) {
+    if (in && !splitterToggleBtn->isVisible()) {
+        // fadeOverlayWindow shows it at opacity 0; raise before the first frame.
+        fadeOverlayWindow(splitterToggleBtn, splitterBtnFade, true);
+        splitterToggleBtn->raise();
+        return;
+    }
+    if (in) splitterToggleBtn->raise();
+    fadeOverlayWindow(splitterToggleBtn, splitterBtnFade, in);
+}
+
+void VideoPlayer::positionSplitterToggle() {
+    if (!splitterToggleBtn || !videoWidget) return;
+    // The very bottom centre, underneath the controls (they lift to clear it).
+    const QPoint tl = videoWidget->mapToGlobal(QPoint(0, 0));
+    const int x = tl.x() + (videoWidget->width() - splitterToggleBtn->width()) / 2;
+    const int y = tl.y() + videoWidget->height() - splitterToggleBtn->height() - 4;
+    splitterToggleBtn->move(x, y);
 }
 
 void VideoPlayer::handleAvailableQualities(const QList<StreamOption>& options) {
@@ -577,7 +813,7 @@ void VideoPlayer::toggleRecording() {
             if (titleBar) {                          // seagull + "Saving clip…" until the file is ready
                 titleBar->setTitle(QStringLiteral("Saving clip…"));
                 titleBar->setLoading(true);
-                titleBar->show();
+                pinOverlayWindow(titleBar, titleFade);
                 if (videoAreaExposed()) titleBar->raise();
             }
             // Pause playback while a STREAM clip downloads — the player and the grab
@@ -661,7 +897,7 @@ void VideoPlayer::showBannerNotice(const QString& text) {
     m_bannerNotice = true;
     titleBar->setLoading(false); // the seagull bows out — the work is done
     titleBar->setTitle(text);
-    titleBar->show();
+    pinOverlayWindow(titleBar, titleFade);
     if (videoAreaExposed()) titleBar->raise();
     repositionOverlays();
     QTimer::singleShot(4000, this, [this]() {
@@ -670,7 +906,7 @@ void VideoPlayer::showBannerNotice(const QString& text) {
         restoreBannerTitle();
         // If the OSD already timed out, the banner was only up for the notice.
         if (titleBar && engine->isPlaying() && !osdTimer->isActive())
-            titleBar->hide();
+            fadeOverlayWindow(titleBar, titleFade, false);
         });
 }
 

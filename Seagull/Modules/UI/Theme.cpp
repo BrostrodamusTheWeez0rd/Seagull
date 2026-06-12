@@ -247,7 +247,17 @@ void Theme::apply(const QString& name) {
         "QPushButton#searchFilterButton { background:transparent; color:%2; border:none; border-radius:10px; padding:3px 12px; font-weight:bold; }"
         "QPushButton#searchFilterButton:hover { background-color:%5; }"
         "QPushButton#searchFilterButton:checked { background-color:%6; color:%3; }"
-    ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line);
+        // Player: circular splitter-toggle chevron at the bottom of the video
+        // (YouTube-style show/hide for the tabs pane) — same idiom as the
+        // round control buttons (outline circle, hover fills with the inverse
+        // glyph). %7 is the window colour at alpha 2: visually transparent
+        // like the control buttons, but a true 0 alpha would make this
+        // standalone layered window click-through to the video.
+        // Glyph uses overlayFg (%6) like the control buttons' tinted icons —
+        // plain text colour (%2) reads as a mismatched white in dark themes.
+        "QPushButton#splitterToggleButton { background-color:%7; border:1px solid %6; border-radius:15px; color:%6; font-size:16px; }"
+        "QPushButton#splitterToggleButton:hover { background-color:%6; color:%3; border:1px solid %6; }"
+    ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line, rgba(c.window, 2));
 
     app->setStyleSheet(ss + cards + overlay);
 }

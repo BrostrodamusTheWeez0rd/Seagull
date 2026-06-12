@@ -30,9 +30,10 @@ public:
     void reloadLastMedia();           // stop + re-arm the last media (for replay)
     bool hasMedia() const;
 
-    void play();
+    void play();   // no-op without loaded media (a stop must stay stopped)
     void pause();
     void stop();
+    void releaseMedia(); // stop AND drop the media — full teardown for the Stop button
     bool isPlaying() const;
 
     qint64 time() const;

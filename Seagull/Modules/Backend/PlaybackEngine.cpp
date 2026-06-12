@@ -135,7 +135,16 @@ void PlaybackEngine::reloadLastMedia() {
 
 bool PlaybackEngine::hasMedia() const { return m_lastMedia != nullptr; }
 
-void PlaybackEngine::play() { if (m_player) m_player->play(); }
+void PlaybackEngine::releaseMedia() {
+    // Full teardown (Stop button): without this, the media stays loaded in VLC
+    // and a later play() restarts it from nowhere (and a local file stays held).
+    stop();
+    m_lastMedia.reset();
+}
+
+// play() requires loaded media: after releaseMedia a stray play() (space bar,
+// stale controls) must not resurrect whatever VLC still has internally.
+void PlaybackEngine::play() { if (m_player && m_lastMedia) m_player->play(); }
 void PlaybackEngine::pause() { if (m_player) m_player->pause(); }
 void PlaybackEngine::stop() { if (m_player) m_player->stop(); }
 bool PlaybackEngine::isPlaying() const { return m_player && m_player->isPlaying(); }

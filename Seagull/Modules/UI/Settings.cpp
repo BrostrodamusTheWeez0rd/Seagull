@@ -264,6 +264,15 @@ void Settings::setupUI() {
     searchLayout->addRow("Results per batch:", searchResultsSpin);
     searchResultsSpin->setToolTip("How many results load at a time; more reveal as you scroll.");
 
+    clearHistoryBtn = new QPushButton("Clear History Now");
+    clearHistoryBtn->setMaximumWidth(180);
+    clearHistoryBtn->setToolTip("Erase the saved search history immediately.");
+    searchLayout->addRow("Search History:", clearHistoryBtn);
+
+    clearHistoryOnCloseCheck = new QCheckBox("Clear search history when Seagull closes");
+    clearHistoryOnCloseCheck->setToolTip("Wipes the saved history file automatically on every exit.");
+    searchLayout->addRow("", clearHistoryOnCloseCheck);
+
     stackedWidget->addWidget(searchWidget);
 
     // === Info Tab: bundled docs in a tabbed reader ===
@@ -340,6 +349,8 @@ void Settings::setupUI() {
         saveSettings();
         });
     connect(autoUpdateCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
+    connect(clearHistoryOnCloseCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
+    connect(clearHistoryBtn, &QPushButton::clicked, this, [this]() { emit clearHistoryRequested(); });
 
     // Set default tab
     sidebar->setCurrentRow(0);
@@ -453,6 +464,7 @@ void Settings::loadSettings() {
     m_loading = true;
 
     autoUpdateCheck->setChecked(iniSettings->value("General/AutoUpdate", true).toBool());
+    clearHistoryOnCloseCheck->setChecked(iniSettings->value("Search/ClearHistoryOnExit", false).toBool());
 
     themeCombo->setCurrentText(iniSettings->value("Display/Theme", "Seagull").toString());
 
@@ -521,6 +533,7 @@ void Settings::saveSettings() {
 
     // Write values to INI groups
     iniSettings->setValue("General/AutoUpdate", autoUpdateCheck->isChecked());
+    iniSettings->setValue("Search/ClearHistoryOnExit", clearHistoryOnCloseCheck->isChecked());
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
     iniSettings->setValue("Display/CardWidth", currentCardWidth());
     iniSettings->setValue("Download/Type", currentDownloadType());
@@ -564,6 +577,7 @@ void Settings::resetDefaults() {
     // Set everything quietly, then write + apply once.
     m_loading = true;
     autoUpdateCheck->setChecked(true);
+    clearHistoryOnCloseCheck->setChecked(false);
     themeCombo->setCurrentText("Seagull");
     cardSizeSlider->blockSignals(true);
     cardSizeSlider->setValue(240);

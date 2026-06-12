@@ -114,6 +114,7 @@ private:
     void toggleFullScreen();
     void applyStoredSplit(); // size the splitter to the remembered video/tabs ratio
     void captureSplit();     // remember the current ratio (persisted to config.ini)
+    void syncTabsPaneState();// push open/collapsed to the player's toggle chevron
 
     QSplitter* mainSplitter;
     QTabWidget* tabs;

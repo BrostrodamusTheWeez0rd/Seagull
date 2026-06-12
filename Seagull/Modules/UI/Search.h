@@ -8,6 +8,7 @@
 #include "../Backend/SgSearch.h"  // SearchResult (full definition needed for m_allResults)
 
 class QLineEdit;
+class QComboBox;
 class QPushButton;
 class QScrollArea;
 class QLabel;
@@ -43,6 +44,9 @@ public slots:
     // next (+1) / previous (-1) result that passes the current filter. Walking
     // past the loaded tail pulls the next batch and continues when it lands.
     void playAdjacentResult(int delta);
+    // Wipe the search history: completer entries + the persisted history file.
+    // Settings' "Clear History Now" and the on-close auto-clear land here.
+    void clearSearchHistory();
 
 signals:
     void playMediaRequested(const QUrl& rawUrl, const QUrl& cdnVideoUrl,
@@ -78,6 +82,9 @@ private:
     void pushNavEntry(const QString& query);
     void updateNavButtons();
     void addToHistory(const QString& query);
+    void loadHistory();  // read the persisted history file into the completer
+    void saveHistory();  // rewrite the file (plain text, one query per line)
+    static QString historyFilePath();
     void setFilterMode(FilterMode mode);
     bool passesFilter(const SearchResult& r) const;
     void positionFilterPill();
@@ -91,7 +98,9 @@ private:
     QPushButton* refreshBtn;
     QLineEdit*   siteBar;
     QPushButton* goBtn;
-    QLineEdit*   queryBar;
+    // Editable combo like the File Explorer address bar: the arrow drops the
+    // full search history; typing filters it through the completer.
+    QComboBox*   queryBar;
 
     // Floating filter pill (Videos / Shorts) — direct child of this, not in layout
     QFrame*      m_filterPill;
@@ -127,6 +136,9 @@ private:
     QStringList  m_searchHistory;
 
     QString m_currentQuery;
+    // Enter on a query matching a history item fires both returnPressed and
+    // textActivated; this collapses the pair into one search.
+    bool    m_searchFiring = false;
     int     m_batchSize    = 20;
     int     m_shownCount   = 0;
     int     m_lastRequested = 0;
