@@ -75,6 +75,26 @@ public:
         invalidateFilter();
     }
 
+    // Display tweaks over QFileSystemModel: the Name column hides the file
+    // extension (Type carries it) and Type shows the plain uppercase extension
+    // ("MP4", "JPG") instead of the OS description ("MP4 File"). DisplayRole
+    // only — EditRole is untouched, so inline rename still edits the full
+    // filename and QFileSystemModel renames on disk as before.
+    QVariant data(const QModelIndex& index, int role) const override {
+        if (role == Qt::DisplayRole) {
+            if (auto* fs = qobject_cast<QFileSystemModel*>(sourceModel())) {
+                const QFileInfo fi = fs->fileInfo(mapToSource(index));
+                if (index.column() == 0 && fi.isFile() && !fi.completeBaseName().isEmpty())
+                    return fi.completeBaseName();
+                if (index.column() == 2) {
+                    if (fi.isDir()) return QStringLiteral("Folder");
+                    return fi.suffix().isEmpty() ? QStringLiteral("File") : fi.suffix().toUpper();
+                }
+            }
+        }
+        return QSortFilterProxyModel::data(index, role);
+    }
+
     // Sequential 1..N row numbers in the vertical header. The default proxy
     // headerData maps the vertical section back to the source model, which can't
     // be done over a tree+rootIndex (it returns 0 for every row past the first),

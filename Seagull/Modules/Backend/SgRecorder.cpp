@@ -231,7 +231,7 @@ void SgRecorder::clipSection(const QString& pageUrl, const QUrl& videoUrl, const
     QDir().mkpath(outputDir());
     m_clipAudio = audioOnly(); // freeze the type for this clip — settings can change mid-save
     const QString stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd HH-mm-ss");
-    const QString base = sanitize(title) + " clip " + stamp;
+    const QString base = sanitize(title) + " " + stamp + " CLIP";
     m_clipFile = QDir(outputDir()).filePath(base + "." + (m_clipAudio ? extForFormat() : mergeFormat()));
     m_clipTempFile.clear();
     m_clipPageUrl = pageUrl;
