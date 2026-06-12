@@ -342,6 +342,45 @@ void Search::loadMore() {
 }
 
 // ---------------------------------------------------------------------------
+// Feed advance (shorts wheel / skip buttons)
+// ---------------------------------------------------------------------------
+
+void Search::playAdjacentResult(int delta) {
+    if (m_allResults.isEmpty() || m_playingIndex < 0) return;
+
+    const int step = (delta > 0) ? 1 : -1;
+    int i = m_playingIndex + step;
+    while (i >= 0 && i < m_allResults.size() && !passesFilter(m_allResults[i]))
+        i += step;
+
+    if (i < 0) return; // top of the feed — nothing before the first result
+    if (i >= m_allResults.size()) {
+        // Ran off the loaded tail — pull the next batch and continue when it
+        // lands (onResultsReady resumes the advance).
+        if (!m_endReached) {
+            m_advancePending = true;
+            if (!m_loadingMore) loadMore();
+        }
+        return;
+    }
+    playResultAt(i);
+}
+
+void Search::playResultAt(int index) {
+    m_playingIndex = index;
+    const SearchResult& r = m_allResults[index];
+    emit playMediaRequested(QUrl(r.url), QUrl(), QUrl(), r.title);
+
+    // Keep the grid tracking the feed: the card's flow position is its rank
+    // among the filtered results.
+    int cardPos = 0;
+    for (int j = 0; j < index; ++j)
+        if (passesFilter(m_allResults[j])) ++cardPos;
+    if (QLayoutItem* it = resultsFlow->itemAt(cardPos))
+        if (QWidget* w = it->widget()) resultsArea->ensureWidgetVisible(w);
+}
+
+// ---------------------------------------------------------------------------
 // Result handling
 // ---------------------------------------------------------------------------
 
@@ -367,6 +406,12 @@ void Search::onResultsReady(const QList<SearchResult>& results) {
     applyCardWidth();
     setStatus("", false);
 
+    // A feed advance was waiting on this batch — keep walking now that it's here.
+    if (m_advancePending) {
+        m_advancePending = false;
+        playAdjacentResult(1);
+    }
+
     // If filtered results don't fill the viewport yet, keep loading automatically.
     if (!m_endReached) {
         QScrollBar* sb = resultsArea->verticalScrollBar();
@@ -376,6 +421,7 @@ void Search::onResultsReady(const QList<SearchResult>& results) {
 
 void Search::onSearchFailed(const QString& message) {
     m_loadingMore = false;
+    m_advancePending = false;
     if (m_shownCount > 0) {
         m_endReached = true;
         setStatus("", false);
@@ -449,6 +495,8 @@ void Search::clearResults() {
         delete item;
     }
     m_allResults.clear();
+    m_playingIndex = -1;
+    m_advancePending = false;
 }
 
 void Search::setStatus(const QString& text, bool busy) {
@@ -462,6 +510,10 @@ void Search::addCard(const SearchResult& result) {
     auto* card = new VideoCard(result, m_nam, m_cardWidth, resultsHost,
         VideoCard::AllButtons, QStringLiteral("▶ Stream"));
     connect(card, &VideoCard::playRequested, this, [this](const QUrl& url, const QString& title) {
+        // Remember the feed position so wheel/skip can walk from here.
+        m_playingIndex = -1;
+        for (int i = 0; i < m_allResults.size(); ++i)
+            if (m_allResults[i].url == url.toString()) { m_playingIndex = i; break; }
         emit playMediaRequested(url, QUrl(), QUrl(), title);
     });
     connect(card, &VideoCard::queueRequested,    this, &Search::enqueueRequested);
