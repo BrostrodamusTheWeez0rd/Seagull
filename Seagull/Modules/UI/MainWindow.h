@@ -6,10 +6,12 @@
 #include <QHash>
 #include <QList>
 #include <QString>
+#include <QPointer>
 
 class QSplitter;
 class QTabWidget;
 class QToolButton;
+class QPropertyAnimation;
 class QMenu;
 class QKeyEvent;
 class QResizeEvent;
@@ -100,6 +102,7 @@ private:
     void addCloseButton(QWidget* wrapper);    // create + track a tab's manual close x
     void removeCloseButton(QWidget* wrapper); // drop it when the tab leaves the bar
     void positionCloseButtons();              // tuck each x tight to its tab's edge
+    void settleCloseButton(QWidget* wrapper); // slide a dropped tab's x home to match the tab
     QWidget* wrapPage(QWidget* tab);               // QScrollArea shell every page gets
     void positionPlusButton();      // snug the "+" (and Share) against the last tab
     void schedulePlusReposition();  // ...after the pending layout pass settles
@@ -129,6 +132,10 @@ private:
     QMenu* m_plusMenu = nullptr;
     QList<FloatingTab*> m_floating;       // torn-off tabs currently in own windows
     QWidget* m_pressedWrapper = nullptr;  // tab page under the mouse press (tear-off)
+    int m_dragCloseDx = 0;                // cursor->close-button x offset for the grabbed tab
+    bool m_tabDragging = false;           // a tab reorder drag is in progress
+    QWidget* m_settlingWrapper = nullptr; // tab whose x is mid slide-home (skip in positioning)
+    QPointer<QPropertyAnimation> m_settleAnim; // the running slide-home animation, if any
     QWidget* m_busyTab = nullptr;         // page currently showing the spinner, if any
     VideoPlayer* videoPlayer = nullptr; // hosted; owned by the widget tree
     bool m_wasMaximized = false;        // window state before going fullscreen

@@ -30,6 +30,8 @@
 #include <QWindow>
 #include <QPainter>
 #include <QProxyStyle>
+#include <QPropertyAnimation>
+#include <QStyle>
 #include <windows.h>
 #include <winuser.h>
 
@@ -270,17 +272,62 @@ void MainWindow::positionCloseButtons() {
     // overlay our own x on each tab and tuck it against the tab's right edge.
     QTabBar* bar = tabs->tabBar();
     constexpr int inset = 6; // gap from the tab's right edge to the button
+    const int curX = bar->mapFromGlobal(QCursor::pos()).x(); // for the grabbed tab
+    const bool dragging = m_tabDragging && m_pressedWrapper;
+    QToolButton* draggedBtn = nullptr;
     for (auto it = m_closeButtons.cbegin(); it != m_closeButtons.cend(); ++it) {
         QToolButton* b = it.value();
+        // A button sliding home after a drop owns its own position — don't yank it.
+        if (it.key() == m_settlingWrapper) { b->show(); b->raise(); continue; }
+        const bool isDragged = (it.key() == m_pressedWrapper);
+        // Mid-drag, the dragged tab is the foreground element: hide every other
+        // x so it can't bleed through onto it (the buttons are child widgets that
+        // always paint over the bar's tab rendering). They return on drop.
+        if (dragging && !isDragged) { b->hide(); continue; }
         const int idx = tabs->indexOf(it.key());
         if (idx < 0) { b->hide(); continue; } // tab not currently in the bar
         const QRect r = bar->tabRect(idx);
         // Hide buttons for tabs scrolled out of the visible strip (overflow).
         if (r.isEmpty() || r.right() <= 0 || r.left() >= bar->width()) { b->hide(); continue; }
-        b->move(r.right() - inset - b->width(), r.top() + (r.height() - b->height()) / 2);
-        b->raise();
+        // The tab being dragged moves 1:1 with the cursor, so track its button to
+        // the cursor (tabRect would lag at the settled slot); the rest snap to slot.
+        const int x = isDragged
+            ? qBound(0, curX + m_dragCloseDx, bar->width() - b->width())
+            : r.right() - inset - b->width();
+        b->move(x, r.top() + (r.height() - b->height()) / 2);
         b->show();
+        if (isDragged) draggedBtn = b; else b->raise();
     }
+    if (draggedBtn) draggedBtn->raise(); // keep the grabbed tab's x on top
+}
+
+void MainWindow::settleCloseButton(QWidget* wrapper) {
+    // On drop, QTabBar slides the tab from its lifted spot into its slot. Slide the
+    // close x along the same way (matching the style's animation duration) instead
+    // of snapping it straight to the slot ahead of the tab.
+    QToolButton* b = m_closeButtons.value(wrapper);
+    if (!b) return;
+    QTabBar* bar = tabs->tabBar();
+    const int idx = tabs->indexOf(wrapper);
+    if (idx < 0) return;
+    const QRect r = bar->tabRect(idx);
+    constexpr int inset = 6;
+    const QPoint target(r.right() - inset - b->width(), r.top() + (r.height() - b->height()) / 2);
+    if (b->pos() == target) return;
+
+    const int dur = bar->style()->styleHint(QStyle::SH_Widget_Animation_Duration);
+    if (dur <= 0) { b->move(target); return; } // style animations off — snap, like the tab does
+
+    auto* anim = new QPropertyAnimation(b, "pos", this);
+    anim->setDuration(dur);                 // QTabBar reads the same hint, so they stay in sync
+    anim->setStartValue(b->pos());
+    anim->setEndValue(target);
+    m_settlingWrapper = wrapper;
+    m_settleAnim = anim;
+    connect(anim, &QPropertyAnimation::finished, this, [this, wrapper]() {
+        if (m_settlingWrapper == wrapper) m_settlingWrapper = nullptr;
+    });
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void MainWindow::positionPlusButton() {
@@ -344,8 +391,19 @@ void MainWindow::detachTab(QWidget* wrapper, const QPoint& globalPos) {
     auto* fl = new FloatingTab(wrapper, label, this);
     m_floating.append(fl);
     fl->resize(qMax(560, wrapper->width()), qMax(380, wrapper->height()));
-    fl->move(globalPos - QPoint(120, 12)); // cursor lands on the new title bar
+    fl->move(globalPos - QPoint(120, 12)); // rough spot to limit show() flash
     fl->show();
+
+    // Now that the window is mapped its frame is known: drop it so the cursor sits
+    // mid-title-bar. move() positions the frame top-left for a top-level window;
+    // titleH (caption + top border) comes from frame vs client geometry, so this
+    // holds across DPI/theme. startSystemMove then locks that cursor offset for the
+    // whole OS drag, keeping the mouse on the title bar.
+    const int titleH = fl->geometry().top() - fl->frameGeometry().top();
+    const int wantY = titleH > 0 ? titleH / 2 : 15;            // mid-caption
+    const int wantX = qMin(120, fl->frameGeometry().width() / 2);
+    fl->move(globalPos.x() - wantX, globalPos.y() - wantY);
+
     saveOpenTabs();
     schedulePlusReposition();
 
@@ -632,12 +690,30 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             // Remember the page, not the index — reorder drags shift indexes.
             const int at = bar->tabAt(me->position().toPoint());
             m_pressedWrapper = (me->button() == Qt::LeftButton && at >= 0) ? tabs->widget(at) : nullptr;
+            m_tabDragging = false; // a real drag latches on the first move below
+            // Cancel a still-running slide-home so it can't fight a fresh grab.
+            if (m_settleAnim) m_settleAnim->stop(); // DeleteWhenStopped clears the QPointer
+            m_settlingWrapper = nullptr;
+            // Lock the cursor-to-close-button offset so the grabbed tab's x can
+            // follow the cursor 1:1 during the drag (tabRect only gives the
+            // settled slot, which makes the button float then snap on release).
+            if (m_pressedWrapper) {
+                const QRect r = bar->tabRect(at);
+                QToolButton* b = m_closeButtons.value(m_pressedWrapper);
+                const int btnW = b ? b->width() : 14;
+                m_dragCloseDx = (r.right() - 6 - btnW) - me->position().toPoint().x();
+            }
         }
         else if (event->type() == QEvent::MouseButtonRelease) {
+            QWidget* dragged = m_pressedWrapper;
             m_pressedWrapper = nullptr;
+            m_tabDragging = false;
+            if (dragged) settleCloseButton(dragged); // slide its x home with the tab
+            schedulePlusReposition(); // re-show the others; skips the settling one
         }
         else if (event->type() == QEvent::MouseMove && m_pressedWrapper) {
             auto* me = static_cast<QMouseEvent*>(event);
+            m_tabDragging = true;   // first move latches a real drag (hides other x's)
             positionCloseButtons(); // track the close x's to the sliding tabs mid-drag
             const QRect keep = bar->rect().adjusted(-kTearOffSlackX, -kTearOffSlackY,
                                                      kTearOffSlackX,  kTearOffSlackY);

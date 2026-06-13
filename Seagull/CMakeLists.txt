@@ -77,8 +77,16 @@ add_executable(Seagull
 if(MSVC)
     target_compile_options(Seagull PRIVATE /Zc:__cplusplus)
     # 4. Tell debugger where DLLs/Plugins are (No file copying needed)
-    set_target_properties(Seagull PROPERTIES 
+    set_target_properties(Seagull PROPERTIES
         VS_DEBUGGER_ENVIRONMENT "PATH=C:\\Qt\\6.11.1\\msvc2022_64\\bin;${VLC_SDK_DIR}\\lib;%PATH%\nVLC_PLUGIN_PATH=${VLC_SDK_DIR}\\plugins"
+    )
+    # Release: build as a Windows GUI app so no console window pops up behind the
+    # UI (libvlc logs to it otherwise). Keeping /ENTRY:mainCRTStartup means our
+    # plain main() stays the entry point — no WinMain needed. Debug keeps the
+    # console subsystem so VLC/diagnostic output is still visible while debugging.
+    target_link_options(Seagull PRIVATE
+        $<$<CONFIG:Release>:/SUBSYSTEM:WINDOWS>
+        $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>
     )
 endif()
 
