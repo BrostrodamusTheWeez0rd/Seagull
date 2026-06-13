@@ -97,7 +97,9 @@ private:
     void reopenTab(int orderIdx);   // from the "+" menu; index into m_tabOrder
     void rebuildPlusMenu();         // fills the "+" menu with the closed tabs
     void saveOpenTabs();            // persist which tabs are closed (Tabs/Closed)
-    QWidget* makeTabCloseButton(QWidget* wrapper); // small round x for one tab
+    void addCloseButton(QWidget* wrapper);    // create + track a tab's manual close x
+    void removeCloseButton(QWidget* wrapper); // drop it when the tab leaves the bar
+    void positionCloseButtons();              // tuck each x tight to its tab's edge
     QWidget* wrapPage(QWidget* tab);               // QScrollArea shell every page gets
     void positionPlusButton();      // snug the "+" (and Share) against the last tab
     void schedulePlusReposition();  // ...after the pending layout pass settles
@@ -120,6 +122,7 @@ private:
     QTabWidget* tabs;
     QHash<QWidget*, QWidget*> m_tabPages; // inner page widget -> its QScrollArea wrapper
     QList<TabInfo> m_tabOrder;            // every registered tab, in addTab order
+    QHash<QWidget*, QToolButton*> m_closeButtons; // open tab wrapper -> its manual close x
     QToolButton* m_plusBtn = nullptr;     // "+" corner button (reopen menu)
     QToolButton* m_shareBtn = nullptr;    // floating Share, right of the "+"
     bool m_shareAvailable = false;

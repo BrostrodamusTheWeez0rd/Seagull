@@ -34,21 +34,6 @@
 #include <winuser.h>
 
 namespace {
-// A tab's close button sits PM_TabBarTabHSpace/2 (=12px under Fusion) in from
-// the tab's edge — dead space after our small round x. The label inset AND the
-// tab's size hint derive from the same metric, so halving it tightens the
-// trailing gap to 6px, narrows the tab to match, and the label keeps an exact
-// fit (shrinking the tab any other way elides the label — the text's right
-// boundary is measured from the tab edge, not the button).
-class TabBarStyle : public QProxyStyle {
-public:
-    using QProxyStyle::QProxyStyle; // no base style: tracks the app style (Fusion)
-    int pixelMetric(PixelMetric metric, const QStyleOption* opt, const QWidget* w) const override {
-        if (metric == PM_TabBarTabHSpace) return 12;
-        return QProxyStyle::pixelMetric(metric, opt, w);
-    }
-};
-
 // How far the cursor may leave the tab bar mid-drag before the tab tears off
 // into its own window. Generous horizontally (reorder overshoot is normal),
 // tight vertically (pulling a tab up/down reads as "take it out").
@@ -71,10 +56,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     tabs = new QTabWidget(this);
     tabs->setMovable(true); // let the user drag tabs into any order
-    // Close buttons are our own small round ones (see makeTabCloseButton), not
-    // the style's setTabsClosable() squares.
-    {   // setStyle doesn't take ownership — parent it to the bar
-        auto* st = new TabBarStyle;
+    // Close buttons are our own small round ones, placed manually (see
+    // addCloseButton / positionCloseButtons), not the style's setTabsClosable()
+    // squares and not the QTabBar RightSide slot — the QSS-styled tabs park slot
+    // buttons at the far edge of the reserved padding, leaving a big gap.
+    {   // setStyle doesn't take ownership — parent it to the bar. Pin the base to
+        // Fusion explicitly: a base-less QProxyStyle latches onto whatever the app
+        // style is at first paint, and the tab bar paints (in the Seagull ctor)
+        // before Theme::apply switches to Fusion in run(). On Win11 the native
+        // style is palette-aware so it still looked dark; on Win10 the native
+        // style ignores the palette and the tab bar came out white.
+        auto* st = new QProxyStyle("Fusion");
         st->setParent(tabs->tabBar());
         tabs->tabBar()->setStyle(st);
     }
@@ -108,6 +100,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_shareBtn, &QToolButton::clicked, this, [this]() { emit shareRequested(); });
     // Drag-reordering moves the last tab's edge without any add/remove of ours.
     connect(tabs->tabBar(), &QTabBar::tabMoved, this, [this](int, int) { schedulePlusReposition(); });
+    // Selecting a tab can shift tab widths; re-tuck the manual close buttons.
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int) { schedulePlusReposition(); });
     // Ignored vertical policy gives the tabs pane a zero minimum (it still expands
     // to fill when it's the only pane), so the splitter and the reveal-drag follow
     // the mouse continuously instead of snapping to the tab content's minimum.
@@ -202,8 +196,8 @@ void MainWindow::addTab(QWidget* tab, const QString& label) {
         scroll->setParent(tabs);
         return;
     }
-    const int idx = tabs->addTab(scroll, label);
-    tabs->tabBar()->setTabButton(idx, QTabBar::RightSide, makeTabCloseButton(scroll));
+    tabs->addTab(scroll, label);
+    addCloseButton(scroll);
     schedulePlusReposition();
 }
 
@@ -213,8 +207,8 @@ void MainWindow::openDynamicTab(QWidget* tab, const QString& label) {
     if (tabs->indexOf(wrapper) >= 0) return; // already open
     // Not appended to m_tabOrder: dynamic tabs aren't persisted and the "+"
     // menu never offers them — they exist only while their content does.
-    const int idx = tabs->addTab(wrapper, label); // at the end of the bar
-    tabs->tabBar()->setTabButton(idx, QTabBar::RightSide, makeTabCloseButton(wrapper));
+    tabs->addTab(wrapper, label); // at the end of the bar
+    addCloseButton(wrapper);
     schedulePlusReposition();
 }
 
@@ -224,6 +218,7 @@ void MainWindow::closeDynamicTab(QWidget* tab) {
     const int idx = tabs->indexOf(wrapper);
     if (idx < 0) return;
     tabs->removeTab(idx);
+    removeCloseButton(wrapper);
     wrapper->hide();
     wrapper->setParent(tabs); // keep the page alive for its next appearance
     schedulePlusReposition();
@@ -246,11 +241,13 @@ void MainWindow::setShareAvailable(bool on) {
     schedulePlusReposition();
 }
 
-QWidget* MainWindow::makeTabCloseButton(QWidget* wrapper) {
-    // QTabBar deletes tab buttons with their tab, so each (re)open makes a fresh
-    // one. Identified by the wrapper, not an index — indexes shift under drags.
+void MainWindow::addCloseButton(QWidget* wrapper) {
+    if (m_closeButtons.contains(wrapper)) return; // already has one
+    // A free child of the tab bar (not the RightSide slot): positionCloseButtons
+    // tucks it tight to the tab's edge. Keyed by the wrapper, not an index —
+    // indexes shift under drags. We own its lifetime now (removeCloseButton).
     auto* b = new QToolButton(tabs->tabBar());
-    b->setObjectName("tabCloseButton"); // round look comes from the theme sheet
+    b->setObjectName("tabCloseButton"); // round themed chip from the theme sheet
     b->setText(QString(QChar(0x00D7))); // multiplication x — cleaner than "x"
     b->setFixedSize(14, 14);
     b->setCursor(Qt::PointingHandCursor);
@@ -259,7 +256,31 @@ QWidget* MainWindow::makeTabCloseButton(QWidget* wrapper) {
         const int idx = tabs->indexOf(wrapper);
         if (idx >= 0) closeTabAt(idx);
         });
-    return b;
+    m_closeButtons.insert(wrapper, b);
+    b->show();
+}
+
+void MainWindow::removeCloseButton(QWidget* wrapper) {
+    if (QToolButton* b = m_closeButtons.take(wrapper)) b->deleteLater();
+}
+
+void MainWindow::positionCloseButtons() {
+    // Manual placement: the QSS-styled tabs park a RightSide-slot button at the
+    // far edge of the reserved right padding (a big gap after the label), so we
+    // overlay our own x on each tab and tuck it against the tab's right edge.
+    QTabBar* bar = tabs->tabBar();
+    constexpr int inset = 6; // gap from the tab's right edge to the button
+    for (auto it = m_closeButtons.cbegin(); it != m_closeButtons.cend(); ++it) {
+        QToolButton* b = it.value();
+        const int idx = tabs->indexOf(it.key());
+        if (idx < 0) { b->hide(); continue; } // tab not currently in the bar
+        const QRect r = bar->tabRect(idx);
+        // Hide buttons for tabs scrolled out of the visible strip (overflow).
+        if (r.isEmpty() || r.right() <= 0 || r.left() >= bar->width()) { b->hide(); continue; }
+        b->move(r.right() - inset - b->width(), r.top() + (r.height() - b->height()) / 2);
+        b->raise();
+        b->show();
+    }
 }
 
 void MainWindow::positionPlusButton() {
@@ -287,7 +308,7 @@ void MainWindow::positionPlusButton() {
 
 void MainWindow::schedulePlusReposition() {
     // Tab geometry is stale until the pending layout pass runs; measure after it.
-    QTimer::singleShot(0, this, [this]() { positionPlusButton(); });
+    QTimer::singleShot(0, this, [this]() { positionCloseButtons(); positionPlusButton(); });
 }
 
 // --- Tear-off tabs -----------------------------------------------------------
@@ -317,7 +338,8 @@ void MainWindow::detachTab(QWidget* wrapper, const QPoint& globalPos) {
     if (idx < 0 || tabs->count() <= 1) return; // the last docked tab stays put
     const QString label = tabs->tabText(idx);
     if (m_busyTab && m_tabPages.value(m_busyTab) == wrapper) m_busyTab = nullptr;
-    tabs->removeTab(idx); // also deletes its close button / spinner
+    tabs->removeTab(idx);    // also deletes a LeftSide spinner (slot-managed)
+    removeCloseButton(wrapper); // our x is a free child — delete it ourselves
 
     auto* fl = new FloatingTab(wrapper, label, this);
     m_floating.append(fl);
@@ -362,7 +384,7 @@ void MainWindow::dockFloating(FloatingTab* fl, bool atCursor) {
     fl->hide();
     wrapper->setParent(tabs); // pull it out of the float before that dies
     const int idx = tabs->insertTab(at, wrapper, fl->m_label);
-    bar->setTabButton(idx, QTabBar::RightSide, makeTabCloseButton(wrapper));
+    addCloseButton(wrapper);
     tabs->setCurrentIndex(idx);
     fl->deleteLater();
     saveOpenTabs();
@@ -374,10 +396,12 @@ void MainWindow::closeTabAt(int index) {
     if (tabs->count() <= 1) return; // the last tab stays — never an empty tab bar
 
     QWidget* wrapper = tabs->widget(index);
-    // Removing the tab also deletes its header buttons (incl. a busy spinner).
+    // Removing the tab deletes a slot-managed spinner; our close x is a free
+    // child of the bar, so we drop it ourselves.
     if (m_busyTab && m_tabPages.value(m_busyTab) == wrapper) m_busyTab = nullptr;
 
     tabs->removeTab(index); // doesn't delete the page...
+    removeCloseButton(wrapper);
     wrapper->hide();
     wrapper->setParent(tabs); // ...keep it owned + alive while closed
     saveOpenTabs();
@@ -396,7 +420,7 @@ void MainWindow::reopenTab(int orderIdx) {
         if (idx >= 0) insertAt = qMax(insertAt, idx + 1);
     }
     tabs->insertTab(insertAt, t.wrapper, t.label);
-    tabs->tabBar()->setTabButton(insertAt, QTabBar::RightSide, makeTabCloseButton(t.wrapper));
+    addCloseButton(t.wrapper);
     tabs->setCurrentIndex(insertAt); // they asked for it — show it
     saveOpenTabs();
     schedulePlusReposition();
@@ -614,6 +638,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         }
         else if (event->type() == QEvent::MouseMove && m_pressedWrapper) {
             auto* me = static_cast<QMouseEvent*>(event);
+            positionCloseButtons(); // track the close x's to the sliding tabs mid-drag
             const QRect keep = bar->rect().adjusted(-kTearOffSlackX, -kTearOffSlackY,
                                                      kTearOffSlackX,  kTearOffSlackY);
             if (!keep.contains(me->position().toPoint())) {

@@ -164,10 +164,22 @@ void Theme::apply(const QString& name) {
         "QProgressBar::chunk { background-color:%5; border-radius:4px; }"
         "QLabel#metaUploader, QLabel#metaStats { color:%6; }"
         "QTextEdit#logConsole { background-color:%4; color:%6; }"
-        // Tab bar: small round per-tab close button and the floating "+" that
-        // trails the last tab (radii match the fixed sizes set in MainWindow).
-        "QToolButton#tabCloseButton { background:transparent; color:%6; border:none; border-radius:7px; font-size:10px; font-weight:bold; padding:0; }"
-        "QToolButton#tabCloseButton:hover { background:%3; color:%2; }"
+        // Tabs: outlined tiles with rounded tops. Unselected sit in the alt
+        // colour with dimmed text; the selected tab rises to the base colour and
+        // overlaps the pane's top border (-1px) so it reads as one surface.
+        "QTabWidget::pane { border:1px solid %3; border-top-left-radius:0; top:-1px; }"
+        // The right padding reserves the blank strip that MainWindow's manually
+        // placed close button (positionCloseButtons) overlays on each tab — it
+        // keeps the label clear of the x. Width here must track that button's
+        // size + insets (14px button, ~6px edge gap).
+        "QTabBar::tab { background:%4; color:%6; border:1px solid %3; border-top-left-radius:8px; border-top-right-radius:8px; padding:5px 22px 5px 12px; margin-right:2px; }"
+        "QTabBar::tab:selected { background:%1; color:%2; border-bottom-color:%1; margin-bottom:-1px; }"
+        "QTabBar::tab:hover:!selected { color:%2; }"
+        // Tab bar: small round per-tab close button (a bordered themed chip that
+        // fills with the accent on hover) and the floating "+" that trails the last
+        // tab (radii match the fixed sizes set in MainWindow).
+        "QToolButton#tabCloseButton { background:%4; color:%6; border:1px solid %3; border-radius:7px; font-size:10px; font-weight:bold; padding:0; }"
+        "QToolButton#tabCloseButton:hover { background:%5; color:%1; border:1px solid %5; }"
         "QToolButton#tabPlusButton, QToolButton#tabShareButton { background:transparent; color:%2; border:1px solid %3; border-radius:9px; font-size:13px; font-weight:bold; padding:0; }"
         "QToolButton#tabPlusButton:hover, QToolButton#tabShareButton:hover { background:%4; }"
         "QToolButton#tabPlusButton::menu-indicator { image:none; }"
