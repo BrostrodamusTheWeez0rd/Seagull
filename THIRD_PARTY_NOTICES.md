@@ -33,7 +33,7 @@ Seagull itself is licensed under the GNU GPL v3 (see `LICENSE.txt`).
 ## FFmpeg
 
 - **Used for:** stream processing and media metadata (ffmpeg / ffprobe).
-- **License:** GNU General Public License v3 (GPL-3.0) — the bundled "essentials" build from gyan.dev is a GPL build.
+- **License:** GNU General Public License v3 (GPL-3.0). The bundled "essentials" build is a GPL build.
 - **Notes:** Bundled as standalone executables and invoked as separate processes.
 - **Project:** https://ffmpeg.org · Windows builds: https://www.gyan.dev/ffmpeg/builds/
 - **License text:** https://www.gnu.org/licenses/gpl-3.0.html

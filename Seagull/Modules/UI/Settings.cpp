@@ -291,6 +291,11 @@ void Settings::setupUI() {
     readmeView->setMarkdown(readme);
     docTabs->addTab(readmeView, "Read Me");
 
+    auto* faqView = new QTextBrowser();
+    faqView->setOpenExternalLinks(true);
+    faqView->setMarkdown(readDoc(":/docs/FAQ.md"));
+    docTabs->addTab(faqView, "FAQ");
+
     auto* disclaimerView = new QTextBrowser();
     disclaimerView->setOpenExternalLinks(true);
     disclaimerView->setMarkdown(readDoc(":/docs/DISCLAIMER.md"));

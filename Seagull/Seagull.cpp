@@ -8,6 +8,10 @@
 #include <QCoreApplication>
 #include <QTextBrowser>
 #include <QTimer>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QDialogButtonBox>
+#include <QFile>
 
 Seagull::Seagull(QObject* parent) : QObject(parent) {
     // The window everything hangs off of — a shell that hosts the video player.
@@ -339,13 +343,41 @@ void Seagull::flashLibraryTab() {
         });
 }
 
-void Seagull::run() {
+bool Seagull::run() {
     // The shell must be shown BEFORE the first-run dialog runs. Exec'ing an
     // application-modal dialog before any window was shown left the whole app
     // input-dead: deferred startup work (the player's winId()/VLC hookup)
     // fired inside the dialog's nested event loop, creating the native window
     // hierarchy underneath an active modal block.
     mainWindow->show();
+
+    // First-run Terms of Use: must be accepted before the app is usable. Shown
+    // modally over the freshly shown main window (a modal before any window shows
+    // leaves the app input-dead, see above). Declining quits the app. The terms
+    // text is the disclaimer doc; closing or Escape counts as declining.
+    {
+        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        if (!cfg.value("Setup/TermsAccepted", false).toBool()) {
+            QDialog dlg(mainWindow);
+            dlg.setWindowTitle("Seagull - Terms of Use");
+            dlg.resize(560, 480);
+            auto* lay = new QVBoxLayout(&dlg);
+            auto* view = new QTextBrowser(&dlg);
+            view->setOpenExternalLinks(true);
+            QFile f(":/docs/DISCLAIMER.md");
+            view->setMarkdown(f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString());
+            lay->addWidget(view);
+            auto* buttons = new QDialogButtonBox(&dlg);
+            buttons->addButton("I Agree", QDialogButtonBox::AcceptRole);
+            buttons->addButton("Decline", QDialogButtonBox::RejectRole);
+            connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+            connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+            lay->addWidget(buttons);
+            if (dlg.exec() != QDialog::Accepted) return false; // declined -> main() exits
+            cfg.setValue("Setup/TermsAccepted", true);
+            cfg.sync();
+        }
+    }
 
     // First run (or tools missing): folder confirmation + dependency download,
     // modal over the fresh main window.
@@ -366,8 +398,8 @@ void Seagull::run() {
         // Now, downloading behind their back would override that choice;
         // setup asks again next launch instead.
         releaseThumbnailHolds(); // fresh tools just landed; thumbnails may run
-        shutdownUpdater();       // setup was the updater's job this launch — done
-        return;
+        shutdownUpdater();       // setup was the updater's job this launch, done
+        return true;
     }
 
     // Tool updates, up front and modal: the UpdateDialog locks the app from
@@ -384,6 +416,7 @@ void Seagull::run() {
         releaseThumbnailHolds();
         shutdownUpdater(); // the startup flow was the updater's whole job
         });
+    return true;
 }
 
 int main(int argc, char* argv[]) {
@@ -394,6 +427,6 @@ int main(int argc, char* argv[]) {
     Theme::apply(settings.value("Display/Theme", "Seagull").toString());
 
     Seagull orchestrator;
-    orchestrator.run();
+    if (!orchestrator.run()) return 0; // user declined the Terms of Use
     return app.exec();
 }

@@ -26,7 +26,7 @@ public:
     explicit Seagull(QObject* parent = nullptr);
     ~Seagull();
 
-    void run();
+    bool run(); // false = the user declined the Terms of Use; main() should exit
 
 private:
     // Library = the card-grid media library; Explorer = the file-manager tab.
