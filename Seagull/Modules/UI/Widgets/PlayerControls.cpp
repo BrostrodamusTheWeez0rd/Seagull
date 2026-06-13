@@ -89,10 +89,11 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     recordBtn = new QPushButton();
     qualityBtn = new QPushButton();
     qualityBtn->hide();
+    popoutBtn = new QPushButton();
     fullscreenBtn = new QPushButton();
 
     QSize iconSize(20, 20);
-    m_iconButtons = { prevBtn, playPauseBtn, recordBtn, stopBtn, nextBtn, muteBtn, qualityBtn, fullscreenBtn };
+    m_iconButtons = { prevBtn, playPauseBtn, recordBtn, stopBtn, nextBtn, muteBtn, qualityBtn, popoutBtn, fullscreenBtn };
 
     for (auto* btn : m_iconButtons) {
         btn->setObjectName("playerCtlButton"); // styled by Theme::apply
@@ -107,6 +108,8 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     stopBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/stop.svg"), stopBtn));
     nextBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/skip-next.svg"), nextBtn));
     qualityBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/cog.svg"), qualityBtn)); // MDI cog, themed like the rest
+    popoutBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/popout.svg"), popoutBtn)); // MDI open-in-new
+    popoutBtn->setToolTip(QStringLiteral("Pop out into its own window"));
     fullscreenBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/fullscreen.svg"), fullscreenBtn)); // MDI fullscreen
 
     // Record button: live-only, hidden until a live stream plays. Themed like the rest
@@ -124,6 +127,7 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     mainLayout->addWidget(positionSlider, 1);
     mainLayout->addWidget(muteBtn);
     mainLayout->addWidget(qualityBtn);
+    mainLayout->addWidget(popoutBtn);
     mainLayout->addWidget(fullscreenBtn);
 
     setFixedSize(500, 50);
@@ -188,6 +192,7 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
     connect(fullscreenBtn, &QPushButton::clicked, this, &PlayerControls::fullscreenRequested);
+    connect(popoutBtn, &QPushButton::clicked, this, &PlayerControls::popoutRequested);
     connect(recordBtn, &QPushButton::clicked, this, [this]() { emit recordToggleRequested(); });
 
     // Smoothly pulses the record glyph between dim and bright red while recording
@@ -266,6 +271,15 @@ void PlayerControls::setRecordAvailable(bool avail) {
     // the right capture method). Hidden when playback is torn down.
     recordBtn->setVisible(avail);
     if (!avail && m_recording) setRecording(false); // playback gone -> drop the pulse
+}
+
+void PlayerControls::setPoppedOut(bool popped) {
+    // Swap the glyph/tooltip so the same button reads as "pop out" while docked
+    // and "return to the main window" while floating.
+    popoutBtn->setIcon(makeIcon(popped ? QStringLiteral(":/Assets/icons/popin.svg")
+                                       : QStringLiteral(":/Assets/icons/popout.svg"), popoutBtn));
+    popoutBtn->setToolTip(popped ? QStringLiteral("Return to the main window")
+                                 : QStringLiteral("Pop out into its own window"));
 }
 
 void PlayerControls::setRecording(bool on) {

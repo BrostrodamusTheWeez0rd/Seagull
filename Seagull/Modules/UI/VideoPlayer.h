@@ -46,6 +46,16 @@ public:
     // points the way the pane will move: down to drop it, up to bring it back.
     void setTabsPaneOpen(bool open);
 
+    // Pop-out: the shell moves this whole widget between the main window's
+    // splitter and its own top-level window. setPoppedOut updates the controls'
+    // button and suppresses the tabs chevron (no shared splitter when floating);
+    // rebindOutputWindow re-attaches VLC to the render frame's new HWND, which
+    // Qt recreates whenever the widget changes top-level windows.
+    void setPoppedOut(bool popped);
+    void rebindOutputWindow();
+    void reownOverlays(); // re-point the overlay tool windows' owner at the current host window
+    void hardStop();      // full teardown: release media + emit closed (pop-out window close)
+
 public slots:
     void playLocalFile(const QUrl& url);
     void playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl = QUrl(), const QUrl& cdnAudioUrl = QUrl(), const QString& title = QString());
@@ -78,6 +88,7 @@ signals:
     void streamUrlRequested(const QString& url, const QString& formatId, bool freshResolve);
 
     void fullscreenToggleRequested(); // host performs the actual window fullscreen
+    void popOutRequested();           // host detaches/re-docks the player window
     void playbackStarted();           // host shows/sizes the video area
     void closed();                    // host hides the video area / leaves fullscreen
     void tabsToggleRequested();       // splitter-toggle chevron clicked — host toggles the pane
@@ -157,6 +168,7 @@ private:
     QPropertyAnimation* splitterBtnFade = nullptr; // windowOpacity fade in/out
     void fadeSplitterToggle(bool in);
     bool m_tabsPaneOpen = true;
+    bool m_poppedOut = false; // player is in its own window — no tabs chevron
 
     // Poster shown over the video when paused / at end-of-stream. A separate
     // top-level window (like the other overlays) because the VLC HWND draws over

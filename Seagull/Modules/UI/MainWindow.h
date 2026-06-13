@@ -41,6 +41,25 @@ private:
     bool m_armed = false; // redock only after the cursor has left the strip once
 };
 
+// The player detached into its own top-level window (via the controls' pop-out
+// button). Hosts the VideoPlayer while floating; closing it re-docks the player
+// into the main window — playback never stops. MainWindow drives the move and
+// keeps the top-level overlays glued as this window moves/resizes.
+class PlayerWindow : public QWidget {
+    Q_OBJECT
+public:
+    explicit PlayerWindow(MainWindow* host);
+
+protected:
+    void closeEvent(QCloseEvent* event) override;   // re-dock on close
+    void keyPressEvent(QKeyEvent* event) override;   // space / escape while floating
+    void moveEvent(QMoveEvent* event) override;      // keep overlays glued
+    void resizeEvent(QResizeEvent* event) override;
+
+private:
+    MainWindow* m_host;
+};
+
 // Pure application shell: owns the window chrome, the tab area, and the splitter
 // the video player and tabs live in. It holds no playback logic — it hosts the
 // VideoPlayer and handles only the window-level concerns the player can't do for
@@ -107,6 +126,14 @@ private:
     void positionPlusButton();      // snug the "+" (and Share) against the last tab
     void schedulePlusReposition();  // ...after the pending layout pass settles
 
+    // Player pop-out: detach the VideoPlayer into its own window and back.
+    friend class PlayerWindow;
+    void dockPlayerIntoSplitter();  // (re)insert the player at splitter index 0 + wire the handle
+    void togglePlayerPopout();      // pop-out button: float the player / re-dock it
+    void popOutPlayer();
+    void popInPlayer();
+    void togglePopoutFullScreen();  // fullscreen acts on the floating window while popped
+
     // Tear-off: dragging a tab off the bar floats it in its own window.
     friend class FloatingTab;
     void detachTab(QWidget* wrapper, const QPoint& globalPos);
@@ -138,6 +165,7 @@ private:
     QPointer<QPropertyAnimation> m_settleAnim; // the running slide-home animation, if any
     QWidget* m_busyTab = nullptr;         // page currently showing the spinner, if any
     VideoPlayer* videoPlayer = nullptr; // hosted; owned by the widget tree
+    PlayerWindow* m_playerPopout = nullptr; // the floating player window, when popped out
     bool m_wasMaximized = false;        // window state before going fullscreen
     double m_videoSplitRatio = 0.5;     // video fraction of the split; default 50/50
 

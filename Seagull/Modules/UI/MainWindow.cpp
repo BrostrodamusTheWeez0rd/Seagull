@@ -380,6 +380,55 @@ void FloatingTab::closeEvent(QCloseEvent* event) {
     event->accept();
 }
 
+// --- Popped-out player window ------------------------------------------------
+
+PlayerWindow::PlayerWindow(MainWindow* host)
+    : QWidget(nullptr, Qt::Window), m_host(host) {
+    setWindowTitle("Seagull");
+    setWindowIcon(host->windowIcon());
+    setMinimumSize(560, 315); // matches the player's own floor
+}
+
+void PlayerWindow::closeEvent(QCloseEvent* event) {
+    // Closing the floating window is a hard stop: tear playback down. closePlayer()
+    // emits closed(), whose handler re-docks the player into the shell and hides the
+    // video area — so the player returns home, just with nothing playing.
+    if (m_host->videoPlayer) m_host->videoPlayer->hardStop();
+    event->accept();
+}
+
+void PlayerWindow::keyPressEvent(QKeyEvent* event) {
+    switch (event->key()) {
+    case Qt::Key_Escape:
+        if (isFullScreen()) {
+            showNormal();
+            QTimer::singleShot(100, this, [this]() {
+                if (m_host->videoPlayer) {
+                    m_host->videoPlayer->repositionOverlays();
+                    m_host->videoPlayer->raiseOverlays();
+                }
+                });
+        }
+        break;
+    case Qt::Key_Space:
+        if (m_host->videoPlayer) m_host->videoPlayer->togglePlayPause();
+        break;
+    default: QWidget::keyPressEvent(event);
+    }
+}
+
+// The overlays are top-level windows glued to the video frame's screen position,
+// so the floating window must nudge them whenever it moves or resizes.
+void PlayerWindow::moveEvent(QMoveEvent* event) {
+    QWidget::moveEvent(event);
+    if (m_host->videoPlayer) m_host->videoPlayer->repositionOverlays();
+}
+
+void PlayerWindow::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    if (m_host->videoPlayer) m_host->videoPlayer->repositionOverlays();
+}
+
 void MainWindow::detachTab(QWidget* wrapper, const QPoint& globalPos) {
     const int idx = tabs->indexOf(wrapper);
     if (idx < 0 || tabs->count() <= 1) return; // the last docked tab stays put
@@ -538,16 +587,22 @@ void MainWindow::setTabBusy(QWidget* tab, bool busy) {
     schedulePlusReposition(); // the spinner widens/narrows the tab
 }
 
-void MainWindow::setVideoPlayer(VideoPlayer* player) {
-    videoPlayer = player;
-    mainSplitter->insertWidget(0, player); // video on top, tabs below
+void MainWindow::dockPlayerIntoSplitter() {
+    // Put the player back on top of the tabs and (re-)wire the handle's click
+    // filter — the handle is destroyed/recreated whenever the player leaves and
+    // rejoins the splitter (pop-out / pop-in), so the filter must be reinstalled.
+    mainSplitter->insertWidget(0, videoPlayer); // video on top, tabs below
     mainSplitter->setCollapsible(0, false);
-
     // Click-toggle on the splitter handle (collapse tabs / restore the split).
     // Registered on RELEASE in eventFilter so a click is never confused with a
     // drag; the handle exists now that both panes are in the splitter.
     if (QSplitterHandle* h = mainSplitter->handle(1))
         h->installEventFilter(this);
+}
+
+void MainWindow::setVideoPlayer(VideoPlayer* player) {
+    videoPlayer = player;
+    dockPlayerIntoSplitter();
 
     // The overlays are top-level windows in global coordinates, so anything that
     // moves the video surface (splitter drag, window move/resize) must nudge them.
@@ -560,6 +615,7 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
     syncTabsPaneState(); // initial arrow direction
 
     connect(player, &VideoPlayer::fullscreenToggleRequested, this, &MainWindow::toggleFullScreen);
+    connect(player, &VideoPlayer::popOutRequested, this, &MainWindow::togglePlayerPopout);
     connect(player, &VideoPlayer::playbackStarted, this, [this]() {
         if (videoPlayer) videoPlayer->show();
         // Only apply the remembered split when the video area is collapsed (first
@@ -567,6 +623,9 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
         if (mainSplitter->sizes().value(0) <= 0) applyStoredSplit();
         });
     connect(player, &VideoPlayer::closed, this, [this]() {
+        // If it was floating, bring it home first (re-docks + restores the split)
+        // so we never capture a bogus ratio from the splitter's lone tabs pane.
+        if (m_playerPopout) popInPlayer();
         // Remember the split the user left it at (but not the immersive fullscreen
         // sizes), to reuse as the default next time.
         if (!isFullScreen()) captureSplit();
@@ -596,8 +655,91 @@ void MainWindow::exitFullScreen() {
 }
 
 void MainWindow::toggleFullScreen() {
+    // While popped out, fullscreen acts on the floating window, not the shell.
+    if (m_playerPopout) { togglePopoutFullScreen(); return; }
     if (isFullScreen()) exitFullScreen();
     else enterFullScreen();
+}
+
+void MainWindow::togglePopoutFullScreen() {
+    if (!m_playerPopout) return;
+    if (m_playerPopout->isFullScreen()) m_playerPopout->showNormal();
+    else m_playerPopout->showFullScreen();
+    QTimer::singleShot(100, this, [this]() {
+        if (videoPlayer) { videoPlayer->repositionOverlays(); videoPlayer->raiseOverlays(); }
+        });
+}
+
+// --- Player pop-out -----------------------------------------------------------
+
+void MainWindow::togglePlayerPopout() {
+    if (!videoPlayer || !videoPlayer->isVisible()) return; // only while something plays
+    if (m_playerPopout) popInPlayer();
+    else popOutPlayer();
+}
+
+void MainWindow::popOutPlayer() {
+    if (!videoPlayer || m_playerPopout) return;
+    if (!isFullScreen()) captureSplit(); // remember the docked split for pop-in
+
+    auto* win = new PlayerWindow(this);
+    auto* lay = new QVBoxLayout(win);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->addWidget(videoPlayer); // single reparent out of the splitter (tabs fill the shell)
+    m_playerPopout = win;
+
+    videoPlayer->setPoppedOut(true);
+    win->resize(960, 600);
+    win->show();
+    win->raise();
+    win->activateWindow();
+    videoPlayer->show();
+    // The reparent recreated the render frame's HWND — hand VLC the new one
+    // synchronously, before it draws another frame into the now-dead handle.
+    videoPlayer->rebindOutputWindow();
+
+    // Deferred: reownOverlays recreates the controls' window, and we're currently
+    // inside that control's own click handler. Re-own once it returns, then
+    // re-assert the pop-out's foreground (now that the overlays follow IT, raising
+    // them keeps the pop-out forward instead of the shell).
+    QTimer::singleShot(0, this, [this]() {
+        if (!videoPlayer || !m_playerPopout) return;
+        videoPlayer->reownOverlays();      // overlays -> pop-out owner
+        m_playerPopout->raise();
+        m_playerPopout->activateWindow();
+        videoPlayer->repositionOverlays();
+        videoPlayer->raiseOverlays();
+        });
+}
+
+void MainWindow::popInPlayer() {
+    if (!videoPlayer || !m_playerPopout) return;
+    PlayerWindow* win = m_playerPopout;
+    m_playerPopout = nullptr;
+    if (win->isFullScreen()) win->showNormal(); // leave fullscreen before docking
+
+    dockPlayerIntoSplitter();        // single reparent back on top of the tabs
+    videoPlayer->setPoppedOut(false);
+    videoPlayer->show();
+    applyStoredSplit();              // restore the remembered video/tabs ratio
+    videoPlayer->rebindOutputWindow(); // rebind synchronously (see popOutPlayer)
+
+    // Deferred (we're inside the controls' click handler). CRITICAL ORDER: re-own
+    // the overlays back to the shell BEFORE destroying the pop-out — the overlays
+    // are owned by the pop-out's HWND right now, and destroying an owner also
+    // destroys its owned windows (the controls), which is what was killing the
+    // controls + mouse detection on pop-in. Foreground the shell so the overlay
+    // exposure checks (and the OSD) start passing again.
+    QTimer::singleShot(0, this, [this, win]() {
+        if (videoPlayer) {
+            videoPlayer->reownOverlays();   // overlays back under the shell's HWND...
+            raise();
+            activateWindow();
+            videoPlayer->repositionOverlays();
+            videoPlayer->raiseOverlays();
+        }
+        win->deleteLater();                 // ...THEN destroy the now-unrelated pop-out
+        });
 }
 
 bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {

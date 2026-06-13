@@ -171,6 +171,7 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::replayRequested, this, &VideoPlayer::handleReplay);
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() { emit fullscreenToggleRequested(); });
+    connect(playerControls, &PlayerControls::popoutRequested, this, [this]() { emit popOutRequested(); });
     connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
 }
 
@@ -185,6 +186,61 @@ void VideoPlayer::setTabsPaneOpen(bool open) {
     // drops it (down), pane down = clicking brings it back up.
     if (splitterToggleBtn) splitterToggleBtn->setText(open ? QStringLiteral("▼")
                                                            : QStringLiteral("▲"));
+}
+
+void VideoPlayer::setPoppedOut(bool popped) {
+    m_poppedOut = popped;
+    if (playerControls) playerControls->setPoppedOut(popped);
+    if (popped) {
+        // No shared splitter while floating — kill the chevron and its countdown.
+        if (splitterBtnHideTimer) splitterBtnHideTimer->stop();
+        if (splitterToggleBtn && splitterToggleBtn->isVisible()) {
+            if (splitterBtnFade) splitterBtnFade->stop();
+            splitterToggleBtn->hide();
+            splitterToggleBtn->setWindowOpacity(1.0);
+        }
+    }
+    repositionOverlays();
+}
+
+void VideoPlayer::rebindOutputWindow() {
+    // Qt recreates the render frame's native window when the player changes
+    // top-level windows (pop out / pop in), so the old HWND VLC was drawing into
+    // is gone — hand VLC the new one. Playback keeps running across the swap.
+    if (engine && videoWidget) engine->setOutputWindow((void*)videoWidget->winId());
+}
+
+void VideoPlayer::reownOverlays() {
+    // The overlays are Qt::Tool (owned) windows: Windows keeps each one above the
+    // HWND that owned it, and showing/raising an owned window drags that owner to
+    // the front. Crucially, Windows binds that owner at native-window CREATION and
+    // won't change it on a live window (setTransientParent is a no-op there). So
+    // after the player moves between the shell and the pop-out window, the owner
+    // is stale — showing an overlay yanks the WRONG window forward and the overlay
+    // bleeds over windows in front of the current one.
+    //
+    // Fix: force each overlay's native window to be recreated against the player's
+    // current top-level. Round-tripping the parent (nullptr -> this) recreates the
+    // window, and Qt resolves the new owner from this->window() — the pop-out when
+    // floating, the shell when docked.
+    for (QWidget* w : { static_cast<QWidget*>(playerControls),
+                        static_cast<QWidget*>(titleBar),
+                        static_cast<QWidget*>(posterOverlay),
+                        static_cast<QWidget*>(splitterToggleBtn) }) {
+        if (!w) continue;
+        const bool vis = w->isVisible();
+        const Qt::WindowFlags flags = w->windowFlags();
+        w->setParent(nullptr, flags); // detach: drops the stale owner
+        w->setParent(this, flags);    // re-own to this->window() (pop-out or shell)
+        if (vis) w->show();
+    }
+    repositionOverlays();
+}
+
+void VideoPlayer::hardStop() {
+    // Full teardown — releases the media and emits closed() (the shell re-docks the
+    // player and hides the video area). Used when the pop-out window is closed.
+    closePlayer();
 }
 
 void VideoPlayer::onMediaEndReached() {
@@ -646,7 +702,7 @@ void VideoPlayer::checkMouseMovement() {
 }
 
 void VideoPlayer::updateSplitterToggle(const QPoint& globalPos) {
-    if (!splitterToggleBtn) return;
+    if (!splitterToggleBtn || m_poppedOut) return; // no tabs pane to toggle while floating
     bool inTrigger = false;
     if (videoWidget && videoWidget->isVisible() && overlaySurfaceExposedAt(globalPos)) {
         const QPoint tl = videoWidget->mapToGlobal(QPoint(0, 0));

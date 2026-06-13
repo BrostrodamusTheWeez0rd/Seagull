@@ -45,12 +45,14 @@ public:
     void setCurrentFormat(const QString& formatId); // Track active selection
     void setRecording(bool on);          // reflect recorder state: red pulse while on
     void setRecordAvailable(bool avail); // show/hide the Record button (any playing media)
+    void setPoppedOut(bool popped);      // swap the pop-out button's glyph/tooltip
 
 public slots:
     void setAvailableQualities(const QList<StreamOption>& options);
 
 signals:
     void fullscreenRequested();
+    void popoutRequested(); // pop-out button clicked (detach to / re-dock from its own window)
     void stopRequested();
     void replayRequested();
     void qualitySelected(QString formatId);
@@ -109,6 +111,7 @@ private:
     QFrame* qualityContentFrame;
     QTimer* qualityHideTimer;
 
+    QPushButton* popoutBtn;     // detach the player into its own window
     QPushButton* fullscreenBtn;
     QSlider* positionSlider;
 
