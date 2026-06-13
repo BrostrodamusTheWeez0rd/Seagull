@@ -1,0 +1,4 @@
+// Windows executable icon. The lowest-ID icon resource is what Explorer, the
+// taskbar, and Alt-Tab use for the .exe itself (separate from the in-app window
+// icon, which is set from the Qt resource in code).
+1 ICON "Assets/Icon.ico"

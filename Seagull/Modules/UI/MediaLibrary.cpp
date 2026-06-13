@@ -50,7 +50,7 @@ MediaLibrary::MediaLibrary(QWidget* parent) : QWidget(parent) {
     cardsArea->viewport()->setBackgroundRole(QPalette::Window);
 
     QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-    m_targetWidth = qBound(120, cfg.value("Display/CardWidth", 240).toInt(), 480);
+    m_targetWidth = qBound(120, cfg.value("Display/CardWidth", 360).toInt(), 480); // default Extra Large
     m_cardWidth = m_targetWidth;
 
     cardsHost = new QWidget();

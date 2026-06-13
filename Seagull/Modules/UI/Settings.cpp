@@ -469,7 +469,7 @@ void Settings::loadSettings() {
     themeCombo->setCurrentText(iniSettings->value("Display/Theme", "Seagull").toString());
 
     // Card size: stored as a pixel width. Match it to a named preset, else Custom.
-    int cardPx = qBound(kCardMinPx, iniSettings->value("Display/CardWidth", 240).toInt(), kCardMaxPx);
+    int cardPx = qBound(kCardMinPx, iniSettings->value("Display/CardWidth", 360).toInt(), kCardMaxPx); // default Extra Large
     cardSizeSlider->blockSignals(true);
     cardSizeSlider->setValue(cardPx);
     cardSizeSlider->blockSignals(false);
@@ -580,9 +580,9 @@ void Settings::resetDefaults() {
     clearHistoryOnCloseCheck->setChecked(false);
     themeCombo->setCurrentText("Seagull");
     cardSizeSlider->blockSignals(true);
-    cardSizeSlider->setValue(240);
+    cardSizeSlider->setValue(360);
     cardSizeSlider->blockSignals(false);
-    cardSizeCombo->setCurrentText("Medium");
+    cardSizeCombo->setCurrentText("Extra Large");
     cardSizeSlider->hide();
     typeVideoBtn->setChecked(true);
     updateDownloadFormatOptions();

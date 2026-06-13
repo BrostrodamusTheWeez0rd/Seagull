@@ -12,6 +12,8 @@ class QSplitter;
 class QTabWidget;
 class QToolButton;
 class QPropertyAnimation;
+class QLabel;
+class QMovie;
 class QMenu;
 class QKeyEvent;
 class QResizeEvent;
@@ -121,6 +123,7 @@ private:
     void addCloseButton(QWidget* wrapper);    // create + track a tab's manual close x
     void removeCloseButton(QWidget* wrapper); // drop it when the tab leaves the bar
     void positionCloseButtons();              // tuck each x tight to its tab's edge
+    void ensureTabSpinner();                  // lazily build the busy spinner (replaces the x)
     void settleCloseButton(QWidget* wrapper); // slide a dropped tab's x home to match the tab
     QWidget* wrapPage(QWidget* tab);               // QScrollArea shell every page gets
     void positionPlusButton();      // snug the "+" (and Share) against the last tab
@@ -153,6 +156,8 @@ private:
     QHash<QWidget*, QWidget*> m_tabPages; // inner page widget -> its QScrollArea wrapper
     QList<TabInfo> m_tabOrder;            // every registered tab, in addTab order
     QHash<QWidget*, QToolButton*> m_closeButtons; // open tab wrapper -> its manual close x
+    QLabel* m_tabSpinner = nullptr;       // busy spinner shown in place of the busy tab's x
+    QMovie* m_tabSpinnerMovie = nullptr;  // the seagull animation driving m_tabSpinner
     QToolButton* m_plusBtn = nullptr;     // "+" corner button (reopen menu)
     QToolButton* m_shareBtn = nullptr;    // floating Share, right of the "+"
     bool m_shareAvailable = false;

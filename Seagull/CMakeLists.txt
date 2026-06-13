@@ -71,6 +71,7 @@ add_executable(Seagull
     Modules/Backend/PlaybackEngine.h
     Modules/Backend/PlaybackEngine.cpp
     resources.qrc
+    app.rc
 )
 
 

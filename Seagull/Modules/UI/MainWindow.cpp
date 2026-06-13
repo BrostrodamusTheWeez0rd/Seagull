@@ -274,6 +274,8 @@ void MainWindow::positionCloseButtons() {
     constexpr int inset = 6; // gap from the tab's right edge to the button
     const int curX = bar->mapFromGlobal(QCursor::pos()).x(); // for the grabbed tab
     const bool dragging = m_tabDragging && m_pressedWrapper;
+    QWidget* busyWrapper = m_busyTab ? m_tabPages.value(m_busyTab) : nullptr;
+    bool spinnerPlaced = false;
     QToolButton* draggedBtn = nullptr;
     for (auto it = m_closeButtons.cbegin(); it != m_closeButtons.cend(); ++it) {
         QToolButton* b = it.value();
@@ -289,6 +291,17 @@ void MainWindow::positionCloseButtons() {
         const QRect r = bar->tabRect(idx);
         // Hide buttons for tabs scrolled out of the visible strip (overflow).
         if (r.isEmpty() || r.right() <= 0 || r.left() >= bar->width()) { b->hide(); continue; }
+        // A busy tab shows the spinner IN PLACE OF its x — centre it on the x's slot.
+        if (it.key() == busyWrapper && m_tabSpinner) {
+            b->hide();
+            const int slotCx = r.right() - inset - b->width() / 2;
+            m_tabSpinner->move(slotCx - m_tabSpinner->width() / 2,
+                               r.top() + (r.height() - m_tabSpinner->height()) / 2);
+            m_tabSpinner->raise();
+            m_tabSpinner->show();
+            spinnerPlaced = true;
+            continue;
+        }
         // The tab being dragged moves 1:1 with the cursor, so track its button to
         // the cursor (tabRect would lag at the settled slot); the rest snap to slot.
         const int x = isDragged
@@ -299,6 +312,7 @@ void MainWindow::positionCloseButtons() {
         if (isDragged) draggedBtn = b; else b->raise();
     }
     if (draggedBtn) draggedBtn->raise(); // keep the grabbed tab's x on top
+    if (m_tabSpinner && !spinnerPlaced) m_tabSpinner->hide(); // busy tab gone/scrolled away
 }
 
 void MainWindow::settleCloseButton(QWidget* wrapper) {
@@ -566,25 +580,35 @@ void MainWindow::setTabBusy(QWidget* tab, bool busy) {
 
     if (busy) {
         if (m_busyTab == tab) return; // already spinning
-        auto* spinner = new QLabel();
-        auto* movie = new QMovie(":/Assets/SeagullAnim.gif", QByteArray(), spinner);
-        movie->jumpToFrame(0);
-        const QSize f = movie->currentPixmap().size();
-        const int h = 16; // small enough to sit inside the tab header
-        const int w = f.height() > 0 ? f.width() * h / f.height() : h;
-        movie->setScaledSize(QSize(w, h));
-        spinner->setMovie(movie);
-        movie->start();
-        // LeftSide: the close button owns the right side now that tabs are closable.
-        tabs->tabBar()->setTabButton(idx, QTabBar::LeftSide, spinner);
         m_busyTab = tab;
+        ensureTabSpinner();
+        m_tabSpinnerMovie->start(); // positionCloseButtons drops it onto the busy tab's x
     }
     else {
-        // Passing nullptr removes and deletes the spinner widget (and its movie).
-        tabs->tabBar()->setTabButton(idx, QTabBar::LeftSide, nullptr);
-        if (m_busyTab == tab) m_busyTab = nullptr;
+        if (m_busyTab != tab) return;
+        m_busyTab = nullptr;
+        if (m_tabSpinnerMovie) m_tabSpinnerMovie->stop();
+        if (m_tabSpinner) m_tabSpinner->hide();
     }
-    schedulePlusReposition(); // the spinner widens/narrows the tab
+    schedulePlusReposition(); // re-place the x / spinner for this tab
+}
+
+void MainWindow::ensureTabSpinner() {
+    if (m_tabSpinner) return;
+    // One shared spinner (only one tab is ever busy at a time). It's a free child
+    // of the tab bar, like the close buttons, and positionCloseButtons parks it on
+    // the busy tab's x — replacing it rather than sitting beside the label.
+    m_tabSpinner = new QLabel(tabs->tabBar());
+    m_tabSpinner->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_tabSpinnerMovie = new QMovie(":/Assets/SeagullAnim.gif", QByteArray(), m_tabSpinner);
+    m_tabSpinnerMovie->jumpToFrame(0);
+    const QSize f = m_tabSpinnerMovie->currentPixmap().size();
+    const int h = 16; // small enough to sit inside the tab header
+    const int w = f.height() > 0 ? f.width() * h / f.height() : h;
+    m_tabSpinnerMovie->setScaledSize(QSize(w, h));
+    m_tabSpinner->setMovie(m_tabSpinnerMovie);
+    m_tabSpinner->resize(w, h);
+    m_tabSpinner->hide();
 }
 
 void MainWindow::dockPlayerIntoSplitter() {
