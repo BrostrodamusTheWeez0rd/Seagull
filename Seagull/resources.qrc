@@ -19,6 +19,7 @@
         <file>Assets/icons/popout.svg</file>
         <file>Assets/icons/popin.svg</file>
         <file>Assets/icons/visualizer.svg</file>
+        <file>Assets/icons/equalizer.svg</file>
         <file>Assets/icons/music-note.svg</file>
         <file alias="docs/README.md">../README.md</file>
         <file alias="docs/FAQ.md">../FAQ.md</file>
