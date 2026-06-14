@@ -1,6 +1,7 @@
 #include "Search.h"
 #include "Widgets/FlowLayout.h"
 #include "Widgets/VideoCard.h"
+#include "Widgets/SpellCheckLineEdit.h"
 #include "../Backend/SgSearch.h"
 
 #include <QVBoxLayout>
@@ -31,8 +32,8 @@
 
 namespace { constexpr int kGridSpacing = 12; }
 
-Search::Search(SgSearch* searchWorker, QWidget* parent)
-    : QWidget(parent), m_search(searchWorker) {
+Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
+    : QWidget(parent), m_search(searchWorker), m_spell(spell) {
     m_nam = new QNetworkAccessManager(this);
 
     // Root layout: 0 margins so the separator and results area span full width.
@@ -84,6 +85,11 @@ Search::Search(SgSearch* searchWorker, QWidget* parent)
     queryBar = new QComboBox();
     queryBar->setObjectName("searchQueryBar");
     queryBar->setEditable(true);
+    // Swap the combo's inner editor for a spell-checking line edit (red squiggle
+    // + right-click suggestions). The combo keeps owning the history model,
+    // dropdown, and completer — only the text field is replaced. Must run before
+    // the lineEdit() config below, which setLineEdit would otherwise discard.
+    queryBar->setLineEdit(new SpellCheckLineEdit(m_spell, queryBar));
     queryBar->setInsertPolicy(QComboBox::NoInsert); // we manage the items (addToHistory)
     queryBar->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     queryBar->lineEdit()->setPlaceholderText("Search YouTube\xe2\x80\xa6");

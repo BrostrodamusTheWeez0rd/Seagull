@@ -21,6 +21,7 @@ class QTimer;
 class FlowLayout;
 class VideoCard;
 class SgSearch;
+class SgSpellCheck;
 
 // The Search tab. Browser-style chrome: back / forward / refresh, a site bar,
 // a Go button, and the search-query bar underneath. A bottom border on the
@@ -36,7 +37,7 @@ class SgSearch;
 class Search : public QWidget {
     Q_OBJECT
 public:
-    explicit Search(SgSearch* searchWorker, QWidget* parent = nullptr);
+    explicit Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent = nullptr);
 
 public slots:
     void setCardWidth(int targetWidth);
@@ -117,6 +118,7 @@ private:
     QMovie*      statusMovie;
 
     SgSearch*              m_search;
+    SgSpellCheck*          m_spell;
     QNetworkAccessManager* m_nam;
     QCompleter*            m_historyCompleter;
     QStringListModel*      m_historyModel;

@@ -13,6 +13,7 @@
 #include "Modules/UI/Settings.h"
 #include "Modules/Backend/SgYtDlp.h"
 #include "Modules/Backend/SgSearch.h"
+#include "Modules/Backend/SgSpellCheck.h"
 #include "Modules/Backend/SgUpdater.h"
 #include "Modules/Backend/SgHlsProxy.h"
 #include "Modules/Backend/SgRecorder.h"
@@ -56,6 +57,7 @@ private:
     SgYtDlp* playerWorker;     // dedicated to the player's probe/stream-url traffic
     SgYtDlp* downloadWorker;   // dedicated to ad-hoc (Search card) downloads
     SgSearch* searchWorker;    // backend for the Search tab (discovery)
+    SgSpellCheck* spellChecker; // shared OS spell checker for the text fields
 
     // One shared localhost proxy that strips Twitch's stitched ad segments from the
     // live HLS manifest before VLC sees them. Handed to every resolve worker.

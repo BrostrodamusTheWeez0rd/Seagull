@@ -28,6 +28,10 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     downloadWorker = new SgYtDlp(this);
     searchWorker = new SgSearch(this);
 
+    // Shared Windows OS spell checker for the Search query combo + File Explorer
+    // search box. Inert if the OS/language is unsupported (fields stay plain).
+    spellChecker = new SgSpellCheck(this);
+
     // Shared ad-strip proxy for Twitch live streams. Every worker that resolves a
     // playable stream URL gets it, so the ad-free routing applies no matter which
     // path (player probe, queue prefetch, …) produced the URL.
@@ -43,9 +47,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     // The tab modules.
     libraryModule = new MediaLibrary();
-    explorerModule = new FileExplorer();
+    explorerModule = new FileExplorer(spellChecker);
     queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);
-    searchModule = new Search(searchWorker);
+    searchModule = new Search(searchWorker, spellChecker);
     settingsModule = new Settings();
 
     mainWindow->addTab(libraryModule, "Library");

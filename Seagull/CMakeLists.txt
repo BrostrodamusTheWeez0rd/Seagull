@@ -50,6 +50,8 @@ add_executable(Seagull
     Modules/UI/Widgets/UpdateDialog.h
     Modules/UI/Widgets/FlowLayout.cpp
     Modules/UI/Widgets/FlowLayout.h
+    Modules/UI/Widgets/SpellCheckLineEdit.cpp
+    Modules/UI/Widgets/SpellCheckLineEdit.h
     Modules/Backend/SgYtDlp.h
     Modules/Backend/SgYtDlp.cpp
     Modules/Backend/SgHlsProxy.h
@@ -58,6 +60,8 @@ add_executable(Seagull
     Modules/Backend/SgRecorder.cpp
     Modules/Backend/SgSearch.h
     Modules/Backend/SgSearch.cpp
+    Modules/Backend/SgSpellCheck.h
+    Modules/Backend/SgSpellCheck.cpp
     Modules/Backend/SgFormat.h
     Modules/Backend/SgFormat.cpp
     Modules/Backend/SgOptions.h
@@ -100,6 +104,7 @@ target_link_libraries(Seagull PRIVATE
     Qt6::Network
     ${LIBVLC_LIB}
     ${LIBVLCCORE_LIB}
+    ole32           # CoCreateInstance / COM for SgSpellCheck (Spell Checking API)
 )
 
 add_custom_command(TARGET Seagull POST_BUILD

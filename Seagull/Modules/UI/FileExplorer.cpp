@@ -1,5 +1,6 @@
 #include "FileExplorer.h"
 #include "../Backend/SgPaths.h"
+#include "Widgets/SpellCheckLineEdit.h"
 #include <QTimer>
 #include <QMenu>
 #include <QInputDialog>
@@ -22,7 +23,7 @@
 #include <QMimeData>
 #include <QMessageBox>
 
-FileExplorer::FileExplorer(QWidget* parent) : QWidget(parent) {
+FileExplorer::FileExplorer(SgSpellCheck* spell, QWidget* parent) : QWidget(parent), m_spell(spell) {
     mainLayout = new QVBoxLayout(this);
     toolbarLayout = new QHBoxLayout();
 
@@ -54,7 +55,7 @@ FileExplorer::FileExplorer(QWidget* parent) : QWidget(parent) {
     goBtn = new QPushButton("→");
     goBtn->setFixedSize(28, 24);
     goBtn->setToolTip("Navigate to path");
-    searchBar = new QLineEdit();
+    searchBar = new SpellCheckLineEdit(m_spell);
     searchBar->setPlaceholderText("Search...");
     searchBar->setFixedWidth(150);
 

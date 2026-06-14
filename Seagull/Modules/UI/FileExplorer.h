@@ -26,6 +26,9 @@
 #include <QTableWidget>
 #include <QProcess>
 
+class SgSpellCheck;
+class SpellCheckLineEdit;
+
 // -------------------------
 // Folder-only filter
 // -------------------------
@@ -182,7 +185,7 @@ class FileExplorer : public QWidget {
     Q_OBJECT
 
 public:
-    explicit FileExplorer(QWidget* parent = nullptr);
+    explicit FileExplorer(SgSpellCheck* spell, QWidget* parent = nullptr);
 
 signals:
     void playMediaRequested(const QUrl& url);
@@ -241,7 +244,9 @@ private:
     QPushButton* goBtn = nullptr;
 
     QComboBox* addressBar = nullptr;
-    QLineEdit* searchBar = nullptr;
+    SpellCheckLineEdit* searchBar = nullptr;
+
+    SgSpellCheck* m_spell = nullptr;
 
     QSplitter* mainSplitter = nullptr;
     QTreeView* folderTree = nullptr;
