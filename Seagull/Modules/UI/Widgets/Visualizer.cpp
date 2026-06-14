@@ -22,6 +22,11 @@ namespace {
         return lo + (hi - lo) * QRandomGenerator::global()->generateDouble();
     }
     qreal ease(qreal cur, qreal target, qreal k) { return cur + (target - cur) * k; }
+    // Smooth-but-snappy follower: fast attack toward a rising target (resolves
+    // transients), slower release on the way down (smooth, no jitter).
+    qreal easeAR(qreal cur, qreal target, qreal attack, qreal release) {
+        return cur + (target - cur) * (target > cur ? attack : release);
+    }
 }
 
 Visualizer::Visualizer(QWidget* parent) : QWidget(parent) {
@@ -183,10 +188,12 @@ void Visualizer::step() {
     }
 
     // Responsive easing = low latency (the sky tracks the sound closely).
-    m_level  = ease(m_level,  m_tLevel,  0.45);
-    m_bass   = ease(m_bass,   m_tBass,   0.30);
-    m_mid    = ease(m_mid,    m_tMid,    0.30);
-    m_treble = ease(m_treble, m_tTreble, 0.30);
+    // Snappy attack + smooth release, but gentle enough not to chase per-chunk
+    // noise (that was the jitter).
+    m_level  = easeAR(m_level,  m_tLevel,  0.30, 0.12);
+    m_bass   = easeAR(m_bass,   m_tBass,   0.34, 0.13);
+    m_mid    = easeAR(m_mid,    m_tMid,    0.30, 0.11);
+    m_treble = easeAR(m_treble, m_tTreble, 0.30, 0.11);
     m_beatFlash *= 0.92;
 
     // Bottom-sky hue: spectral balance (0 bassy .. 1 trebly), eased SLOWLY so the
@@ -345,38 +352,36 @@ void Visualizer::drawWaves(QPainter& p) {
     sky.setColorAt(1.0, QColor("#2a6f86"));
     p.fillRect(rect(), sky);
 
-    // The water SITS STILL. Its surface only moves as a visual-EQ response to the
-    // sound: the height across the width maps bass (left) -> mid -> treble (right),
-    // plus a gentle ripple whose amplitude grows with the level. Quiet/low-energy
-    // => nearly flat, calm sea (no time-based scrolling at all).
-    const qreal maxH  = h * 0.18;   // waves stay in the lower part of the screen
-    const qreal hBass = m_bass   * maxH;
-    const qreal hMid  = m_mid    * maxH;
-    const qreal hTreb = m_treble * maxH;
-    auto bandHeight = [&](qreal xn) {
-        qreal a, b, t;
-        if (xn < 0.5) { a = hBass; b = hMid;  t = xn / 0.5; }
-        else          { a = hMid;  b = hTreb; t = (xn - 0.5) / 0.5; }
-        t = t * t * (3.0 - 2.0 * t);
-        return a + (b - a) * t;
+    // The water SITS STILL; it only swells as a visual-EQ response to the sound,
+    // and each wave reacts to ONE band in ONE zone of the screen:
+    //   front  (drawn last,  lowest,  lightest) = BASS,   swells on the LEFT
+    //   middle                                  = MIDS,   swells in the CENTRE
+    //   back   (drawn first, highest, darkest)  = TREBLE, swells on the RIGHT
+    // A broad raised-cosine window keeps each band's motion in its zone; the swell
+    // (and its ripple) scale with that band, so quiet => flat calm sea.
+    const qreal maxH = h * 0.20;
+    auto window = [](qreal xn, qreal centre, qreal halfWidth) -> qreal {
+        const qreal d = std::abs(xn - centre) / halfWidth;
+        if (d >= 1.0) return 0.0;
+        return 0.5 * (1.0 + std::cos(d * 3.14159265358979)); // 1 at centre -> 0 at edge
     };
-    const qreal ripple = h * 0.014 * m_level; // static shape; amplitude breathes
+    const qreal hw = 0.60;
 
-    struct Layer { qreal baseFrac, ampScale, ripScale; QColor col; };
+    struct Layer { qreal baseFrac, band, centre, ripFreq, ripPhase, ampMul; QColor col; };
     const Layer layers[3] = {
-        { 0.74, 1.00, 1.0, QColor("#16566e") }, // waterline lower on screen
-        { 0.82, 0.72, 0.7, QColor("#1f7d92") },
-        { 0.90, 0.48, 0.5, QColor("#3aa6b3") },
+        { 0.72, m_treble, 0.90, 19.0, 0.0, 1.0, QColor("#16566e") }, // back   = treble, far right
+        { 0.82, m_mid,    0.62, 14.0, 1.6, 1.0, QColor("#1f7d92") }, // middle = mids,   right of centre
+        { 0.92, m_bass,   0.16, 10.0, 3.1, 2.3, QColor("#3aa6b3") }, // front  = bass,   left (taller, owns the left)
     };
     p.setPen(Qt::NoPen);
-    const int N = 60;
+    const int N = 80;
     for (const Layer& ly : layers) {
         QPainterPath wave;
         wave.moveTo(0, h);
         for (int i = 0; i <= N; ++i) {
             const qreal xn = qreal(i) / N;
-            const qreal swell = bandHeight(xn) * ly.ampScale
-                              + ripple * ly.ripScale * std::sin(xn * 16.0);
+            const qreal env = ly.band * window(xn, ly.centre, hw); // 0 outside zone / when quiet
+            const qreal swell = env * ly.ampMul * (maxH + h * 0.06 * std::sin(xn * ly.ripFreq + ly.ripPhase));
             wave.lineTo(xn * w, h * ly.baseFrac - swell);
         }
         wave.lineTo(w, h);

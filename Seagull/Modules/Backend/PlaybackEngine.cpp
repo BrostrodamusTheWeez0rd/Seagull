@@ -237,7 +237,8 @@ void PlaybackEngine::setAudioTap(bool on) {
         m_tapOn = true;
         m_energyEma = 0.0;
         m_lastBeatMs = 0;
-        m_lpLow = m_lpMid = 0.0;
+        m_lpLow = m_lpLow2 = m_lpMid = 0.0;
+        m_peakLevel = m_peakBass = m_peakMid = m_peakTreble = 0.0;
         m_beatClock.restart();
         // Custom decoded-audio output: VLC hands us S16 interleaved samples; we
         // play + analyse them. flush() clears the ring on seek so stale audio
@@ -316,23 +317,37 @@ void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
     if (frames <= 0) return;
     const int16_t* s = reinterpret_cast<const int16_t*>(chunk.constData());
 
-    const double aLow = 0.028, aMid = 0.250;
+    // Bass/mid crossover ~330Hz, CASCADED to 12dB/oct so kick energy lands in the
+    // bass band instead of bleeding up into mids. Mid/treble split ~2kHz (1-pole).
+    const double aLow = 0.046, aMid = 0.250;
     double sumsq = 0.0, eBass = 0.0, eMid = 0.0, eTreb = 0.0;
     for (qint64 f = 0; f < frames; ++f) {
         const double x = (ch >= 2) ? (s[f * ch] + s[f * ch + 1]) * (0.5 / 32768.0)
                                    : s[f * ch] / 32768.0;
         sumsq += x * x;
-        m_lpLow += aLow * (x - m_lpLow);
-        m_lpMid += aMid * (x - m_lpMid);
-        const double bass = m_lpLow, mid = m_lpMid - m_lpLow, treb = x - m_lpMid;
+        m_lpLow  += aLow * (x - m_lpLow);
+        m_lpLow2 += aLow * (m_lpLow - m_lpLow2);  // second pole -> steeper bass edge
+        m_lpMid  += aMid * (x - m_lpMid);
+        const double bass = m_lpLow2;             // well-defined low band
+        const double mid  = m_lpMid - m_lpLow2;   // bass removed more cleanly
+        const double treb = x - m_lpMid;
         eBass += bass * bass; eMid += mid * mid; eTreb += treb * treb;
     }
     const double inv = 1.0 / double(frames);
-    const double meanSq = sumsq * inv;
-    const float level  = float(qBound(0.0, std::sqrt(meanSq) * 3.5, 1.0));
-    const float bass   = float(qBound(0.0, std::sqrt(eBass * inv) * 3.5, 1.0));
-    const float mid    = float(qBound(0.0, std::sqrt(eMid  * inv) * 5.0, 1.0));
-    const float treble = float(qBound(0.0, std::sqrt(eTreb * inv) * 8.0, 1.0));
+
+    // Auto-gain: normalise each band to its OWN recent peak (fast attack, slow
+    // decay) so it maps the track's dynamics into 0..1 and never just pins at full
+    // on hot/bass-heavy material — there's always headroom and movement left.
+    auto agc = [](double raw, double& peak) -> float {
+        constexpr double decay  = 0.9990; // peak falls slowly (~seconds) -> stable auto-range
+        constexpr double floorv = 0.06;   // higher gate so quiet bands don't chatter
+        peak = std::max(raw, peak * decay);
+        return float(qBound(0.0, raw / std::max(peak, floorv), 1.0));
+    };
+    const float level  = agc(std::sqrt(sumsq * inv), m_peakLevel);
+    const float bass   = agc(std::sqrt(eBass * inv), m_peakBass);
+    const float mid    = agc(std::sqrt(eMid  * inv), m_peakMid);
+    const float treble = agc(std::sqrt(eTreb * inv), m_peakTreble);
 
     const double bassMeanSq = eBass * inv;
     bool isBeat = false;

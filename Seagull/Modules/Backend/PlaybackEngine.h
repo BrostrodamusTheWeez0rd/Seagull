@@ -104,7 +104,14 @@ private:
     qint64        m_lastBeatMs  = 0;
     QElapsedTimer m_beatClock;
     double        m_lpLow       = 0.0;     // one-pole filter states for the band split
+    double        m_lpLow2      = 0.0;     // 2nd pole -> steeper bass/mid crossover
     double        m_lpMid       = 0.0;
+    // Per-band auto-gain peak followers: each band is normalised to its own recent
+    // peak so it never just pins at full (keeps headroom + movement on hot tracks).
+    double        m_peakLevel   = 0.0;
+    double        m_peakBass    = 0.0;
+    double        m_peakMid     = 0.0;
+    double        m_peakTreble  = 0.0;
 };
 
 #endif // PLAYBACKENGINE_H

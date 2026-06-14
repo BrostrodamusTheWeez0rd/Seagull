@@ -269,6 +269,13 @@ void Theme::apply(const QString& name) {
         // plain text colour (%2) reads as a mismatched white in dark themes.
         "QPushButton#splitterToggleButton { background-color:%7; border:1px solid %6; border-radius:15px; color:%6; font-size:16px; }"
         "QPushButton#splitterToggleButton:hover { background-color:%6; color:%3; border:1px solid %6; }"
+        // Small round prev/next-visualizer triangles flanking the visualizer button
+        // (same circle idiom as the control buttons, just smaller).
+        "QPushButton#vizNavButton { background-color:%7; border:1px solid %6; border-radius:11px; color:%6; font-size:10px; }"
+        "QPushButton#vizNavButton:hover { background-color:%6; color:%3; border:1px solid %6; }"
+        // Banner close (X): flat, turns red on hover to signal the teardown.
+        "QPushButton#bannerCloseButton { background:transparent; border:none; color:%2; font-size:13px; font-weight:bold; }"
+        "QPushButton#bannerCloseButton:hover { color:#e25555; }"
         // Photo viewer: large circular prev/next arrows glued to the left/right
         // edges of the image — same overlay idiom as the chevron, just bigger.
         "QPushButton#photoNavButton { background-color:%7; border:1px solid %6; border-radius:22px; color:%6; font-size:24px; font-weight:bold; }"

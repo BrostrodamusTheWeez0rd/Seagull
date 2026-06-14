@@ -164,6 +164,7 @@ private:
     // Audio visualizer: a top-level overlay (seagull sky) shown over the audio
     // surface when the visualizer button is toggled on, replacing the album art.
     void toggleVisualizer();
+    void cycleVisualizer(int delta); // switch to prev/next visualizer + persist
     Visualizer* visualizer = nullptr;
     bool m_visualizerActive = false;
 

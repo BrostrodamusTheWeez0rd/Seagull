@@ -223,6 +223,8 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() { emit fullscreenToggleRequested(); });
     connect(playerControls, &PlayerControls::visualizerRequested, this, &VideoPlayer::toggleVisualizer);
+    connect(playerControls, &PlayerControls::visualizerCycleRequested, this, &VideoPlayer::cycleVisualizer);
+    connect(titleBar, &PlayerTitleBar::closeRequested, this, &VideoPlayer::closePlayer); // banner X = teardown
     connect(playerControls, &PlayerControls::popoutRequested, this, [this]() { emit popOutRequested(); });
     connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
 }
@@ -1154,17 +1156,23 @@ void VideoPlayer::applyKindChrome() {
         if (nextPhotoBtn) { nextPhotoBtn->hide(); nextPhotoBtn->setWindowOpacity(1.0); }
     }
     if (m_kind == MediaKind::Audio) {
-        // The visualizer stays ON across tracks if the user had it on.
+        // Restore the persisted on/off choice (survives track changes + restarts).
+        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        m_visualizerActive = cfg.value("Visualizer/Active", false).toBool();
+        if (playerControls) playerControls->setVisualizerActive(m_visualizerActive);
         if (m_visualizerActive && visualizer) {
             hidePosterOverlay();
             visualizer->setDemoMode(!engine->audioTapActive());
             visualizer->show();
             repositionOverlays();
             raiseOverlays();
+        } else if (visualizer) {
+            visualizer->hide();
         }
     } else {
         // Video / photo: no visualizer.
         m_visualizerActive = false;
+        if (playerControls) playerControls->setVisualizerActive(false);
         if (visualizer) { visualizer->setDemoMode(false); visualizer->hide(); }
     }
 }
@@ -1205,9 +1213,28 @@ void VideoPlayer::applyVisualizerSettings() {
     visualizer->setGullStyle(style.startsWith("Animated", Qt::CaseInsensitive));
 }
 
+void VideoPlayer::cycleVisualizer(int delta) {
+    if (!visualizer) return;
+    static const QStringList kTypes = { "Seagull Sky", "Seagull Waves" };
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    const QString cur = cfg.value("Visualizer/Type", "Seagull Sky").toString();
+    int idx = qMax(0, int(kTypes.indexOf(cur)));
+    idx = (idx + delta + kTypes.size()) % kTypes.size();
+    cfg.setValue("Visualizer/Type", kTypes[idx]);
+    cfg.sync();
+    applyVisualizerSettings(); // re-reads Type -> setMode + the new type's gull style (live)
+}
+
 void VideoPlayer::toggleVisualizer() {
     if (m_kind != MediaKind::Audio || !visualizer) return; // audio-only feature
     m_visualizerActive = !m_visualizerActive;
+    // Persist the on/off choice so it restores next track / next launch.
+    {
+        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        cfg.setValue("Visualizer/Active", m_visualizerActive);
+        cfg.sync();
+    }
+    if (playerControls) playerControls->setVisualizerActive(m_visualizerActive);
     if (m_visualizerActive) {
         hidePosterOverlay();           // the album art steps aside
         // Real reactivity when the audio tap is live; demo self-drive otherwise.

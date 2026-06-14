@@ -17,10 +17,14 @@ public:
     void setTitle(const QString& title);
     void setLoading(bool loading);      // show/hide the animated seagull beside the title
 
+signals:
+    void closeRequested();              // the banner's X — hard-stop + tear down the player
+
 private:
     QLabel* titleLabel;
     QLabel* m_spinner;      // animated seagull shown while a stream is loading
     QMovie* m_movie;        // SeagullAnim.gif driving m_spinner
+    QPushButton* m_closeBtn; // far-right X
 };
 
 #endif // PLAYERTITLEBAR_H

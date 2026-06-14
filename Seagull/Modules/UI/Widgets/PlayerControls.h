@@ -21,6 +21,8 @@
 #include "../../Backend/SgYtDlp.h"
 
 class PlaybackEngine;
+class QGraphicsOpacityEffect;
+class QVariantAnimation;
 
 class PlayerControls : public QWidget {
     Q_OBJECT
@@ -46,14 +48,16 @@ public:
     void setRecording(bool on);          // reflect recorder state: red pulse while on
     void setRecordAvailable(bool avail); // show/hide the Record button (any playing media)
     void setPoppedOut(bool popped);      // swap the pop-out button's glyph/tooltip
-    void setVisualizerMode(bool on);     // audio: swap the fullscreen button for a visualizer button
+    void setVisualizerMode(bool on);     // audio: show the visualizer toggle button
+    void setVisualizerActive(bool on);   // visualizer on/off — gates the hover-reveal triangles
 
 public slots:
     void setAvailableQualities(const QList<StreamOption>& options);
 
 signals:
     void fullscreenRequested();
-    void visualizerRequested(); // audio visualizer button clicked (same slot as fullscreen, audio mode)
+    void visualizerRequested();          // audio visualizer button clicked (toggle on/off)
+    void visualizerCycleRequested(int delta); // -1 prev / +1 next visualizer (side triangles)
     void popoutRequested(); // pop-out button clicked (detach to / re-dock from its own window)
     void stopRequested();
     void replayRequested();
@@ -102,7 +106,6 @@ private:
     QColor m_iconHover; // tint when hovered (palette HighlightedText)
 
     QPushButton* playPauseBtn;
-    QPushButton* stopBtn;
     QPushButton* prevBtn;
     QPushButton* nextBtn;
     QPushButton* muteBtn;
@@ -114,7 +117,9 @@ private:
     QTimer* qualityHideTimer;
 
     QPushButton* popoutBtn;     // detach the player into its own window
-    QPushButton* visualizerBtn; // audio-only: toggle the visualizer (beside fullscreen)
+    QPushButton* prevVizBtn;    // audio-only: small triangle, previous visualizer
+    QPushButton* visualizerBtn; // audio-only: toggle the visualizer
+    QPushButton* nextVizBtn;    // audio-only: small triangle, next visualizer
     QPushButton* fullscreenBtn;
     QSlider* positionSlider;
 
@@ -130,7 +135,15 @@ private:
     bool m_endedMode = false; // true after EOF until the next media starts
     bool m_isLive = false;    // live stream: no meaningful duration, no seeking
     bool m_recording = false; // recorder is running (drives the red pulse)
-    bool m_visualizerMode = false; // audio: the fullscreen button acts as a visualizer button
+    bool m_visualizerMode = false; // audio: the visualizer button is shown
+    bool m_vizActive = false;      // visualizer currently on (triangles may hover-reveal)
+    QTimer* vizTriHideTimer = nullptr; // grace delay before fading the cycle triangles out
+    // The triangles keep their layout space (so revealing them never shifts the
+    // buttons) and fade via opacity instead.
+    QGraphicsOpacityEffect* m_prevVizFx = nullptr;
+    QGraphicsOpacityEffect* m_nextVizFx = nullptr;
+    QVariantAnimation* m_vizFade = nullptr;
+    void fadeVizTriangles(bool in);
     double m_pulsePhase = 0.0;        // animates the recording pulse
     QTimer* recordPulseTimer = nullptr;
 

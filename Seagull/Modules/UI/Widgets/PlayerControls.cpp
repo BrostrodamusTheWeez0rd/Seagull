@@ -17,6 +17,8 @@
 #include <QApplication>
 #include <QCursor>
 #include <QHideEvent>
+#include <QGraphicsOpacityEffect>
+#include <QVariantAnimation>
 #include <QDebug>
 #include <QSettings>
 #include <QCoreApplication>
@@ -44,6 +46,8 @@ protected:
         QSlider::mousePressEvent(e);
     }
 };
+
+constexpr int kBaseWidth = 500; // control bar width with the cycle triangles collapsed
 
 // MDI6 volume glyph for the current mute state.
 QString volumeIconPath(bool muted) {
@@ -83,7 +87,6 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
 
     prevBtn = new QPushButton();
     playPauseBtn = new QPushButton();
-    stopBtn = new QPushButton();
     nextBtn = new QPushButton();
     muteBtn = new QPushButton();
     recordBtn = new QPushButton();
@@ -92,10 +95,59 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     popoutBtn = new QPushButton();
     visualizerBtn = new QPushButton();
     visualizerBtn->hide(); // audio-only; shown via setVisualizerMode
+    // Small, flat triangle buttons that flank the visualizer button to cycle
+    // through visualizers (prev / next). Audio-only, shown via setVisualizerMode.
+    prevVizBtn = new QPushButton(QStringLiteral("◂")); // ◂
+    nextVizBtn = new QPushButton(QStringLiteral("▸")); // ▸
+    for (auto* b : { prevVizBtn, nextVizBtn }) {
+        b->setObjectName("vizNavButton"); // small circle, themed in Theme.cpp
+        b->setFixedHeight(22);
+        b->setFixedWidth(0);              // collapsed -> no gap; width animates open
+        b->setCursor(Qt::PointingHandCursor);
+        b->installEventFilter(this);      // hover-reveal (see eventFilter)
+        b->hide();
+    }
+    // Reveal by animating WIDTH (0 -> 22) so the triangles smoothly push the
+    // neighbouring controls apart, plus an opacity fade. Collapsed + hidden when
+    // out, so there's no constant gap.
+    m_prevVizFx = new QGraphicsOpacityEffect(prevVizBtn);
+    m_nextVizFx = new QGraphicsOpacityEffect(nextVizBtn);
+    prevVizBtn->setGraphicsEffect(m_prevVizFx);
+    nextVizBtn->setGraphicsEffect(m_nextVizFx);
+    m_prevVizFx->setOpacity(0.0);
+    m_nextVizFx->setOpacity(0.0);
+    m_vizFade = new QVariantAnimation(this);
+    m_vizFade->setDuration(160);
+    connect(m_vizFade, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
+        const qreal o = v.toReal();
+        const int w = qRound(22.0 * o);
+        prevVizBtn->setFixedWidth(w);
+        nextVizBtn->setFixedWidth(w);
+        if (m_prevVizFx) m_prevVizFx->setOpacity(o);
+        if (m_nextVizFx) m_nextVizFx->setOpacity(o);
+        // Grow the bar SYMMETRICALLY about its centre: widen by both triangles and
+        // shift left by half the growth, so it stretches equally on each side. The
+        // visualizer button stays put, fullscreen rides right, left controls slide
+        // left — no external re-centre needed.
+        const int newW = kBaseWidth + 2 * w;
+        if (newW != width()) {
+            const int dx = (newW - width()) / 2;
+            setFixedWidth(newW);
+            move(x() - dx, y());
+        }
+    });
+    connect(m_vizFade, &QVariantAnimation::finished, this, [this]() {
+        if (m_prevVizFx && m_prevVizFx->opacity() <= 0.01) { // fully collapsed -> drop the space
+            prevVizBtn->setVisible(false);
+            nextVizBtn->setVisible(false);
+        }
+    });
+    prevVizBtn->setToolTip(QStringLiteral("Previous visualizer"));
+    nextVizBtn->setToolTip(QStringLiteral("Next visualizer"));
     fullscreenBtn = new QPushButton();
 
     QSize iconSize(20, 20);
-    m_iconButtons = { prevBtn, playPauseBtn, recordBtn, stopBtn, nextBtn, muteBtn, qualityBtn, popoutBtn, visualizerBtn, fullscreenBtn };
+    m_iconButtons = { prevBtn, playPauseBtn, recordBtn, nextBtn, muteBtn, qualityBtn, popoutBtn, visualizerBtn, fullscreenBtn };
 
     for (auto* btn : m_iconButtons) {
         btn->setObjectName("playerCtlButton"); // styled by Theme::apply
@@ -107,7 +159,6 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     // hover fill come from the stylesheet, so they stay accent-coloured).
     prevBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/skip-previous.svg"), prevBtn));
     playPauseBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/play.svg"), playPauseBtn));
-    stopBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/stop.svg"), stopBtn));
     nextBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/skip-next.svg"), nextBtn));
     qualityBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/cog.svg"), qualityBtn)); // MDI cog, themed like the rest
     popoutBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/popout.svg"), popoutBtn)); // MDI open-in-new
@@ -125,17 +176,18 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     mainLayout->addWidget(prevBtn);
     mainLayout->addWidget(playPauseBtn);
     mainLayout->addWidget(recordBtn);
-    mainLayout->addWidget(stopBtn);
     mainLayout->addWidget(nextBtn);
     mainLayout->addWidget(timeLabel);
     mainLayout->addWidget(positionSlider, 1);
     mainLayout->addWidget(muteBtn);
     mainLayout->addWidget(qualityBtn);
     mainLayout->addWidget(popoutBtn);
+    mainLayout->addWidget(prevVizBtn);
     mainLayout->addWidget(visualizerBtn);
+    mainLayout->addWidget(nextVizBtn);
     mainLayout->addWidget(fullscreenBtn);
 
-    setFixedSize(500, 50);
+    setFixedSize(kBaseWidth, 50);
 
     // --- Volume popup ---
     volumeFrame = new QFrame();
@@ -194,10 +246,23 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     connect(nextClickTimer, &QTimer::timeout, this, &PlayerControls::onNextSingleClick);
 
     connect(playPauseBtn, &QPushButton::clicked, this, &PlayerControls::togglePlayback);
-    connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
     connect(fullscreenBtn, &QPushButton::clicked, this, &PlayerControls::fullscreenRequested);
     connect(visualizerBtn, &QPushButton::clicked, this, &PlayerControls::visualizerRequested);
+    connect(prevVizBtn, &QPushButton::clicked, this, [this]() { emit visualizerCycleRequested(-1); });
+    connect(nextVizBtn, &QPushButton::clicked, this, [this]() { emit visualizerCycleRequested(+1); });
+
+    // Cycle triangles hover-reveal: shown while the cursor is on the visualizer
+    // button or a triangle (only when the visualizer is on); a short grace delay
+    // lets the cursor travel from the button onto a triangle without them vanishing.
+    vizTriHideTimer = new QTimer(this);
+    vizTriHideTimer->setSingleShot(true);
+    vizTriHideTimer->setInterval(300); // grace so you can reach a triangle
+    connect(vizTriHideTimer, &QTimer::timeout, this, [this]() {
+        if (visualizerBtn->underMouse() || prevVizBtn->underMouse() || nextVizBtn->underMouse())
+            vizTriHideTimer->start();      // still hovered -> keep them up
+        else fadeVizTriangles(false);
+    });
     connect(popoutBtn, &QPushButton::clicked, this, &PlayerControls::popoutRequested);
     connect(recordBtn, &QPushButton::clicked, this, [this]() { emit recordToggleRequested(); });
 
@@ -289,9 +354,37 @@ void PlayerControls::setPoppedOut(bool popped) {
 }
 
 void PlayerControls::setVisualizerMode(bool on) {
-    // Audio: show the visualizer button alongside fullscreen (both available).
+    // Audio: show the visualizer toggle button (fullscreen stays too). The cycle
+    // triangles stay collapsed (zero width, hidden = no gap) and expand on hover.
     m_visualizerMode = on;
     visualizerBtn->setVisible(on);
+    if (!on) {
+        m_vizFade->stop();
+        prevVizBtn->setFixedWidth(0); nextVizBtn->setFixedWidth(0);
+        m_prevVizFx->setOpacity(0.0);  m_nextVizFx->setOpacity(0.0);
+        prevVizBtn->setVisible(false); nextVizBtn->setVisible(false);
+    }
+}
+
+void PlayerControls::setVisualizerActive(bool on) {
+    m_vizActive = on;
+    if (on) {
+        // Just turned on with the cursor on the button -> reveal triangles now.
+        if (m_visualizerMode && visualizerBtn->underMouse()) fadeVizTriangles(true);
+    } else {
+        fadeVizTriangles(false);
+    }
+}
+
+void PlayerControls::fadeVizTriangles(bool in) {
+    if (!m_vizFade || !m_prevVizFx) return;
+    const qreal cur = m_prevVizFx->opacity();
+    if ((in && cur >= 1.0) || (!in && cur <= 0.0)) return; // already there
+    if (in) { prevVizBtn->setVisible(true); nextVizBtn->setVisible(true); } // need space to expand into
+    m_vizFade->stop();
+    m_vizFade->setStartValue(cur);
+    m_vizFade->setEndValue(in ? 1.0 : 0.0);
+    m_vizFade->start();
 }
 
 void PlayerControls::setRecording(bool on) {
@@ -495,6 +588,17 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
         // Re-tint the glyph for hover: idle uses the text colour, hover uses the
         // on-accent colour to read against the accent fill the stylesheet paints.
         retintIcon(btn, event->type() == QEvent::Enter ? m_iconHover : m_iconIdle);
+    }
+
+    // Hover-reveal the cycle triangles when the visualizer is on and the cursor is
+    // on the visualizer button or a triangle.
+    if (watched == visualizerBtn || watched == prevVizBtn || watched == nextVizBtn) {
+        if (event->type() == QEvent::Enter && m_vizActive && m_visualizerMode) {
+            vizTriHideTimer->stop();
+            fadeVizTriangles(true);
+        } else if (event->type() == QEvent::Leave) {
+            vizTriHideTimer->start();
+        }
     }
 
     if (watched == muteBtn || watched == volumeFrame) {
