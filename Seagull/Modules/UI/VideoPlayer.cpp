@@ -314,9 +314,9 @@ void VideoPlayer::onMediaEndReached() {
         return;
     }
 
-    // The track ended: if the visualizer is up, send the gulls into their dramatic
-    // spin-and-fall.
-    if (m_visualizerActive && visualizer) visualizer->triggerDeath();
+    // The track ended: if the visualizer is up and the setting allows, send the
+    // gulls into their dramatic spin-and-fall (otherwise they keep flying).
+    if (m_visualizerActive && visualizer && m_killGullsOnEnd) visualizer->triggerDeath();
 
     osdTimer->stop();
     m_stopped = true; // ended = replay-ready, same as a first-stage Stop
@@ -1206,11 +1206,12 @@ void VideoPlayer::applyVisualizerSettings() {
     QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     const QString type = cfg.value("Visualizer/Type", "Seagull Sky").toString();
     visualizer->setMode(type);
-    const QString key = type.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)
-        ? QStringLiteral("Visualizer/WavesGullStyle")
-        : QStringLiteral("Visualizer/SkyGullStyle");
-    const QString style = cfg.value(key, "Animated gulls").toString();
-    visualizer->setGullStyle(style.startsWith("Animated", Qt::CaseInsensitive));
+    const QString bkey = type.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)
+        ? QStringLiteral("Visualizer/WavesBehavior")
+        : QStringLiteral("Visualizer/SkyBehavior");
+    visualizer->setBehavior(cfg.value(bkey, "Drift").toString());
+    visualizer->setMaxGulls(cfg.value("Visualizer/MaxGulls", 14).toInt());
+    m_killGullsOnEnd = cfg.value("Visualizer/KillOnEnd", true).toBool();
 }
 
 void VideoPlayer::cycleVisualizer(int delta) {

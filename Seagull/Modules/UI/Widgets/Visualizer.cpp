@@ -12,11 +12,11 @@
 #include <QRandomGenerator>
 #include <QImageReader>
 #include <QImage>
+#include <algorithm>
 #include <cmath>
 
 namespace {
     constexpr int kFps      = 60;
-    constexpr int kMaxGulls = 14;
     constexpr int kClouds   = 5;
     qreal frand(qreal lo, qreal hi) {
         return lo + (hi - lo) * QRandomGenerator::global()->generateDouble();
@@ -46,8 +46,7 @@ void Visualizer::loadGullFrames() {
         const QImage img = reader.read();
         if (img.isNull()) break;
         QImage rgba = img.convertToFormat(QImage::Format_ARGB32);
-        rgba = rgba.mirrored(true, false);
-        rgba = rgba.scaledToHeight(160, Qt::SmoothTransformation);
+        rgba = rgba.scaledToHeight(160, Qt::SmoothTransformation); // natural facing (left); flipped per direction at draw
         m_gullFrames.push_back(QPixmap::fromImage(rgba));
         const int d = reader.nextImageDelay();
         m_frameDelays.push_back(d > 0 ? d : 60); // sane default if unspecified
@@ -81,14 +80,33 @@ void Visualizer::beat() {
     const qreal raw = 0.5 / m_beatInterval; // 1.0 at ~120 BPM
     m_tempoSpeed = qBound(0.45, 1.0 + (raw - 1.0) * 2.0, 2.4);
 
-    if (!m_dying && m_gulls.size() < kMaxGulls) { // a beat sends an extra gull across
-        Gull g; recycleGull(g, true);
-        m_gulls.push_back(g);
+    if (!m_dying) { // a beat sends an extra gull across (dying ones don't count)
+        int living = 0;
+        for (const Gull& g : m_gulls) if (!g.dying) ++living;
+        if (living < m_maxGulls) {
+            Gull g; recycleGull(g);
+            m_gulls.push_back(g);
+        }
     }
 }
 
 void Visualizer::setDemoMode(bool on) { m_demo = on; m_demoBeatT = 0.0; }
-void Visualizer::setGullStyle(bool animated) { m_useGif = animated; update(); }
+
+void Visualizer::setBehavior(const QString& name) {
+    GullBehavior b = GullBehavior::Drift;
+    if (name.contains(QStringLiteral("Reverse"), Qt::CaseInsensitive) ||
+        name.contains(QStringLiteral("Right"),   Qt::CaseInsensitive)) b = GullBehavior::Reverse;
+    else if (name.contains(QStringLiteral("Swoop"), Qt::CaseInsensitive)) b = GullBehavior::Swooping;
+    else if (name.contains(QStringLiteral("Flock"), Qt::CaseInsensitive)) b = GullBehavior::Flocking;
+    if (b != m_behavior) {
+        m_behavior = b;
+        m_gulls.clear(); // respawn at the correct edge / pattern
+        m_spawnT = 0.0;
+    }
+    update();
+}
+
+void Visualizer::setMaxGulls(int n) { m_maxGulls = qBound(1, n, 30); }
 void Visualizer::setMode(const QString& name) {
     m_mode = name.contains(QStringLiteral("Waves"), Qt::CaseInsensitive) ? Mode::Waves : Mode::Sky;
     update();
@@ -113,9 +131,10 @@ void Visualizer::triggerDeath() {
 }
 
 void Visualizer::reviveGulls() {
-    if (!m_dying) return; // resuming from pause shouldn't disturb a living flock
+    // Resume spawning living gulls. We DON'T clear the flock: any gulls already
+    // dying keep falling out (they finish their death animation) and don't count
+    // toward the cap, while fresh living gulls spawn in for the new track.
     m_dying = false;
-    m_gulls.clear();      // fresh flock spawns back in with the music
     m_spawnT = 0.0;
 }
 
@@ -161,16 +180,19 @@ void Visualizer::resizeEvent(QResizeEvent* event) {
     seedClouds(); // rescale clouds to the new size; the flock keeps flying
 }
 
-void Visualizer::recycleGull(Gull& g, bool fromLeft) {
+void Visualizer::recycleGull(Gull& g) {
     const qreal w = qMax(1, width()), h = qMax(1, height());
-    g.size  = frand(h * 0.02, h * 0.06);   // smaller = farther away
-    g.x     = fromLeft ? -g.size : frand(0, w);
-    g.y     = frand(h * 0.08, h * 0.55);   // up in the sky, not close/low
+    const int dir = (m_behavior == GullBehavior::Reverse) ? -1 : 1; // Reverse flies R->L
+    g.size  = frand(h * 0.02, h * 0.06);          // smaller = farther away
+    g.x     = (dir > 0) ? -g.size : (w + g.size); // spawn at the trailing edge
+    g.y     = frand(h * 0.08, h * 0.55);          // up in the sky, not close/low
     g.speed = frand(0.4, 1.4) * (g.size / (h * 0.045));
     g.phase = frand(0, 6.28);
     g.flap  = frand(0.8, 1.3);
     g.foff  = QRandomGenerator::global()->bounded(qMax(1, m_gullFrames.size()));
+    g.yoff  = frand(-0.12, 0.12);                 // flock-band offset (fraction of height)
     g.rot = 0.0; g.spin = 0.0; g.vy = 0.0; g.dying = false;
+    g.swoopP = -1.0; g.swoopAmp = 0.0;            // start flying level (swoops kick in at random)
 }
 
 void Visualizer::step() {
@@ -219,15 +241,21 @@ void Visualizer::step() {
         if (c.x - c.scale * 140 > w) { c.x = -c.scale * 140; c.y = frand(h * 0.08, h * 0.5); }
     }
 
-    // Flock size tracks loudness (unless they're falling out of the sky).
-    const int desired = m_dying ? 0 : int(std::lround(m_level * kMaxGulls));
+    // Flock size tracks loudness (capped). Only LIVING gulls count — ones falling
+    // out at end-of-song don't block fresh spawns.
+    int living = 0;
+    for (const Gull& g : m_gulls) if (!g.dying) ++living;
+    const int desired = m_dying ? 0 : int(std::lround(m_level * m_maxGulls));
     m_spawnT += dt;
-    if (!m_dying && m_gulls.size() < desired && m_spawnT > 0.12) {
-        Gull g; recycleGull(g, true);
+    if (!m_dying && living < desired && m_spawnT > 0.12) {
+        Gull g; recycleGull(g);
         m_gulls.push_back(g);
         m_spawnT = 0.0;
+        ++living;
     }
 
+    const int dir = (m_behavior == GullBehavior::Reverse) ? -1 : 1;
+    const qreal flockY = h * 0.40 + std::sin(m_t * 0.6) * h * 0.16; // wandering flock band
     for (int i = 0; i < m_gulls.size(); ++i) {
         Gull& g = m_gulls[i];
         g.phase += 0.085 * g.flap; // bob clock (constant, not audio-tied)
@@ -239,45 +267,54 @@ void Visualizer::step() {
             if (g.y - g.size > h) { m_gulls.removeAt(i); --i; } // fell off the bottom
             continue;
         }
-        g.x += g.speed * 1.3 * m_tempoSpeed; // steady glide, paced by the song's tempo
-        if (g.x - g.size > w) {
-            if (m_gulls.size() > desired) { m_gulls.removeAt(i); --i; } // thin to the target
-            else recycleGull(g, true);
+        g.x += dir * g.speed * 1.3 * m_tempoSpeed; // glide (direction per behaviour, tempo-paced)
+        if (m_behavior == GullBehavior::Flocking)  // cohere toward the wandering flock band
+            g.y += (flockY + g.yoff * h - g.y) * 0.03;
+        if (m_behavior == GullBehavior::Swooping) {
+            // Fly level, then occasionally dip into a down-and-up arc, then level off.
+            if (g.swoopP < 0.0) {
+                if (frand(0.0, 1.0) < 0.006) { g.swoopP = 0.0; g.swoopAmp = frand(0.12, 0.24) * h; }
+            } else {
+                g.swoopP += dt / 1.3;            // one swoop ~1.3s
+                if (g.swoopP >= 1.0) g.swoopP = -1.0;
+            }
+        }
+        const bool off = (dir > 0) ? (g.x - g.size > w) : (g.x + g.size < 0);
+        if (off) {
+            if (living > desired) { m_gulls.removeAt(i); --i; --living; } // thin to target
+            else recycleGull(g);
         }
     }
     update();
 }
 
 void Visualizer::drawGull(QPainter& p, const Gull& g) {
-    // Up-and-down bob like a real bird in flight (frozen while it's tumbling down).
-    const qreal bob = g.dying ? 0.0 : std::sin(g.phase) * g.size * 0.20;
-    p.save();
-    p.translate(g.x, g.y + bob);
-    if (g.rot != 0.0) p.rotate(g.rot);
+    if (m_gullFrames.isEmpty()) return; // animated gulls only now
 
-    if (m_useGif && !m_gullFrames.isEmpty()) {
-        const QPixmap& fr = m_gullFrames[(m_frameIdx + g.foff) % m_gullFrames.size()];
-        const qreal tw = g.size * 2.6; // wingspan
-        const qreal th = tw * fr.height() / fr.width();
-        p.drawPixmap(QRectF(-tw / 2, -th / 2, tw, th), fr, fr.rect());
-        p.restore();
-        return;
+    // Vertical motion per behaviour: a big swoop arc for Swooping, a gentle bob
+    // otherwise (frozen while tumbling at EOF).
+    qreal vOff;
+    if (g.dying) {
+        vOff = 0.0;
+    } else if (m_behavior == GullBehavior::Swooping && g.swoopP >= 0.0) {
+        // A clean down-and-up arc during a swoop; gentle bob the rest of the time.
+        vOff = std::sin(3.14159265358979 * g.swoopP) * g.swoopAmp + std::sin(g.phase) * g.size * 0.12;
+    } else if (m_behavior == GullBehavior::Flocking) {
+        vOff = std::sin(g.phase) * g.size * 0.10;
+    } else {
+        vOff = std::sin(g.phase) * g.size * 0.20;
     }
 
-    // Painted white-outline gull (settings choice, or gif fallback).
-    const qreal s = g.size;
-    const qreal dip = (0.34 + 0.18 * std::sin(g.phase)) * s; // gentle wing sweep
-    QPainterPath path;
-    path.moveTo(-s, 0);
-    path.quadTo(-s * 0.5, -dip, 0, 0);
-    path.quadTo(s * 0.5, -dip, s, 0);
-    QPen pen(QColor(255, 255, 255, 235));
-    pen.setWidthF(qMax<qreal>(1.6, s * 0.11));
-    pen.setCapStyle(Qt::RoundCap);
-    pen.setJoinStyle(Qt::RoundJoin);
-    p.setPen(pen);
-    p.setBrush(Qt::NoBrush);
-    p.drawPath(path);
+    const int dir = (m_behavior == GullBehavior::Reverse) ? -1 : 1;
+    const QPixmap& fr = m_gullFrames[(m_frameIdx + g.foff) % m_gullFrames.size()];
+    const qreal tw = g.size * 2.6; // wingspan
+    const qreal th = tw * fr.height() / fr.width();
+
+    p.save();
+    p.translate(g.x, g.y + vOff);
+    if (g.rot != 0.0) p.rotate(g.rot);
+    if (dir > 0) p.scale(-1.0, 1.0); // frames face left natively; flip to face travel direction
+    p.drawPixmap(QRectF(-tw / 2, -th / 2, tw, th), fr, fr.rect());
     p.restore();
 }
 
@@ -290,7 +327,14 @@ void Visualizer::paintEvent(QPaintEvent*) {
     else                       drawSky(p);
 
     drawClouds(p);
-    for (const Gull& g : m_gulls) drawGull(p, g);
+    // Draw smallest-first so bigger (nearer) gulls paint OVER smaller (farther)
+    // ones — fakes perspective depth.
+    QVector<const Gull*> order;
+    order.reserve(m_gulls.size());
+    for (const Gull& g : m_gulls) order.push_back(&g);
+    std::sort(order.begin(), order.end(),
+              [](const Gull* a, const Gull* b) { return a->size < b->size; });
+    for (const Gull* g : order) drawGull(p, *g);
 }
 
 void Visualizer::drawSky(QPainter& p) {

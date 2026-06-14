@@ -143,6 +143,7 @@ private:
     QGraphicsOpacityEffect* m_prevVizFx = nullptr;
     QGraphicsOpacityEffect* m_nextVizFx = nullptr;
     QVariantAnimation* m_vizFade = nullptr;
+    int m_barCenterX = 0; // locked screen centre, so symmetric growth has no drift
     void fadeVizTriangles(bool in);
     double m_pulsePhase = 0.0;        // animates the recording pulse
     QTimer* recordPulseTimer = nullptr;

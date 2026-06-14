@@ -131,9 +131,8 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
         // left — no external re-centre needed.
         const int newW = kBaseWidth + 2 * w;
         if (newW != width()) {
-            const int dx = (newW - width()) / 2;
             setFixedWidth(newW);
-            move(x() - dx, y());
+            move(m_barCenterX - newW / 2, y()); // absolute centre -> no drift, no jitter
         }
     });
     connect(m_vizFade, &QVariantAnimation::finished, this, [this]() {
@@ -380,7 +379,11 @@ void PlayerControls::fadeVizTriangles(bool in) {
     if (!m_vizFade || !m_prevVizFx) return;
     const qreal cur = m_prevVizFx->opacity();
     if ((in && cur >= 1.0) || (!in && cur <= 0.0)) return; // already there
-    if (in) { prevVizBtn->setVisible(true); nextVizBtn->setVisible(true); } // need space to expand into
+    if (in) {
+        prevVizBtn->setVisible(true);
+        nextVizBtn->setVisible(true);
+        m_barCenterX = x() + width() / 2; // lock the centre (invariant under symmetric growth)
+    }
     m_vizFade->stop();
     m_vizFade->setStartValue(cur);
     m_vizFade->setEndValue(in ? 1.0 : 0.0);

@@ -167,6 +167,7 @@ private:
     void cycleVisualizer(int delta); // switch to prev/next visualizer + persist
     Visualizer* visualizer = nullptr;
     bool m_visualizerActive = false;
+    bool m_killGullsOnEnd = true; // gulls fall at end of song (Settings)
 
     // Photo viewer: large prev/next arrows glued to the image's left/right edges,
     // fading on the same OSD clock as the controls. Top-level like the overlays.
