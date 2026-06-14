@@ -114,6 +114,7 @@ private:
     QTimer* qualityHideTimer;
 
     QPushButton* popoutBtn;     // detach the player into its own window
+    QPushButton* visualizerBtn; // audio-only: toggle the visualizer (beside fullscreen)
     QPushButton* fullscreenBtn;
     QSlider* positionSlider;
 

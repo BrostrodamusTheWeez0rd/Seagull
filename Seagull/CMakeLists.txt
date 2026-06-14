@@ -52,6 +52,8 @@ add_executable(Seagull
     Modules/UI/Widgets/FlowLayout.h
     Modules/UI/Widgets/SpellCheckLineEdit.cpp
     Modules/UI/Widgets/SpellCheckLineEdit.h
+    Modules/UI/Widgets/Visualizer.cpp
+    Modules/UI/Widgets/Visualizer.h
     Modules/Backend/SgYtDlp.h
     Modules/Backend/SgYtDlp.cpp
     Modules/Backend/SgHlsProxy.h

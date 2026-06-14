@@ -90,10 +90,12 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     qualityBtn = new QPushButton();
     qualityBtn->hide();
     popoutBtn = new QPushButton();
+    visualizerBtn = new QPushButton();
+    visualizerBtn->hide(); // audio-only; shown via setVisualizerMode
     fullscreenBtn = new QPushButton();
 
     QSize iconSize(20, 20);
-    m_iconButtons = { prevBtn, playPauseBtn, recordBtn, stopBtn, nextBtn, muteBtn, qualityBtn, popoutBtn, fullscreenBtn };
+    m_iconButtons = { prevBtn, playPauseBtn, recordBtn, stopBtn, nextBtn, muteBtn, qualityBtn, popoutBtn, visualizerBtn, fullscreenBtn };
 
     for (auto* btn : m_iconButtons) {
         btn->setObjectName("playerCtlButton"); // styled by Theme::apply
@@ -111,6 +113,8 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     popoutBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/popout.svg"), popoutBtn)); // MDI open-in-new
     popoutBtn->setToolTip(QStringLiteral("Pop out into its own window"));
     fullscreenBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/fullscreen.svg"), fullscreenBtn)); // MDI fullscreen
+    visualizerBtn->setIcon(makeIcon(QStringLiteral(":/Assets/icons/visualizer.svg"), visualizerBtn));
+    visualizerBtn->setToolTip(QStringLiteral("Visualizer"));
 
     // Record button: live-only, hidden until a live stream plays. Themed like the rest
     // when idle (it's in m_iconButtons above); turns red and pulses while recording.
@@ -128,6 +132,7 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     mainLayout->addWidget(muteBtn);
     mainLayout->addWidget(qualityBtn);
     mainLayout->addWidget(popoutBtn);
+    mainLayout->addWidget(visualizerBtn);
     mainLayout->addWidget(fullscreenBtn);
 
     setFixedSize(500, 50);
@@ -191,12 +196,8 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     connect(playPauseBtn, &QPushButton::clicked, this, &PlayerControls::togglePlayback);
     connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
-    // In audio mode this same button is the visualizer button (glyph/tooltip
-    // swapped by setVisualizerMode); route the click to the matching signal.
-    connect(fullscreenBtn, &QPushButton::clicked, this, [this]() {
-        if (m_visualizerMode) emit visualizerRequested();
-        else                  emit fullscreenRequested();
-        });
+    connect(fullscreenBtn, &QPushButton::clicked, this, &PlayerControls::fullscreenRequested);
+    connect(visualizerBtn, &QPushButton::clicked, this, &PlayerControls::visualizerRequested);
     connect(popoutBtn, &QPushButton::clicked, this, &PlayerControls::popoutRequested);
     connect(recordBtn, &QPushButton::clicked, this, [this]() { emit recordToggleRequested(); });
 
@@ -288,14 +289,9 @@ void PlayerControls::setPoppedOut(bool popped) {
 }
 
 void PlayerControls::setVisualizerMode(bool on) {
-    // Audio has no fullscreen video, so the fullscreen button becomes a
-    // visualizer toggle (hooked up later). Swap the glyph + tooltip; the click
-    // routing is gated on m_visualizerMode in the ctor connection.
+    // Audio: show the visualizer button alongside fullscreen (both available).
     m_visualizerMode = on;
-    fullscreenBtn->setIcon(makeIcon(on ? QStringLiteral(":/Assets/icons/visualizer.svg")
-                                       : QStringLiteral(":/Assets/icons/fullscreen.svg"), fullscreenBtn));
-    fullscreenBtn->setToolTip(on ? QStringLiteral("Visualizer")
-                                 : QStringLiteral("Fullscreen"));
+    visualizerBtn->setVisible(on);
 }
 
 void PlayerControls::setRecording(bool on) {

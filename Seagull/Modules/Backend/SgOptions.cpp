@@ -14,11 +14,15 @@ QStringList SgOptions::buildDownloadArgs(const QString& url) {
     QString format = settings.value("Download/Format", "mp4").toString();
     QString quality = settings.value("Download/Quality", "Best Available").toString();
 
-    // Downloads land in the dedicated Downloads folder — deliberately separate
-    // from the media folders / unify system (yt-dlp creates the dir if needed).
+    // Route by type into the matching media folder: audio -> Audio folder, video
+    // -> Video folder (each honours the unify setting; yt-dlp creates the dir if
+    // needed). These fall back to the legacy Downloads folder when no per-type
+    // folder is set, so existing setups keep working.
+    const QString outDir = (type == "Audio") ? SgPaths::audioFolder()
+                                             : SgPaths::videoFolder();
     args << "--newline"
         << "--no-playlist"
-        << "-o" << SgPaths::downloadFolder() + "/%(title)s.%(ext)s";
+        << "-o" << outDir + "/%(title)s.%(ext)s";
 
     if (type == "Audio") {
         // Extract audio. "Best Available" keeps the source audio codec; a named

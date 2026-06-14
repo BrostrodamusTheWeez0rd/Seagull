@@ -116,6 +116,37 @@ void Settings::setupUI() {
     cardSizeSlider->hide();
     displayLayout->addRow("", cardSizeSlider);
 
+    // Visualizer picker + its per-visualizer settings, swapped underneath it.
+    visualizerCombo = new QComboBox();
+    visualizerCombo->addItems({ "Seagull Sky", "Seagull Waves" });
+    visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio.");
+    displayLayout->addRow("Visualizer:", visualizerCombo);
+
+    vizSettingsStack = new QStackedWidget();
+    // Page 0: Seagull Sky settings.
+    {
+        auto* page = new QWidget();
+        auto* form = new QFormLayout(page);
+        form->setContentsMargins(0, 0, 0, 0);
+        gullStyleCombo = new QComboBox();
+        gullStyleCombo->addItems({ "Animated gulls", "White outline" });
+        gullStyleCombo->setToolTip("Animated uses the seagull GIF; outline draws simple white gulls.");
+        form->addRow("Gull style:", gullStyleCombo);
+        vizSettingsStack->addWidget(page);
+    }
+    // Page 1: Seagull Waves settings.
+    {
+        auto* page = new QWidget();
+        auto* form = new QFormLayout(page);
+        form->setContentsMargins(0, 0, 0, 0);
+        wavesGullStyleCombo = new QComboBox();
+        wavesGullStyleCombo->addItems({ "Animated gulls", "White outline" });
+        wavesGullStyleCombo->setToolTip("Animated uses the seagull GIF; outline draws simple white gulls.");
+        form->addRow("Gull style:", wavesGullStyleCombo);
+        vizSettingsStack->addWidget(page);
+    }
+    displayLayout->addRow("", vizSettingsStack);
+
     stackedWidget->addWidget(displayWidget);
 
     // === Download & Streaming Tab ===
@@ -335,6 +366,12 @@ void Settings::setupUI() {
     connect(themeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(cardSizeCombo, &QComboBox::currentTextChanged, this, &Settings::onCardSizeChanged);
     connect(cardSizeSlider, &QSlider::valueChanged, this, &Settings::saveSettings);
+    connect(visualizerCombo, &QComboBox::currentIndexChanged, this, [this](int i) {
+        vizSettingsStack->setCurrentIndex(i); // swap in the selected visualizer's settings
+        saveSettings();
+        });
+    connect(gullStyleCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(wavesGullStyleCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(typeGroup, &QButtonGroup::buttonClicked, this, [this](QAbstractButton*) {
         onDownloadTypeChanged(); // refresh format + quality lists, then save
         });
@@ -482,6 +519,11 @@ void Settings::loadSettings() {
     cardSizeCombo->setCurrentText(cardPreset.isEmpty() ? "Custom" : cardPreset);
     cardSizeSlider->setVisible(cardPreset.isEmpty());
 
+    visualizerCombo->setCurrentText(iniSettings->value("Visualizer/Type", "Seagull Sky").toString());
+    vizSettingsStack->setCurrentIndex(qMax(0, visualizerCombo->currentIndex()));
+    gullStyleCombo->setCurrentText(iniSettings->value("Visualizer/SkyGullStyle", "Animated gulls").toString());
+    wavesGullStyleCombo->setCurrentText(iniSettings->value("Visualizer/WavesGullStyle", "Animated gulls").toString());
+
     // Type -> Format -> Quality cascade: set the type, build its format list, pick
     // the saved format, build the matching quality list, pick the saved quality.
     QString savedFormat = iniSettings->value("Download/Format", "mp4").toString();
@@ -541,6 +583,9 @@ void Settings::saveSettings() {
     iniSettings->setValue("Search/ClearHistoryOnExit", clearHistoryOnCloseCheck->isChecked());
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
     iniSettings->setValue("Display/CardWidth", currentCardWidth());
+    iniSettings->setValue("Visualizer/Type", visualizerCombo->currentText());
+    iniSettings->setValue("Visualizer/SkyGullStyle", gullStyleCombo->currentText());
+    iniSettings->setValue("Visualizer/WavesGullStyle", wavesGullStyleCombo->currentText());
     iniSettings->setValue("Download/Type", currentDownloadType());
     iniSettings->setValue("Download/Format", formatCombo->currentText());
     iniSettings->setValue("Download/Quality", dlQualityCombo->currentText());
@@ -576,6 +621,9 @@ void Settings::saveSettings() {
         emit cardWidthChanged(cardPx);
         m_appliedCardWidth = cardPx;
     }
+
+    // Cheap to re-apply (the player just re-reads a couple of values).
+    emit visualizerSettingsChanged();
 }
 
 void Settings::resetDefaults() {
@@ -589,6 +637,10 @@ void Settings::resetDefaults() {
     cardSizeSlider->blockSignals(false);
     cardSizeCombo->setCurrentText("Extra Large");
     cardSizeSlider->hide();
+    visualizerCombo->setCurrentText("Seagull Sky");
+    vizSettingsStack->setCurrentIndex(0);
+    gullStyleCombo->setCurrentText("Animated gulls");
+    wavesGullStyleCombo->setCurrentText("Animated gulls");
     typeVideoBtn->setChecked(true);
     updateDownloadFormatOptions();
     formatCombo->setCurrentText("mp4");

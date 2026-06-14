@@ -166,6 +166,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Search history wipes: the Search settings' "Clear History Now" button,
     // and the on-close auto-clear when Search/ClearHistoryOnExit is ticked.
     connect(settingsModule, &Settings::clearHistoryRequested, searchModule, &Search::clearSearchHistory);
+    connect(settingsModule, &Settings::visualizerSettingsChanged, videoPlayer, &VideoPlayer::applyVisualizerSettings);
     connect(qApp, &QCoreApplication::aboutToQuit, searchModule, [this]() {
         QSettings s(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
         if (s.value("Search/ClearHistoryOnExit", false).toBool())

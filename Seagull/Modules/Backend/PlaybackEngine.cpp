@@ -2,6 +2,40 @@
 #include <QObject>
 #include <QFile>
 #include <QDir>
+#include <QAudioSink>
+#include <QAudioFormat>
+#include <QAudioDevice>
+#include <QMediaDevices>
+#include <QIODevice>
+#include <QTimer>
+#include <QMutex>
+#include <cmath>
+#include <cstring>
+#include <cstdint>
+
+// Thread-safe PCM ring between VLC's audio thread (push) and the GUI thread
+// (pop, which writes to the QAudioSink in push mode). Capped so a stalled sink
+// can't grow it unbounded.
+class AudioFifo {
+public:
+    void clear() { QMutexLocker l(&m_mx); m_buf.clear(); }
+    void push(const char* data, qint64 len) {
+        QMutexLocker l(&m_mx);
+        m_buf.append(data, len);
+        const int cap = 44100 * 2 * 2; // ~1s of stereo S16
+        if (m_buf.size() > cap) m_buf.remove(0, m_buf.size() - cap);
+    }
+    QByteArray pop(qint64 maxlen) {
+        QMutexLocker l(&m_mx);
+        const int n = int(qMin<qint64>(maxlen, m_buf.size()));
+        QByteArray out = m_buf.left(n);
+        m_buf.remove(0, n);
+        return out;
+    }
+private:
+    mutable QMutex m_mx;
+    QByteArray m_buf;
+};
 
 PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
     const char* vlcArgs[] = {
@@ -16,15 +50,20 @@ PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
     };
 
     m_instance = std::make_shared<VLC::Instance>(6, vlcArgs);
+    createPlayer();
+}
+
+void PlaybackEngine::createPlayer() {
     m_player = std::make_shared<VLC::MediaPlayer>(*m_instance);
     m_player->setMouseInput(false);
     m_player->setKeyInput(false);
-
     hookEvents();
 }
 
 PlaybackEngine::~PlaybackEngine() {
     if (m_player) m_player->stop();
+    stopTapSink();
+    delete m_fifo; m_fifo = nullptr;
     if (!m_hlsMasterPath.isEmpty()) QFile::remove(m_hlsMasterPath);
 }
 
@@ -174,5 +213,149 @@ PlaybackEngine::State PlaybackEngine::state() const {
     }
 }
 
-void PlaybackEngine::setVolume(int volume) { if (m_player) m_player->setVolume(volume); }
-void PlaybackEngine::setMute(bool muted) { if (m_player) m_player->setMute(muted); }
+void PlaybackEngine::setVolume(int volume) {
+    m_volume = volume;
+    if (m_tapOn) applyVolumeToSink();          // our sink owns volume while tapping
+    else if (m_player) m_player->setVolume(volume);
+}
+void PlaybackEngine::setMute(bool muted) {
+    m_muted = muted;
+    if (m_tapOn) applyVolumeToSink();
+    else if (m_player) m_player->setMute(muted);
+}
+
+void PlaybackEngine::applyVolumeToSink() {
+    if (m_sink) m_sink->setVolume(m_muted ? 0.0 : qBound(0, m_volume, 100) / 100.0);
+}
+
+// --- Audio tap (audio-only media) -------------------------------------------
+
+void PlaybackEngine::setAudioTap(bool on) {
+    if (on == m_tapOn) return;
+    if (on) {
+        if (!startTapSink()) return; // device unavailable: stay on VLC's audio output
+        m_tapOn = true;
+        m_energyEma = 0.0;
+        m_lastBeatMs = 0;
+        m_lpLow = m_lpMid = 0.0;
+        m_beatClock.restart();
+        // Custom decoded-audio output: VLC hands us S16 interleaved samples; we
+        // play + analyse them. flush() clears the ring on seek so stale audio
+        // isn't replayed.
+        m_player->setAudioCallbacks(
+            [this](const void* s, unsigned c, int64_t pts) { onAudioData(s, c, pts); },
+            nullptr, nullptr,
+            [this](int64_t) { if (m_fifo) m_fifo->clear(); },
+            nullptr);
+        m_player->setAudioFormat("S16N", m_tapRate, m_tapChannels);
+        applyVolumeToSink();
+    } else {
+        m_tapOn = false;
+        stopTapSink();
+        // libVLC can't cleanly switch a player off its callback (amem) audio
+        // output, so rebuild the player to restore normal audio. The caller
+        // rebinds the video window and loads media immediately after.
+        createPlayer();
+        m_player->setVolume(m_volume);
+        m_player->setMute(m_muted);
+    }
+}
+
+bool PlaybackEngine::startTapSink() {
+    QAudioFormat fmt;
+    fmt.setSampleRate(int(m_tapRate));
+    fmt.setChannelCount(int(m_tapChannels));
+    fmt.setSampleFormat(QAudioFormat::Int16);
+    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+    if (dev.isNull() || !dev.isFormatSupported(fmt)) return false;
+
+    if (!m_fifo) m_fifo = new AudioFifo();
+    m_fifo->clear();
+
+    delete m_sink;
+    m_sink = new QAudioSink(dev, fmt, this);
+    m_sink->setBufferSize(fmt.bytesForDuration(100000)); // ~100ms: low latency, still glitch-safe
+    m_sinkDev = m_sink->start(); // push mode: we write decoded PCM to this device
+    if (!m_sinkDev || m_sink->error() != QAudio::NoError) {
+        delete m_sink; m_sink = nullptr; m_sinkDev = nullptr;
+        return false;
+    }
+    if (!m_drainTimer) {
+        m_drainTimer = new QTimer(this);
+        m_drainTimer->setInterval(8); // ~ keep the sink fed without busy-spinning
+        connect(m_drainTimer, &QTimer::timeout, this, &PlaybackEngine::drainToSink);
+    }
+    m_drainTimer->start();
+    return true;
+}
+
+void PlaybackEngine::stopTapSink() {
+    if (m_drainTimer) m_drainTimer->stop();
+    if (m_sink) { m_sink->stop(); delete m_sink; m_sink = nullptr; }
+    m_sinkDev = nullptr;
+    if (m_fifo) m_fifo->clear();
+}
+
+void PlaybackEngine::drainToSink() {
+    if (!m_sink || !m_sinkDev || !m_fifo) return;
+    const int free = m_sink->bytesFree();
+    if (free <= 0) return;
+    const QByteArray chunk = m_fifo->pop(free);
+    if (chunk.isEmpty()) return;
+    m_sinkDev->write(chunk);
+    analyzeForVisualizer(chunk); // analyse at CONSUMPTION time (in sync with playback)
+}
+
+// Runs on this (GUI) thread from the drain timer, on the exact PCM being sent to
+// the sink — so the visualizer tracks what's HEARD, not what VLC has decoded
+// ahead (VLC front-loads the ring, which made the analysis run ~a buffer ahead).
+// The only remaining lead is the sink's own buffer, held back by kVisualDelayMs.
+void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
+    const int ch = qMax(1, int(m_tapChannels));
+    const qint64 frames = (chunk.size() / 2) / ch;
+    if (frames <= 0) return;
+    const int16_t* s = reinterpret_cast<const int16_t*>(chunk.constData());
+
+    const double aLow = 0.028, aMid = 0.250;
+    double sumsq = 0.0, eBass = 0.0, eMid = 0.0, eTreb = 0.0;
+    for (qint64 f = 0; f < frames; ++f) {
+        const double x = (ch >= 2) ? (s[f * ch] + s[f * ch + 1]) * (0.5 / 32768.0)
+                                   : s[f * ch] / 32768.0;
+        sumsq += x * x;
+        m_lpLow += aLow * (x - m_lpLow);
+        m_lpMid += aMid * (x - m_lpMid);
+        const double bass = m_lpLow, mid = m_lpMid - m_lpLow, treb = x - m_lpMid;
+        eBass += bass * bass; eMid += mid * mid; eTreb += treb * treb;
+    }
+    const double inv = 1.0 / double(frames);
+    const double meanSq = sumsq * inv;
+    const float level  = float(qBound(0.0, std::sqrt(meanSq) * 3.5, 1.0));
+    const float bass   = float(qBound(0.0, std::sqrt(eBass * inv) * 3.5, 1.0));
+    const float mid    = float(qBound(0.0, std::sqrt(eMid  * inv) * 5.0, 1.0));
+    const float treble = float(qBound(0.0, std::sqrt(eTreb * inv) * 8.0, 1.0));
+
+    const double bassMeanSq = eBass * inv;
+    bool isBeat = false;
+    if (m_energyEma <= 0.0) m_energyEma = bassMeanSq;
+    const qint64 nowMs = m_beatClock.elapsed();
+    if (bassMeanSq > m_energyEma * 1.4 && bassMeanSq > 1e-4 && (nowMs - m_lastBeatMs) > 180) {
+        isBeat = true; m_lastBeatMs = nowMs;
+    }
+    m_energyEma = m_energyEma * 0.92 + bassMeanSq * 0.08;
+
+    constexpr int kVisualDelayMs = 90; // ~ the sink buffer, so the visual lands when heard
+    QTimer::singleShot(kVisualDelayMs, this, [this, level, bass, mid, treble, isBeat]() {
+        emit audioLevel(level);
+        emit audioSpectrum(bass, mid, treble);
+        if (isBeat) emit beat();
+    });
+}
+
+void PlaybackEngine::onAudioData(const void* samples, unsigned count, int64_t /*pts*/) {
+    // VLC's audio thread: just hand the PCM to the ring. Analysis happens at
+    // CONSUMPTION time in analyzeForVisualizer() (called from drainToSink) so the
+    // visualizer stays in sync with what's actually being heard.
+    if (!m_fifo) return;
+    const qint64 nSamples = qint64(count) * m_tapChannels;
+    m_fifo->push(static_cast<const char*>(samples), nSamples * 2); // S16 = 2 bytes
+}

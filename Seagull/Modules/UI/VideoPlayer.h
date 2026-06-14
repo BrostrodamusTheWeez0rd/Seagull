@@ -18,6 +18,7 @@ class QNetworkAccessManager;
 class PlaybackEngine;
 class PlayerControls;
 class PlayerTitleBar;
+class Visualizer;
 struct StreamOption;
 
 // What kind of media is loaded. Drives the surface (VLC video frame / album art
@@ -40,6 +41,7 @@ public:
     void repositionOverlays(); // keep the top-level overlays glued to the video
     void raiseOverlays();      // re-stack overlays above the video (after fullscreen)
     void togglePlayPause();    // space-bar / single-click handler entry point
+    void applyVisualizerSettings(); // re-read the visualizer config (settings changed)
 
     // Shorts-feed behaviour (YouTube style): the short loops at the end instead
     // of dropping into ended mode, and wheel-scrolling over the video emits
@@ -158,6 +160,12 @@ private:
     QPixmap audioPlaceholder();      // lazily-rendered music-note placeholder
     void openPhoto(const QUrl& url); // load + display a still image (no VLC playback)
     QPixmap m_audioPlaceholder;
+
+    // Audio visualizer: a top-level overlay (seagull sky) shown over the audio
+    // surface when the visualizer button is toggled on, replacing the album art.
+    void toggleVisualizer();
+    Visualizer* visualizer = nullptr;
+    bool m_visualizerActive = false;
 
     // Photo viewer: large prev/next arrows glued to the image's left/right edges,
     // fading on the same OSD clock as the controls. Top-level like the overlays.

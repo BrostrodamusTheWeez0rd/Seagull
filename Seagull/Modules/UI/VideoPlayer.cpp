@@ -4,6 +4,7 @@
 #include "../Backend/SgThumbnailer.h"    // decodeViaFfmpeg (WebP fallback)
 #include "Widgets/PlayerControls.h"
 #include "Widgets/PlayerTitleBar.h"
+#include "Widgets/Visualizer.h"
 
 #include <QVBoxLayout>
 #include <QFrame>
@@ -70,9 +71,24 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
         // the frame shows through.
         if (m_kind == MediaKind::Audio) showAudioArt();
         else hidePosterOverlay();
+        if (visualizer) { visualizer->setPaused(false); visualizer->reviveGulls(); } // resume + revive
         if (titleBar) titleBar->setLoading(false); // playback started — stop the seagull
         });
+    connect(engine, &PlaybackEngine::paused, this, [this]() {
+        if (visualizer) visualizer->setPaused(true); // freeze the sky/sea while paused
+        });
     connect(engine, &PlaybackEngine::errorOccurred, this, &VideoPlayer::onPlaybackError);
+
+    // Audio tap feeds the visualizer (only emits while an audio track is tapped).
+    connect(engine, &PlaybackEngine::audioLevel, this, [this](float l) {
+        if (visualizer) visualizer->setAudioLevel(l);
+        });
+    connect(engine, &PlaybackEngine::audioSpectrum, this, [this](float b, float m, float t) {
+        if (visualizer) visualizer->setSpectrum(b, m, t);
+        });
+    connect(engine, &PlaybackEngine::beat, this, [this]() {
+        if (visualizer) visualizer->beat();
+        });
 
     updateOverlayTimer = new QTimer(this);
     updateOverlayTimer->setSingleShot(true);
@@ -113,6 +129,15 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     posterOverlay->setAlignment(Qt::AlignCenter);
     posterOverlay->setScaledContents(false);
     posterOverlay->hide();
+
+    // Audio visualizer overlay (seagull sky). Same top-level, click-through idiom
+    // as the poster so play/pause-on-click still works through it; shown only
+    // when the audio visualizer button is toggled on.
+    visualizer = new Visualizer(this);
+    visualizer->setWindowFlags(overlayFlags | Qt::WindowTransparentForInput);
+    visualizer->setAttribute(Qt::WA_TransparentForMouseEvents);
+    visualizer->hide();
+    applyVisualizerSettings(); // pick up the saved gull style
 
     // Splitter-toggle chevron (YouTube-style): a small circular button that
     // appears when the cursor nears the splitter (bottom strip of the video,
@@ -197,7 +222,7 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::replayRequested, this, &VideoPlayer::handleReplay);
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() { emit fullscreenToggleRequested(); });
-    connect(playerControls, &PlayerControls::visualizerRequested, this, [this]() { emit visualizerRequested(); });
+    connect(playerControls, &PlayerControls::visualizerRequested, this, &VideoPlayer::toggleVisualizer);
     connect(playerControls, &PlayerControls::popoutRequested, this, [this]() { emit popOutRequested(); });
     connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
 }
@@ -255,7 +280,8 @@ void VideoPlayer::reownOverlays() {
                         static_cast<QWidget*>(posterOverlay),
                         static_cast<QWidget*>(splitterToggleBtn),
                         static_cast<QWidget*>(prevPhotoBtn),
-                        static_cast<QWidget*>(nextPhotoBtn) }) {
+                        static_cast<QWidget*>(nextPhotoBtn),
+                        static_cast<QWidget*>(visualizer) }) {
         if (!w) continue;
         const bool vis = w->isVisible();
         const Qt::WindowFlags flags = w->windowFlags();
@@ -285,6 +311,10 @@ void VideoPlayer::onMediaEndReached() {
             });
         return;
     }
+
+    // The track ended: if the visualizer is up, send the gulls into their dramatic
+    // spin-and-fall.
+    if (m_visualizerActive && visualizer) visualizer->triggerDeath();
 
     osdTimer->stop();
     m_stopped = true; // ended = replay-ready, same as a first-stage Stop
@@ -317,6 +347,7 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     m_fetching = false;    // local files load instantly, no placeholder phase
     m_stopped = false;
     m_shortsMode = false;  // new media — the orchestrator re-enables for a short
+    engine->setAudioTap(m_kind == MediaKind::Audio); // tap audio for the visualizer
     emit playbackStarted(); // host shows + sizes the video area
 
     engine->setOutputWindow((void*)videoWidget->winId());
@@ -365,6 +396,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     // SoundCloud is audio-only — show the artwork poster instead of a black frame.
     m_kind = rawUrl.host().contains(QStringLiteral("soundcloud.com"), Qt::CaseInsensitive)
                  ? MediaKind::Audio : MediaKind::Video;
+    engine->setAudioTap(m_kind == MediaKind::Audio); // tap audio for the visualizer
 
     // New media — clear the old poster; the probe/resolve brings a fresh thumbnail.
     m_posterPixmap = QPixmap();
@@ -481,8 +513,12 @@ void VideoPlayer::onThumbnailResolved(const QString& thumbUrl) {
 
 void VideoPlayer::applyPosterPixmap(const QPixmap& pm) {
     m_posterPixmap = pm;
-    // Audio: the artwork is the surface — show it (replacing the placeholder).
-    if (m_kind == MediaKind::Audio) { showPosterOverlay(); raiseOverlays(); return; }
+    // Audio: the artwork is the surface — show it (replacing the placeholder),
+    // unless the visualizer is currently showing instead.
+    if (m_kind == MediaKind::Audio) {
+        if (!m_visualizerActive) { showPosterOverlay(); raiseOverlays(); }
+        return;
+    }
     // Fetch placeholder: stand in for the (black) video until it starts; if
     // the poster is already up (EOF replay), paint the pixmap in now.
     if (m_fetching) showPosterOverlay();
@@ -497,8 +533,12 @@ void VideoPlayer::onLocalPosterReady(const QString& filePath, const QPixmap& pix
     if (QString::compare(QDir::toNativeSeparators(m_currentLocalUrl.toLocalFile()),
                          QDir::toNativeSeparators(filePath), Qt::CaseInsensitive) != 0) return;
     m_posterPixmap = pixmap;
-    // Audio: the cover art is the surface — show it (replacing the placeholder).
-    if (m_kind == MediaKind::Audio) { showPosterOverlay(); raiseOverlays(); return; }
+    // Audio: the cover art is the surface — show it (replacing the placeholder),
+    // unless the visualizer is currently showing instead.
+    if (m_kind == MediaKind::Audio) {
+        if (!m_visualizerActive) { showPosterOverlay(); raiseOverlays(); }
+        return;
+    }
     // Stopped/ended before the grab finished — poster it in now.
     if (m_stopped) {
         showPosterOverlay();
@@ -509,6 +549,7 @@ void VideoPlayer::onLocalPosterReady(const QString& filePath, const QPixmap& pix
 void VideoPlayer::showPosterOverlay() {
     if (!posterOverlay || m_posterPixmap.isNull()) return;
     if (!isVisible()) return;
+    if (m_visualizerActive) return; // the visualizer owns the surface
     posterOverlay->show();
     repositionOverlays();              // sizes + paints the scaled pixmap
     raiseOverlays();
@@ -599,6 +640,8 @@ void VideoPlayer::closePlayer() {
     if (nextPhotoFade) nextPhotoFade->stop();
     if (prevPhotoBtn) { prevPhotoBtn->hide(); prevPhotoBtn->setWindowOpacity(1.0); }
     if (nextPhotoBtn) { nextPhotoBtn->hide(); nextPhotoBtn->setWindowOpacity(1.0); }
+    m_visualizerActive = false;
+    if (visualizer) visualizer->hide();
     emit closed(); // host hides the video area + leaves fullscreen
 }
 
@@ -651,6 +694,8 @@ void VideoPlayer::repositionOverlays() {
         if (!m_posterPixmap.isNull())
             posterOverlay->setPixmap(m_posterPixmap.scaled(videoWidget->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
     }
+    if (visualizer && visualizer->isVisible())
+        visualizer->setGeometry(globalPos.x(), globalPos.y(), videoWidget->width(), videoWidget->height());
     if (titleBar) { titleBar->setFixedWidth(videoWidget->width()); titleBar->move(globalPos.x(), globalPos.y() + 5); }
     if (playerControls && playerControls->isVisible()) {
         int controlX = globalPos.x() + (videoWidget->width() - playerControls->width()) / 2;
@@ -685,7 +730,8 @@ bool VideoPlayer::overlaySurfaceExposedAt(const QPoint& globalPos) const {
                               static_cast<const QWidget*>(posterOverlay),
                               static_cast<const QWidget*>(splitterToggleBtn),
                               static_cast<const QWidget*>(prevPhotoBtn),
-                              static_cast<const QWidget*>(nextPhotoBtn) })
+                              static_cast<const QWidget*>(nextPhotoBtn),
+                              static_cast<const QWidget*>(visualizer) })
         if (w && w->windowHandle() == top) return true;
     return false;
 }
@@ -721,9 +767,11 @@ void VideoPlayer::showOSD() {
     }
     fadeOverlayWindow(playerControls, controlsFade, true);
     fadeOverlayWindow(titleBar, titleFade, true);
-    // Only re-stack above the poster when it's actually showing (paused / EOF).
-    // Raising on every mouse-move otherwise buries the volume/quality popups.
-    if (posterOverlay && posterOverlay->isVisible())
+    // Only re-stack above the poster when it's actually showing (paused / EOF,
+    // or audio album art). Skip while a control popup is open — raising the
+    // overlays would bury the volume/quality popup (it's a separate top-level).
+    if (posterOverlay && posterOverlay->isVisible()
+        && !(playerControls && playerControls->hasOpenPopup()))
         raiseOverlays();
     repositionOverlays();
     osdTimer->start(3000);
@@ -1105,6 +1153,20 @@ void VideoPlayer::applyKindChrome() {
         if (prevPhotoBtn) { prevPhotoBtn->hide(); prevPhotoBtn->setWindowOpacity(1.0); }
         if (nextPhotoBtn) { nextPhotoBtn->hide(); nextPhotoBtn->setWindowOpacity(1.0); }
     }
+    if (m_kind == MediaKind::Audio) {
+        // The visualizer stays ON across tracks if the user had it on.
+        if (m_visualizerActive && visualizer) {
+            hidePosterOverlay();
+            visualizer->setDemoMode(!engine->audioTapActive());
+            visualizer->show();
+            repositionOverlays();
+            raiseOverlays();
+        }
+    } else {
+        // Video / photo: no visualizer.
+        m_visualizerActive = false;
+        if (visualizer) { visualizer->setDemoMode(false); visualizer->hide(); }
+    }
 }
 
 QPixmap VideoPlayer::audioPlaceholder() {
@@ -1125,9 +1187,39 @@ QPixmap VideoPlayer::audioPlaceholder() {
 
 void VideoPlayer::showAudioArt() {
     if (m_kind != MediaKind::Audio) return;
+    if (m_visualizerActive) return; // the visualizer owns the surface right now
     // Cover art if we have it, otherwise the music-note placeholder.
     if (m_posterPixmap.isNull()) m_posterPixmap = audioPlaceholder();
     showPosterOverlay();
+}
+
+void VideoPlayer::applyVisualizerSettings() {
+    if (!visualizer) return;
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    const QString type = cfg.value("Visualizer/Type", "Seagull Sky").toString();
+    visualizer->setMode(type);
+    const QString key = type.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)
+        ? QStringLiteral("Visualizer/WavesGullStyle")
+        : QStringLiteral("Visualizer/SkyGullStyle");
+    const QString style = cfg.value(key, "Animated gulls").toString();
+    visualizer->setGullStyle(style.startsWith("Animated", Qt::CaseInsensitive));
+}
+
+void VideoPlayer::toggleVisualizer() {
+    if (m_kind != MediaKind::Audio || !visualizer) return; // audio-only feature
+    m_visualizerActive = !m_visualizerActive;
+    if (m_visualizerActive) {
+        hidePosterOverlay();           // the album art steps aside
+        // Real reactivity when the audio tap is live; demo self-drive otherwise.
+        visualizer->setDemoMode(!engine->audioTapActive());
+        visualizer->show();
+        repositionOverlays();
+        raiseOverlays();               // keep the controls/title above the sky
+    } else {
+        visualizer->setDemoMode(false);
+        visualizer->hide();
+        showAudioArt();                // album art / placeholder returns
+    }
 }
 
 void VideoPlayer::openPhoto(const QUrl& url) {
@@ -1138,6 +1230,7 @@ void VideoPlayer::openPhoto(const QUrl& url) {
     m_isLive = false; m_isStreaming = false; m_fetching = false; m_stopped = false;
     m_shortsMode = false;
 
+    engine->setAudioTap(false); // back to VLC audio output (no tap for stills)
     emit playbackStarted();  // host shows + sizes the surface
     engine->releaseMedia();  // a still image: nothing for VLC to play
     mouseTrackerTimer->start(100);

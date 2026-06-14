@@ -25,6 +25,7 @@ public:
 signals:
     void cardWidthChanged(int width); // Display "Card size" -> Search card width (px)
     void clearHistoryRequested();     // General "Clear History Now" -> Search wipes its history
+    void visualizerSettingsChanged(); // Display "Visualizer" -> player re-reads visualizer config
 
 private slots:
     void saveSettings();
@@ -64,6 +65,12 @@ private:
     QComboBox* themeCombo;
     QComboBox* cardSizeCombo;   // Small / Medium / Large / Extra Large / Custom
     QSlider*   cardSizeSlider;  // shown only for Custom; spans Small..Extra Large
+
+    // Visualizer: a picker + a stack of per-visualizer settings pages below it.
+    QComboBox*      visualizerCombo;     // which visualizer: Seagull Sky / Seagull Waves
+    QStackedWidget* vizSettingsStack;    // visualizer-specific settings, swapped by the picker
+    QComboBox*      gullStyleCombo;      // Seagull Sky: Animated gulls / White outline
+    QComboBox*      wavesGullStyleCombo; // Seagull Waves: Animated gulls / White outline
 
     // Download & Streaming Tab elements
     QButtonGroup* typeGroup;     // Video | Audio toggle
