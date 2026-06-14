@@ -191,7 +191,12 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     connect(playPauseBtn, &QPushButton::clicked, this, &PlayerControls::togglePlayback);
     connect(stopBtn, &QPushButton::clicked, this, [this]() { emit stopRequested(); });
     connect(muteBtn, &QPushButton::clicked, this, &PlayerControls::toggleMute);
-    connect(fullscreenBtn, &QPushButton::clicked, this, &PlayerControls::fullscreenRequested);
+    // In audio mode this same button is the visualizer button (glyph/tooltip
+    // swapped by setVisualizerMode); route the click to the matching signal.
+    connect(fullscreenBtn, &QPushButton::clicked, this, [this]() {
+        if (m_visualizerMode) emit visualizerRequested();
+        else                  emit fullscreenRequested();
+        });
     connect(popoutBtn, &QPushButton::clicked, this, &PlayerControls::popoutRequested);
     connect(recordBtn, &QPushButton::clicked, this, [this]() { emit recordToggleRequested(); });
 
@@ -280,6 +285,17 @@ void PlayerControls::setPoppedOut(bool popped) {
                                        : QStringLiteral(":/Assets/icons/popout.svg"), popoutBtn));
     popoutBtn->setToolTip(popped ? QStringLiteral("Return to the main window")
                                  : QStringLiteral("Pop out into its own window"));
+}
+
+void PlayerControls::setVisualizerMode(bool on) {
+    // Audio has no fullscreen video, so the fullscreen button becomes a
+    // visualizer toggle (hooked up later). Swap the glyph + tooltip; the click
+    // routing is gated on m_visualizerMode in the ctor connection.
+    m_visualizerMode = on;
+    fullscreenBtn->setIcon(makeIcon(on ? QStringLiteral(":/Assets/icons/visualizer.svg")
+                                       : QStringLiteral(":/Assets/icons/fullscreen.svg"), fullscreenBtn));
+    fullscreenBtn->setToolTip(on ? QStringLiteral("Visualizer")
+                                 : QStringLiteral("Fullscreen"));
 }
 
 void PlayerControls::setRecording(bool on) {

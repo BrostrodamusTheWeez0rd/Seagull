@@ -46,12 +46,14 @@ public:
     void setRecording(bool on);          // reflect recorder state: red pulse while on
     void setRecordAvailable(bool avail); // show/hide the Record button (any playing media)
     void setPoppedOut(bool popped);      // swap the pop-out button's glyph/tooltip
+    void setVisualizerMode(bool on);     // audio: swap the fullscreen button for a visualizer button
 
 public slots:
     void setAvailableQualities(const QList<StreamOption>& options);
 
 signals:
     void fullscreenRequested();
+    void visualizerRequested(); // audio visualizer button clicked (same slot as fullscreen, audio mode)
     void popoutRequested(); // pop-out button clicked (detach to / re-dock from its own window)
     void stopRequested();
     void replayRequested();
@@ -127,6 +129,7 @@ private:
     bool m_endedMode = false; // true after EOF until the next media starts
     bool m_isLive = false;    // live stream: no meaningful duration, no seeking
     bool m_recording = false; // recorder is running (drives the red pulse)
+    bool m_visualizerMode = false; // audio: the fullscreen button acts as a visualizer button
     double m_pulsePhase = 0.0;        // animates the recording pulse
     QTimer* recordPulseTimer = nullptr;
 

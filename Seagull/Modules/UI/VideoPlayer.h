@@ -20,6 +20,12 @@ class PlayerControls;
 class PlayerTitleBar;
 struct StreamOption;
 
+// What kind of media is loaded. Drives the surface (VLC video frame / album art
+// poster / still image) and which chrome shows. Audio keeps the art poster up
+// full-time and swaps fullscreen for a visualizer button; photo skips VLC
+// entirely and shows the image with just two fading side arrows.
+enum class MediaKind { Video, Audio, Photo };
+
 // The video feature: owns the VLC render surface (via PlaybackEngine), the
 // overlays (controls / title / poster), the OSD and mouse handling. MainWindow
 // just hosts this widget; the orchestrator wires it to the modules and workers.
@@ -88,6 +94,7 @@ signals:
     void streamUrlRequested(const QString& url, const QString& formatId, bool freshResolve);
 
     void fullscreenToggleRequested(); // host performs the actual window fullscreen
+    void visualizerRequested();       // audio visualizer button (unhooked for now)
     void popOutRequested();           // host detaches/re-docks the player window
     void playbackStarted();           // host shows/sizes the video area
     void closed();                    // host hides the video area / leaves fullscreen
@@ -142,6 +149,22 @@ private:
     void onPlaybackError();
     void showStreamFailed(); // pin the "stream failed — replay" message + ended mode
     void closePlayer();
+
+    // Content kind + its presentation helpers.
+    MediaKind m_kind = MediaKind::Video;
+    static MediaKind kindForLocalFile(const QUrl& url);
+    void applyKindChrome();          // configure the controls bar for m_kind (visualizer swap)
+    void showAudioArt();             // poster up full-time: cover art, or the placeholder
+    QPixmap audioPlaceholder();      // lazily-rendered music-note placeholder
+    void openPhoto(const QUrl& url); // load + display a still image (no VLC playback)
+    QPixmap m_audioPlaceholder;
+
+    // Photo viewer: large prev/next arrows glued to the image's left/right edges,
+    // fading on the same OSD clock as the controls. Top-level like the overlays.
+    QPushButton* prevPhotoBtn = nullptr;
+    QPushButton* nextPhotoBtn = nullptr;
+    QPropertyAnimation* prevPhotoFade = nullptr;
+    QPropertyAnimation* nextPhotoFade = nullptr;
 
     PlaybackEngine* engine;
     QFrame* videoWidget;

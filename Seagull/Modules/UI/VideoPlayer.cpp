@@ -31,6 +31,9 @@
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+#include <QPainter>
+#include <QSvgRenderer>
+#include <QFile>
 
 namespace {
     // One clock for every overlay fade: chevron, controls bar, banner.
@@ -63,7 +66,10 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(engine, &PlaybackEngine::playing, this, [this]() {
         m_fetching = false;
         m_stopped  = false; // playing again — Stop is back to stage one
-        hidePosterOverlay();
+        // Audio keeps the album-art poster up the whole time; video drops it so
+        // the frame shows through.
+        if (m_kind == MediaKind::Audio) showAudioArt();
+        else hidePosterOverlay();
         if (titleBar) titleBar->setLoading(false); // playback started — stop the seagull
         });
     connect(engine, &PlaybackEngine::errorOccurred, this, &VideoPlayer::onPlaybackError);
@@ -142,6 +148,26 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
         }
         });
 
+    // Photo viewer arrows: large circular prev/next buttons glued to the image's
+    // left/right edges, fading on the same OSD clock as the controls. Top-level
+    // overlays like the rest (the VLC/poster surface draws over child widgets).
+    auto makePhotoArrow = [this, overlayFlags](const QString& glyph) {
+        auto* b = new QPushButton(glyph, this);
+        b->setWindowFlags(overlayFlags);
+        b->setAttribute(Qt::WA_TranslucentBackground);
+        b->setObjectName("photoNavButton");
+        b->setFixedSize(44, 44);
+        b->setCursor(Qt::PointingHandCursor);
+        b->hide();
+        return b;
+    };
+    prevPhotoBtn = makePhotoArrow(QStringLiteral("‹")); // ‹
+    nextPhotoBtn = makePhotoArrow(QStringLiteral("›")); // ›
+    prevPhotoFade = makeOverlayFade(prevPhotoBtn);
+    nextPhotoFade = makeOverlayFade(nextPhotoBtn);
+    connect(prevPhotoBtn, &QPushButton::clicked, this, [this]() { emit skipRequested(-1); });
+    connect(nextPhotoBtn, &QPushButton::clicked, this, [this]() { emit skipRequested(1); });
+
     m_thumbNam = new QNetworkAccessManager(this);
 
     osdTimer = new QTimer(this);
@@ -171,6 +197,7 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(playerControls, &PlayerControls::replayRequested, this, &VideoPlayer::handleReplay);
     connect(playerControls, &PlayerControls::skipRequested, this, [this](int delta) { emit skipRequested(delta); });
     connect(playerControls, &PlayerControls::fullscreenRequested, this, [this]() { emit fullscreenToggleRequested(); });
+    connect(playerControls, &PlayerControls::visualizerRequested, this, [this]() { emit visualizerRequested(); });
     connect(playerControls, &PlayerControls::popoutRequested, this, [this]() { emit popOutRequested(); });
     connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
 }
@@ -226,7 +253,9 @@ void VideoPlayer::reownOverlays() {
     for (QWidget* w : { static_cast<QWidget*>(playerControls),
                         static_cast<QWidget*>(titleBar),
                         static_cast<QWidget*>(posterOverlay),
-                        static_cast<QWidget*>(splitterToggleBtn) }) {
+                        static_cast<QWidget*>(splitterToggleBtn),
+                        static_cast<QWidget*>(prevPhotoBtn),
+                        static_cast<QWidget*>(nextPhotoBtn) }) {
         if (!w) continue;
         const bool vis = w->isVisible();
         const Qt::WindowFlags flags = w->windowFlags();
@@ -277,6 +306,9 @@ void VideoPlayer::onMediaEndReached() {
 }
 
 void VideoPlayer::playLocalFile(const QUrl& url) {
+    m_kind = kindForLocalFile(url);
+    if (m_kind == MediaKind::Photo) { openPhoto(url); return; } // still image — no VLC
+
     stopRecordingIfActive(); // switching media — finalise any recording first
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
     m_currentLocalUrl = url; // Record clips the watched range straight from this file
@@ -294,6 +326,9 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     // with this file's frame grab / cover art for the stop/EOF poster.
     m_posterPixmap = QPixmap();
     hidePosterOverlay();
+    // Audio: stand a placeholder up immediately so the surface isn't black; the
+    // real cover art replaces it when the thumbnailer's grab lands.
+    if (m_kind == MediaKind::Audio) showAudioArt();
 
     QString nativePath = QDir::toNativeSeparators(url.toLocalFile());
     // Request with the forward-slash form the Library uses: the thumbnail disk
@@ -319,12 +354,17 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
         playerControls->setLiveMode(false);
         playerControls->setRecordAvailable(true); // local files can be recorded too
     }
+    applyKindChrome(); // audio swaps fullscreen for the visualizer button
     showOSD();
 }
 
 void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
     stopRecordingIfActive(); // switching media — finalise any recording first
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear(); m_currentLocalUrl.clear();
+
+    // SoundCloud is audio-only — show the artwork poster instead of a black frame.
+    m_kind = rawUrl.host().contains(QStringLiteral("soundcloud.com"), Qt::CaseInsensitive)
+                 ? MediaKind::Audio : MediaKind::Video;
 
     // New media — clear the old poster; the probe/resolve brings a fresh thumbnail.
     m_posterPixmap = QPixmap();
@@ -351,6 +391,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
 
     engine->setOutputWindow((void*)videoWidget->winId());
     mouseTrackerTimer->start(100);
+    if (m_kind == MediaKind::Audio) showAudioArt(); // placeholder until the artwork resolves
 
     savedStreamTimestamp = -1;
     if (titleBar) {
@@ -367,6 +408,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
         playerControls->setLiveMode(false); // assume VOD until the probe says otherwise
         playerControls->setRecordAvailable(true);
     }
+    applyKindChrome(); // audio swaps fullscreen for the visualizer button
 
     currentBaseUrl = rawUrl;
     currentVideoTitle = title;
@@ -439,6 +481,8 @@ void VideoPlayer::onThumbnailResolved(const QString& thumbUrl) {
 
 void VideoPlayer::applyPosterPixmap(const QPixmap& pm) {
     m_posterPixmap = pm;
+    // Audio: the artwork is the surface — show it (replacing the placeholder).
+    if (m_kind == MediaKind::Audio) { showPosterOverlay(); raiseOverlays(); return; }
     // Fetch placeholder: stand in for the (black) video until it starts; if
     // the poster is already up (EOF replay), paint the pixmap in now.
     if (m_fetching) showPosterOverlay();
@@ -453,6 +497,8 @@ void VideoPlayer::onLocalPosterReady(const QString& filePath, const QPixmap& pix
     if (QString::compare(QDir::toNativeSeparators(m_currentLocalUrl.toLocalFile()),
                          QDir::toNativeSeparators(filePath), Qt::CaseInsensitive) != 0) return;
     m_posterPixmap = pixmap;
+    // Audio: the cover art is the surface — show it (replacing the placeholder).
+    if (m_kind == MediaKind::Audio) { showPosterOverlay(); raiseOverlays(); return; }
     // Stopped/ended before the grab finished — poster it in now.
     if (m_stopped) {
         showPosterOverlay();
@@ -513,7 +559,8 @@ void VideoPlayer::showStreamFailed() {
 void VideoPlayer::handleReplay() {
     if (!engine->hasMedia()) return;
     if (playerControls) playerControls->setEndedMode(false);
-    hidePosterOverlay();
+    if (m_kind == MediaKind::Audio) showAudioArt(); // keep the art; video drops the poster
+    else hidePosterOverlay();
     engine->reloadLastMedia();
     QTimer::singleShot(50, this, [this]() {
         engine->play();
@@ -548,6 +595,10 @@ void VideoPlayer::closePlayer() {
     if (splitterBtnHideTimer) splitterBtnHideTimer->stop();
     if (splitterBtnFade) splitterBtnFade->stop();
     if (splitterToggleBtn) splitterToggleBtn->hide();
+    if (prevPhotoFade) prevPhotoFade->stop();
+    if (nextPhotoFade) nextPhotoFade->stop();
+    if (prevPhotoBtn) { prevPhotoBtn->hide(); prevPhotoBtn->setWindowOpacity(1.0); }
+    if (nextPhotoBtn) { nextPhotoBtn->hide(); nextPhotoBtn->setWindowOpacity(1.0); }
     emit closed(); // host hides the video area + leaves fullscreen
 }
 
@@ -610,6 +661,13 @@ void VideoPlayer::repositionOverlays() {
         playerControls->move(controlX, controlY);
     }
     if (splitterToggleBtn && splitterToggleBtn->isVisible()) positionSplitterToggle();
+    if (m_kind == MediaKind::Photo) {
+        const int midY = globalPos.y() + (videoWidget->height() - 44) / 2;
+        if (prevPhotoBtn && prevPhotoBtn->isVisible())
+            prevPhotoBtn->move(globalPos.x() + 12, midY);
+        if (nextPhotoBtn && nextPhotoBtn->isVisible())
+            nextPhotoBtn->move(globalPos.x() + videoWidget->width() - 44 - 12, midY);
+    }
 }
 
 // The overlays are top-level tool windows, so show()/raise() stacks them above
@@ -625,7 +683,9 @@ bool VideoPlayer::overlaySurfaceExposedAt(const QPoint& globalPos) const {
     for (const QWidget* w : { static_cast<const QWidget*>(playerControls),
                               static_cast<const QWidget*>(titleBar),
                               static_cast<const QWidget*>(posterOverlay),
-                              static_cast<const QWidget*>(splitterToggleBtn) })
+                              static_cast<const QWidget*>(splitterToggleBtn),
+                              static_cast<const QWidget*>(prevPhotoBtn),
+                              static_cast<const QWidget*>(nextPhotoBtn) })
         if (w && w->windowHandle() == top) return true;
     return false;
 }
@@ -649,6 +709,16 @@ void VideoPlayer::resizeEvent(QResizeEvent* event) {
 
 void VideoPlayer::showOSD() {
     videoWidget->unsetCursor(); // fullscreen idle-hide: movement brings the cursor back
+    if (m_kind == MediaKind::Photo) {
+        // Photos have no transport bar — just the two side arrows.
+        fadeOverlayWindow(prevPhotoBtn, prevPhotoFade, true);
+        fadeOverlayWindow(nextPhotoBtn, nextPhotoFade, true);
+        repositionOverlays();
+        if (prevPhotoBtn) prevPhotoBtn->raise();
+        if (nextPhotoBtn) nextPhotoBtn->raise();
+        osdTimer->start(3000);
+        return;
+    }
     fadeOverlayWindow(playerControls, controlsFade, true);
     fadeOverlayWindow(titleBar, titleFade, true);
     // Only re-stack above the poster when it's actually showing (paused / EOF).
@@ -660,6 +730,12 @@ void VideoPlayer::showOSD() {
 }
 
 void VideoPlayer::hideOSD() {
+    if (m_kind == MediaKind::Photo) {
+        // No popups/playback gating for a still image — just fade the arrows out.
+        fadeOverlayWindow(prevPhotoBtn, prevPhotoFade, false);
+        fadeOverlayWindow(nextPhotoBtn, nextPhotoFade, false);
+        return;
+    }
     // The volume/quality popups always close BEFORE the controls go. If the
     // cursor is actually on one (mid-interaction), keep everything and re-arm;
     // otherwise shut the popups now and let the bars fade out after them.
@@ -1007,4 +1083,97 @@ void VideoPlayer::shareLink() {
     QTimer::singleShot(1500, this, [this]() {
         if (titleBar) titleBar->setTitle(currentVideoTitle.isEmpty() ? "Streaming..." : currentVideoTitle);
         });
+}
+
+MediaKind VideoPlayer::kindForLocalFile(const QUrl& url) {
+    const QString ext = QFileInfo(url.toLocalFile()).suffix().toLower();
+    static const QStringList audioExts = { "mp3","m4a","aac","flac","opus","wav","ogg","wma","aiff","alac" };
+    static const QStringList imageExts = { "jpg","jpeg","png","gif","bmp","webp","tif","tiff","heic","heif" };
+    if (audioExts.contains(ext)) return MediaKind::Audio;
+    if (imageExts.contains(ext)) return MediaKind::Photo;
+    return MediaKind::Video;
+}
+
+void VideoPlayer::applyKindChrome() {
+    // Audio has no fullscreen video surface, so its controls show a visualizer
+    // button where the fullscreen button sits.
+    if (playerControls) playerControls->setVisualizerMode(m_kind == MediaKind::Audio);
+    // Leaving photo mode (to video/audio): retire the side arrows.
+    if (m_kind != MediaKind::Photo) {
+        if (prevPhotoFade) prevPhotoFade->stop();
+        if (nextPhotoFade) nextPhotoFade->stop();
+        if (prevPhotoBtn) { prevPhotoBtn->hide(); prevPhotoBtn->setWindowOpacity(1.0); }
+        if (nextPhotoBtn) { nextPhotoBtn->hide(); nextPhotoBtn->setWindowOpacity(1.0); }
+    }
+}
+
+QPixmap VideoPlayer::audioPlaceholder() {
+    if (!m_audioPlaceholder.isNull()) return m_audioPlaceholder;
+    // A centred music note on transparency; the poster's black background shows
+    // through. Rendered large so scaling down onto the surface stays crisp.
+    const int sz = 512;
+    QPixmap pm(sz, sz);
+    pm.fill(Qt::transparent);
+    QSvgRenderer r(QStringLiteral(":/Assets/icons/music-note.svg"));
+    QPainter p(&pm);
+    const int glyph = sz / 2;
+    r.render(&p, QRectF((sz - glyph) / 2.0, (sz - glyph) / 2.0, glyph, glyph));
+    p.end();
+    m_audioPlaceholder = pm;
+    return m_audioPlaceholder;
+}
+
+void VideoPlayer::showAudioArt() {
+    if (m_kind != MediaKind::Audio) return;
+    // Cover art if we have it, otherwise the music-note placeholder.
+    if (m_posterPixmap.isNull()) m_posterPixmap = audioPlaceholder();
+    showPosterOverlay();
+}
+
+void VideoPlayer::openPhoto(const QUrl& url) {
+    stopRecordingIfActive();
+    m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
+    m_currentLocalUrl = url;
+    m_kind = MediaKind::Photo;
+    m_isLive = false; m_isStreaming = false; m_fetching = false; m_stopped = false;
+    m_shortsMode = false;
+
+    emit playbackStarted();  // host shows + sizes the surface
+    engine->releaseMedia();  // a still image: nothing for VLC to play
+    mouseTrackerTimer->start(100);
+
+    // No transport chrome for photos — drop the controls/title, leaving just the
+    // two fading side arrows.
+    if (controlsFade) controlsFade->stop();
+    if (titleFade)    titleFade->stop();
+    if (playerControls) {
+        playerControls->stopPolling();
+        playerControls->hide();
+        playerControls->setWindowOpacity(1.0);
+    }
+    if (titleBar) { titleBar->hide(); titleBar->setWindowOpacity(1.0); }
+    emit shareAvailableChanged(false);
+    emit videoInfoChanged(QString(), QString(), QString(), QString(), QString());
+
+    // Display the image on the poster surface (KeepAspectRatio, centred on black).
+    const QString path = url.toLocalFile();
+    QPixmap pm(path);
+    if (!pm.isNull()) {
+        m_posterPixmap = pm;
+        showPosterOverlay();
+    } else {
+        // Formats Qt can't decode without a plugin (e.g. WebP) — ffmpeg fallback,
+        // same round-trip the stream poster uses.
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QByteArray bytes = f.readAll();
+            SgThumbnailer::decodeViaFfmpeg(bytes, this, [this](const QPixmap& dec) {
+                if (!dec.isNull() && m_kind == MediaKind::Photo) {
+                    m_posterPixmap = dec;
+                    showPosterOverlay();
+                }
+                });
+        }
+    }
+    showOSD(); // bring the arrows up briefly
 }
