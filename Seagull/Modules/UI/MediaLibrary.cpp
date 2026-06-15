@@ -36,6 +36,7 @@ namespace {
 constexpr int kGridSpacing = 12;
 constexpr int kPillTopMargin = 10;  // gap between the tab top and the floating pill
 constexpr int kMaxCards = 300;      // hard cap so a huge folder can't stall the UI
+constexpr int kSearchGraceMs = 600; // keep the search bar up briefly after the magnifier click
 }
 
 MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(parent), m_spell(spell) {
@@ -123,10 +124,8 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
         m_query = t;
         filterCards();
         });
-    // Empty + focus lost collapses the bar back to just the magnifier.
-    connect(librarySearch, &QLineEdit::editingFinished, this, [this] {
-        if (m_searchOpen && m_query.trimmed().isEmpty()) toggleSearch();
-        });
+    // Auto-collapse is poll-driven (see updatePillVisibility): the bar hides once
+    // it's empty, unfocused, and not just opened.
 
     // Keep the first row of cards clear of the pill's resting place. (FlowLayout
     // lays out within its own contents margins, so set them there.)
@@ -164,16 +163,24 @@ void MediaLibrary::updatePillVisibility() {
     const bool show = atTop || hovered;
     typePill->setVisible(show);
 
-    // The magnifier follows the exact same rules. While the bar is open it takes
-    // the magnifier's place, but stays put as long as it has focus or holds a
-    // query so typing/reading while scrolled down doesn't yank it away.
+    // While the search bar is open it takes the magnifier's place. Keep it only
+    // while it's actually in use: focused (typing), holding a query, or just
+    // opened (grace after the click). Once it's empty, unfocused, and past the
+    // grace, collapse back to the magnifier.
     if (m_searchOpen) {
-        searchButton->hide();
-        librarySearch->setVisible(show || librarySearch->hasFocus() || !m_query.trimmed().isEmpty());
-    } else {
-        librarySearch->hide();
-        searchButton->setVisible(show);
+        const bool inUse = librarySearch->hasFocus()
+                        || !m_query.trimmed().isEmpty()
+                        || (m_searchOpenedClock.isValid() && m_searchOpenedClock.elapsed() < kSearchGraceMs);
+        if (inUse) {
+            searchButton->hide();
+            librarySearch->setVisible(true);
+            return;
+        }
+        m_searchOpen = false;     // done with it — fall through to restore the magnifier
+        librarySearch->clear();   // reset (clears any whitespace) so it reopens blank
     }
+    librarySearch->hide();
+    searchButton->setVisible(show);
 }
 
 QString MediaLibrary::folderForType() const {
@@ -396,6 +403,7 @@ void MediaLibrary::positionSearch() {
 void MediaLibrary::toggleSearch() {
     m_searchOpen = !m_searchOpen;
     if (m_searchOpen) {
+        m_searchOpenedClock.restart(); // grace so it doesn't collapse the instant it opens
         librarySearch->show();
         librarySearch->raise();
         librarySearch->setFocus(Qt::OtherFocusReason);

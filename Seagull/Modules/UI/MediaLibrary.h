@@ -8,6 +8,7 @@
 
 #include <QList>
 #include <QPair>
+#include <QElapsedTimer>
 
 class QScrollArea;
 class QPushButton;
@@ -82,6 +83,7 @@ private:
     QPushButton*  searchButton = nullptr;  // floating magnifier at the top-right
     SpellCheckLineEdit* librarySearch = nullptr; // revealed on click; filters the active type
     bool          m_searchOpen = false;    // is the search bar revealed?
+    QElapsedTimer m_searchOpenedClock;     // grace after the magnifier click before auto-collapse
     SgSpellCheck* m_spell = nullptr;       // shared OS spell checker (owned by Seagull)
     QString       m_query;                // current search text (lowercased on use)
     // Each displayed card + its lowercased title, for live filtering.
