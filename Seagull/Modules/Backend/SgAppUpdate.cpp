@@ -8,6 +8,10 @@
 #include <QJsonObject>
 #include <QStringList>
 #include <QUrl>
+#include <QFile>
+#include <QDir>
+#include <QStandardPaths>
+#include <QProcess>
 
 // Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
 #ifndef SEAGULL_VERSION
@@ -49,10 +53,80 @@ void SgAppUpdate::checkForUpdate() {
         QString remote      = rel.value("tag_name").toString();
         if (remote.startsWith('v') || remote.startsWith('V')) remote = remote.mid(1);
 
+        // Remember the downloadable build (first .zip asset) for downloadAndApply().
+        m_assetUrl.clear();
+        const QJsonArray assets = rel.value("assets").toArray();
+        for (const QJsonValue& a : assets) {
+            const QJsonObject ao = a.toObject();
+            if (ao.value("name").toString().endsWith(".zip", Qt::CaseInsensitive)) {
+                m_assetUrl = ao.value("browser_download_url").toString();
+                break;
+            }
+        }
+
         if (isNewer(remote, QString::fromLatin1(SEAGULL_VERSION)))
             emit updateAvailable(remote, notes, url);
         else
             emit upToDate();
+    });
+}
+
+void SgAppUpdate::downloadAndApply() {
+    if (m_assetUrl.isEmpty()) {
+        emit downloadFailed("This release has no downloadable build attached.");
+        return;
+    }
+
+    // Fresh staging area under temp; never touch the install until verified.
+    const QString base = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                             .filePath(QStringLiteral("seagull_update"));
+    QDir(base).removeRecursively();
+    QDir().mkpath(base);
+    const QString zipPath = base + "/update.zip";
+
+    auto* file = new QFile(zipPath, this);
+    if (!file->open(QIODevice::WriteOnly)) {
+        file->deleteLater();
+        emit downloadFailed("Could not write to the temp folder.");
+        return;
+    }
+
+    QNetworkRequest req{ QUrl(m_assetUrl) };
+    req.setRawHeader("User-Agent", "Seagull-Player");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = m_nam->get(req);
+
+    connect(reply, &QNetworkReply::downloadProgress, this, &SgAppUpdate::downloadProgress);
+    connect(reply, &QNetworkReply::readyRead, this, [reply, file]() { file->write(reply->readAll()); });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, file, base, zipPath]() {
+        reply->deleteLater();
+        file->write(reply->readAll());
+        file->close();
+        file->deleteLater();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            emit downloadFailed(reply->errorString());
+            return;
+        }
+
+        // Extract with tar (ships with Windows 10 1803+; creates/reads real zips).
+        const QString staged = base + "/staged";
+        QDir().mkpath(staged);
+        QProcess tar;
+        tar.start("tar", { "-xf", QDir::toNativeSeparators(zipPath),
+                           "-C",  QDir::toNativeSeparators(staged) });
+        if (!tar.waitForStarted(5000) || !tar.waitForFinished(120000) || tar.exitCode() != 0) {
+            emit downloadFailed("Could not extract the downloaded update.");
+            return;
+        }
+
+        // The release zip carries a top-level Seagull\ folder; tolerate a flat zip too.
+        QString appRoot = staged + "/Seagull";
+        if (!QFile::exists(appRoot + "/Seagull.exe")) {
+            if (QFile::exists(staged + "/Seagull.exe")) appRoot = staged;
+            else { emit downloadFailed("The downloaded update looks incomplete."); return; }
+        }
+        emit readyToApply(appRoot);
     });
 }
 

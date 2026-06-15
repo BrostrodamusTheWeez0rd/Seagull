@@ -14,6 +14,12 @@ Under the hood it pairs the VLC engine (libVLC) for playback with `yt-dlp` for o
   <img src="Seagull/Previews/Library1.png" width="49%" />
 </p>
 
+**File Explorer**
+
+<p>
+  <img src="Seagull/Previews/FileExplorer.png" width="49%" />
+</p>
+
 **Queue**
 
 <p>
@@ -25,6 +31,12 @@ Under the hood it pairs the VLC engine (libVLC) for playback with `yt-dlp` for o
 
 <p>
   <img src="Seagull/Previews/Search.png" width="70%" />
+</p>
+
+**Visualizer**
+
+<p>
+  <img src="Seagull/Previews/Visualizer.png" width="49%" />
 </p>
 
 

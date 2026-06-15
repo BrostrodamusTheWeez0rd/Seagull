@@ -23,6 +23,7 @@
 class QTextBrowser;
 class SgThumbnailer;
 class QTimer;
+class QProgressDialog;
 
 class Seagull : public QObject {
     Q_OBJECT
@@ -78,8 +79,25 @@ private:
     // Checks GitHub Releases for a newer Seagull build and, if found, prompts the
     // user with the release notes + a button to open the download page.
     SgAppUpdate* appUpdate;
-    bool m_appCheckManual = false; // true = user pressed "Check for Updates" (show "up to date" too)
-    void showAppUpdatePrompt(const QString& version, const QString& notes, const QString& pageUrl);
+    bool m_appCheckManual = false;        // user pressed "Check for Updates" (show "up to date" too)
+    bool m_appCheckStartup = false;       // app check is part of the startup chain (app -> tools)
+    bool m_autoUpdateStartup = true;      // cached AutoUpdate setting for the startup tool flow
+    bool m_selfUpdateFromStartup = false; // a startup-initiated self-update is downloading
+    // Returns true if the user started a self-update (so the caller can halt the
+    // tool check, which the fresh launch will handle).
+    bool showAppUpdatePrompt(const QString& version, const QString& notes, const QString& pageUrl);
+
+    // Startup update sequence: ask (if AutoUpdate off), check Seagull FIRST, then
+    // run the tool check only if we're not busy replacing the app itself.
+    void runStartupUpdates();
+    void runToolUpdateFlow();
+    void finishStartupUpdates(); // release thumbnail holds + shut the updater thread
+
+    // Self-update: download + stage the new build (progress dialog), then launch a
+    // helper that swaps the files once we exit and relaunches us.
+    QProgressDialog* m_updateProgress = nullptr;
+    void startSelfUpdate();
+    void onUpdateReadyToApply(const QString& stagedAppDir);
 
     // Answers the player's local-file poster requests (frame grab / cover art).
     // Held with the Library's thumbnailer until the startup update modal is done.

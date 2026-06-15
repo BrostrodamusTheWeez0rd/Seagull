@@ -17,6 +17,10 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QMessageBox>
+#include <QProgressDialog>
+#include <QProcess>
+#include <QDir>
+#include <QStandardPaths>
 #include <QFile>
 
 // Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
@@ -60,28 +64,54 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Bound to the main window's HWND in run() (after the window exists).
     mediaControls = new SgMediaControls(this);
 
-    // App self-update check (notify-only for now): prompts with release notes +
-    // a download link when GitHub has a newer Seagull build. Fired from run().
+    // App update check. At startup it runs FIRST (before the tool check): if the
+    // user updates Seagull itself, the tool check is skipped and handled on the
+    // fresh launch. The Settings button drives the same check manually.
     appUpdate = new SgAppUpdate(this);
     connect(appUpdate, &SgAppUpdate::updateAvailable, this,
         [this](const QString& v, const QString& notes, const QString& url) {
-            m_appCheckManual = false;
+            if (m_appCheckStartup) {
+                m_appCheckStartup = false;
+                if (showAppUpdatePrompt(v, notes, url))
+                    m_selfUpdateFromStartup = true; // halt tools; the new launch checks them
+                else
+                    runToolUpdateFlow();            // user deferred -> proceed to tools
+                return;
+            }
+            m_appCheckManual = false;               // manual (Settings) path
             showAppUpdatePrompt(v, notes, url);
         });
-    // "Up to date" / failure only surface for a manual check, so the startup check
-    // never nags. Settings' "Check for Updates" button drives the manual path.
     connect(appUpdate, &SgAppUpdate::upToDate, this, [this]() {
+        if (m_appCheckStartup) { m_appCheckStartup = false; runToolUpdateFlow(); return; }
         if (!m_appCheckManual) return;
         m_appCheckManual = false;
         QMessageBox::information(mainWindow, "Seagull",
             QString("You're on the latest version (%1).").arg(QString::fromLatin1(SEAGULL_VERSION)));
     });
     connect(appUpdate, &SgAppUpdate::checkFailed, this, [this](const QString& reason) {
+        // A failed app check must not block tools at startup.
+        if (m_appCheckStartup) { m_appCheckStartup = false; runToolUpdateFlow(); return; }
         if (!m_appCheckManual) return;
         m_appCheckManual = false;
         QMessageBox::warning(mainWindow, "Seagull",
             "Could not check for updates.\n\n" + reason);
     });
+    // Self-update download/stage progress + completion.
+    connect(appUpdate, &SgAppUpdate::downloadProgress, this, [this](qint64 got, qint64 total) {
+        if (!m_updateProgress) return;
+        if (total > 0) { m_updateProgress->setMaximum(100);
+                         m_updateProgress->setValue(int(got * 100 / total)); }
+    });
+    connect(appUpdate, &SgAppUpdate::downloadFailed, this, [this](const QString& reason) {
+        if (m_updateProgress) { m_updateProgress->close(); m_updateProgress->deleteLater(); m_updateProgress = nullptr; }
+        QMessageBox::warning(mainWindow, "Update Failed",
+            "Could not download the update.\n\n" + reason +
+            "\n\nYou can still update manually from the releases page.");
+        // A startup self-update that failed: fall back to running normally (the
+        // tool check is intentionally skipped — it'll run next launch).
+        if (m_selfUpdateFromStartup) { m_selfUpdateFromStartup = false; finishStartupUpdates(); }
+    });
+    connect(appUpdate, &SgAppUpdate::readyToApply, this, &Seagull::onUpdateReadyToApply);
 
     // The tab modules.
     libraryModule = new MediaLibrary(spellChecker);
@@ -493,32 +523,47 @@ bool Seagull::run() {
         return true;
     }
 
-    // Tool updates, up front and modal: the UpdateDialog locks the app from
-    // the version check through any installs, so nothing can spawn a tool
-    // mid-replace. With AutoUpdate on it checks immediately; off, it asks
-    // before touching the network at all. The dialog drives the updater; the
-    // thumbnail queues stay held until it closes (an ffmpeg.exe swap must
-    // never race a running grab). Short delay so the first frame paints.
-    QTimer::singleShot(250, this, [this]() {
-        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-        const bool autoInstall = cfg.value("General/AutoUpdate", true).toBool();
-        UpdateDialog dlg(updaterWorker, autoInstall, mainWindow);
-        dlg.exec();
-        releaseThumbnailHolds();
-        shutdownUpdater(); // the startup flow was the updater's whole job
-
-        // App-version check runs AFTER the tool modal closes so they never stack,
-        // and respects the same decision: only when a check actually ran (AutoUpdate
-        // on, or the user accepted the ask). Silent unless an update is found.
-        if (dlg.ranCheck()) {
-            m_appCheckManual = false;
-            appUpdate->checkForUpdate();
-        }
-        });
+    // Startup updates: Seagull FIRST, then the tools. Short delay so the first
+    // frame paints. The thumbnail queues stay held (an ffmpeg.exe swap must never
+    // race a running grab) until finishStartupUpdates() runs at the end.
+    QTimer::singleShot(250, this, [this]() { runStartupUpdates(); });
     return true;
 }
 
-void Seagull::showAppUpdatePrompt(const QString& version, const QString& notes, const QString& pageUrl) {
+void Seagull::runStartupUpdates() {
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    m_autoUpdateStartup = cfg.value("General/AutoUpdate", true).toBool();
+
+    if (!m_autoUpdateStartup) {
+        // Off: ask once before touching the network. This single ask covers both
+        // the Seagull check and (downstream) the tool check.
+        const auto ans = QMessageBox::question(mainWindow, "Seagull",
+            "Check for updates now?\n\nThis looks for a new version of Seagull and its tools.",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (ans != QMessageBox::Yes) { finishStartupUpdates(); return; } // skip everything
+    }
+
+    // Check Seagull itself first; the handlers chain into runToolUpdateFlow()
+    // unless the user chooses to update the app (then tools wait for next launch).
+    m_appCheckStartup = true;
+    appUpdate->checkForUpdate();
+}
+
+void Seagull::runToolUpdateFlow() {
+    // AutoUpdate on -> check + install automatically. Off -> we already asked in
+    // runStartupUpdates, so skipAsk goes straight to the check but still confirms
+    // before installing. Locks the app while it runs (no tool swap mid-use).
+    UpdateDialog dlg(updaterWorker, m_autoUpdateStartup, /*skipAsk=*/!m_autoUpdateStartup, mainWindow);
+    dlg.exec();
+    finishStartupUpdates();
+}
+
+void Seagull::finishStartupUpdates() {
+    releaseThumbnailHolds();
+    shutdownUpdater(); // the startup flow was the updater's whole job
+}
+
+bool Seagull::showAppUpdatePrompt(const QString& version, const QString& notes, const QString& pageUrl) {
     QDialog dlg(mainWindow);
     dlg.setWindowTitle("Update Available");
     dlg.resize(520, 460);
@@ -541,15 +586,88 @@ void Seagull::showAppUpdatePrompt(const QString& version, const QString& notes, 
     lay->addWidget(notesView, 1);
 
     auto* buttons = new QDialogButtonBox(&dlg);
-    auto* download = buttons->addButton("Download", QDialogButtonBox::AcceptRole);
+    auto* update = buttons->addButton("Update Now", QDialogButtonBox::AcceptRole);
+    auto* page   = buttons->addButton("View on GitHub", QDialogButtonBox::ActionRole);
     buttons->addButton("Later", QDialogButtonBox::RejectRole);
     connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    download->setDefault(true);
+    connect(page, &QPushButton::clicked, &dlg, [pageUrl]() { QDesktopServices::openUrl(QUrl(pageUrl)); });
+    update->setDefault(true);
     lay->addWidget(buttons);
 
-    if (dlg.exec() == QDialog::Accepted)
-        QDesktopServices::openUrl(QUrl(pageUrl)); // opens the release page in the browser
+    if (dlg.exec() == QDialog::Accepted) {
+        startSelfUpdate(); // download + stage + swap, in-app
+        return true;
+    }
+    return false; // user chose Later / View on GitHub (and closed)
+}
+
+void Seagull::startSelfUpdate() {
+    m_updateProgress = new QProgressDialog("Downloading update...", "Cancel", 0, 0, mainWindow);
+    m_updateProgress->setWindowTitle("Updating Seagull");
+    m_updateProgress->setWindowModality(Qt::ApplicationModal);
+    m_updateProgress->setMinimumDuration(0);
+    m_updateProgress->setAutoClose(false);
+    m_updateProgress->setAutoReset(false);
+    // Cancel just abandons the in-flight download; the install hasn't been touched.
+    connect(m_updateProgress, &QProgressDialog::canceled, this, [this]() {
+        if (m_updateProgress) { m_updateProgress->deleteLater(); m_updateProgress = nullptr; }
+        // If this was the startup self-update, fall back to running normally
+        // (release the thumbnail holds + shut the updater; tools wait for next launch).
+        if (m_selfUpdateFromStartup) { m_selfUpdateFromStartup = false; finishStartupUpdates(); }
+    });
+    m_updateProgress->show();
+    appUpdate->downloadAndApply();
+}
+
+void Seagull::onUpdateReadyToApply(const QString& stagedAppDir) {
+    if (!m_updateProgress) return; // user canceled during download — don't apply
+
+    m_updateProgress->setLabelText("Installing update...");
+    m_updateProgress->setCancelButton(nullptr); // past the point of no return now
+
+    const QString installDir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    const QString exePath    = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    const QString staged     = QDir::toNativeSeparators(stagedAppDir);
+    const qint64  pid        = QCoreApplication::applicationPid();
+
+    // The swap helper: waits for us to exit, copies the staged build over the
+    // install (preserving config.ini, search_history.txt and the Tools folder),
+    // then relaunches and cleans up the staging area. Lives in temp root so the
+    // staged-folder cleanup can't delete it mid-run.
+    const QString helperPath = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                                   .filePath(QStringLiteral("seagull_apply.ps1"));
+    const QString script = QStringLiteral(
+        "param([int]$ProcId,[string]$Staged,[string]$Install,[string]$Exe)\n"
+        "try { Wait-Process -Id $ProcId -Timeout 30 -ErrorAction SilentlyContinue } catch {}\n"
+        "Start-Sleep -Milliseconds 500\n"
+        "robocopy $Staged $Install /E /XF config.ini search_history.txt /XD Tools | Out-Null\n"
+        "Start-Process -FilePath $Exe\n"
+        "Remove-Item -LiteralPath (Split-Path $Staged -Parent) -Recurse -Force -ErrorAction SilentlyContinue\n");
+
+    QFile f(helperPath);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (m_updateProgress) { m_updateProgress->deleteLater(); m_updateProgress = nullptr; }
+        QMessageBox::warning(mainWindow, "Update Failed", "Could not prepare the update helper.");
+        return;
+    }
+    f.write(script.toUtf8());
+    f.close();
+
+    const QStringList args = {
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+        "-File", QDir::toNativeSeparators(helperPath),
+        "-ProcId", QString::number(pid),
+        "-Staged", staged, "-Install", installDir, "-Exe", exePath
+    };
+    if (!QProcess::startDetached("powershell", args)) {
+        if (m_updateProgress) { m_updateProgress->deleteLater(); m_updateProgress = nullptr; }
+        QMessageBox::warning(mainWindow, "Update Failed", "Could not launch the update helper.");
+        return;
+    }
+
+    // Hand off: quit so the helper can replace our files and relaunch us.
+    qApp->quit();
 }
 
 int main(int argc, char* argv[]) {

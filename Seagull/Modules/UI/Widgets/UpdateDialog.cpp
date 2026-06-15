@@ -9,8 +9,8 @@
 #include <QTimer>
 #include <QFont>
 
-UpdateDialog::UpdateDialog(SgUpdater* updater, bool autoInstall, QWidget* parent)
-    : QDialog(parent), m_updater(updater), m_autoInstall(autoInstall) {
+UpdateDialog::UpdateDialog(SgUpdater* updater, bool autoInstall, bool skipAsk, QWidget* parent)
+    : QDialog(parent), m_updater(updater), m_autoInstall(autoInstall), m_skipAsk(skipAsk) {
     setWindowTitle("Seagull Tool Updates");
     setModal(true);
     setMinimumWidth(440);
@@ -58,9 +58,10 @@ UpdateDialog::UpdateDialog(SgUpdater* updater, bool autoInstall, QWidget* parent
     connect(m_updater, &SgUpdater::applyProgress, this, &UpdateDialog::onProgress);
     connect(m_updater, &SgUpdater::applyFinished, this, &UpdateDialog::onFinished);
 
-    // Auto-update goes straight into the check; ask-first offers it instead.
-    if (m_autoInstall) beginCheck();
-    else               enterAskStage();
+    // Auto-update (or a caller who already asked) goes straight into the check;
+    // otherwise offer the ask first.
+    if (m_autoInstall || m_skipAsk) beginCheck();
+    else                            enterAskStage();
 }
 
 void UpdateDialog::reject() {
@@ -95,7 +96,6 @@ void UpdateDialog::enterAskStage() {
 void UpdateDialog::beginCheck() {
     m_stage = Stage::Checking;
     m_busy  = true;
-    m_checkStarted = true; // a check is happening (auto, or user accepted the ask)
     titleLabel->setText("Checking for updates");
     bodyLabel->setText("Making sure yt-dlp, ffmpeg and Deno are current.");
     statusLabel->setText("Contacting update servers...");
