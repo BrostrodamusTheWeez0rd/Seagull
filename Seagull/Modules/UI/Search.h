@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QUrl>
 #include <QList>
+#include <QSet>
 #include <QStringList>
 #include "../Backend/SgSearch.h"  // SearchResult (full definition needed for m_allResults)
 
@@ -124,6 +125,7 @@ private:
     QStringListModel*      m_historyModel;
 
     QList<SearchResult> m_allResults;
+    QSet<QString>       m_seenUrls; // dedup: YouTube search returns the same video twice
     FilterMode   m_filterMode  = FilterMode::Videos; // Videos is the launch default
 
     // Feed position: index (into m_allResults) of the playing result, -1 none.

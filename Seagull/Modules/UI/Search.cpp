@@ -475,6 +475,13 @@ void Search::onResultsReady(const QList<SearchResult>& results) {
     }
 
     for (int i = m_shownCount; i < results.size(); ++i) {
+        // YouTube search returns the same video in multiple entries (shelves,
+        // re-paged results); skip anything whose URL we've already shown.
+        const QString& url = results[i].url;
+        if (!url.isEmpty()) {
+            if (m_seenUrls.contains(url)) continue;
+            m_seenUrls.insert(url);
+        }
         m_allResults.append(results[i]);
         if (passesFilter(results[i])) addCard(results[i]);
     }
@@ -582,6 +589,7 @@ void Search::clearResults() {
         delete item;
     }
     m_allResults.clear();
+    m_seenUrls.clear();
     m_playingIndex = -1;
     m_advancePending = false;
 }
