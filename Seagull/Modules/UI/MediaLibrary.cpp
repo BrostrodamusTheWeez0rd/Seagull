@@ -219,76 +219,79 @@ void MediaLibrary::clearCards() {
     }
 }
 
+VideoCard* MediaLibrary::addCardForEntry(const QFileInfo& fi) {
+    const QString path = fi.absoluteFilePath();
+
+    SearchResult r;
+    r.url = QUrl::fromLocalFile(path).toString();
+    // duration/viewCount stay -1 (omitted); thumbnail "" = no network fetch.
+
+    if (m_type == MediaType::Playlist) {
+        // .sgpl card: display name + entry count from the (tiny) JSON;
+        // playing routes through the Queue tab, never the local-file path.
+        QString plName = fi.completeBaseName();
+        int count = 0;
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+            if (!root["name"].toString().isEmpty()) plName = root["name"].toString();
+            count = root["entries"].toArray().size();
+        }
+        r.title = plName;
+        r.channel = QString("%1 item%2").arg(count).arg(count == 1 ? "" : "s");
+
+        auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost, VideoCard::PlayButton);
+        card->setThumbnailPlaceholder(QStringLiteral("≡"));
+        connect(card, &VideoCard::playRequested, this, [this, path](const QUrl&, const QString&) {
+            emit playPlaylistRequested(path);
+            });
+        cardsFlow->addWidget(card);
+        m_cards.append({ card, r.title.toLower() });
+        return card; // no m_files entry (advance is the Queue's job), no thumbnail
+    }
+
+    m_files.append(path);
+    r.title = fi.completeBaseName();
+    r.channel = QLocale().formattedDataSize(fi.size()); // the meta line's first slot
+
+    auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost,
+        VideoCard::PlayButton | VideoCard::QueueButton);
+
+    // Audio shows a music note while (or in case no) cover art arrives.
+    static const QStringList audioExts = { "mp3", "m4a", "opus", "wav", "flac" };
+    if (audioExts.contains(fi.suffix().toLower()))
+        card->setThumbnailPlaceholder(QStringLiteral("♪"));
+
+    const int index = m_files.size() - 1;
+    connect(card, &VideoCard::playRequested, this, [this, index](const QUrl& url, const QString&) {
+        m_currentPlayIndex = index;
+        emit playMediaRequested(url);
+        });
+    // Card "Queue" -> the Queue tab's local queue (purity handled there).
+    connect(card, &VideoCard::queueRequested, this, [this, path](const QUrl&, const QString&) {
+        emit enqueueLocalRequested({ path });
+        });
+    cardsFlow->addWidget(card);
+    m_cards.append({ card, r.title.toLower() });
+
+    m_pendingThumbs.insert(path, card);
+    thumbnailer->requestThumbnail(path);
+    return card;
+}
+
 void MediaLibrary::rebuild() {
+    if (m_buildTimer) m_buildTimer->stop(); // cancel any in-progress incremental build
     clearCards();
     m_files.clear();
     m_currentPlayIndex = -1;
 
     QDir dir(folderForType());
-    QFileInfoList entries = dir.entryInfoList(extensionsForType(), QDir::Files, QDir::Time);
-    if (entries.size() > kMaxCards) entries = entries.mid(0, kMaxCards);
+    m_buildQueue = dir.entryInfoList(extensionsForType(), QDir::Files, QDir::Time);
+    if (m_buildQueue.size() > kMaxCards) m_buildQueue = m_buildQueue.mid(0, kMaxCards);
+    m_buildPos = 0;
 
-    const bool playlists = (m_type == MediaType::Playlist);
-    for (const QFileInfo& fi : entries) {
-        const QString path = fi.absoluteFilePath();
-
-        SearchResult r;
-        r.url = QUrl::fromLocalFile(path).toString();
-        // duration/viewCount stay -1 (omitted); thumbnail "" = no network fetch.
-
-        if (playlists) {
-            // .sgpl card: display name + entry count from the (tiny) JSON;
-            // playing routes through the Queue tab, never the local-file path.
-            QString plName = fi.completeBaseName();
-            int count = 0;
-            QFile f(path);
-            if (f.open(QIODevice::ReadOnly)) {
-                const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
-                if (!root["name"].toString().isEmpty()) plName = root["name"].toString();
-                count = root["entries"].toArray().size();
-            }
-            r.title = plName;
-            r.channel = QString("%1 item%2").arg(count).arg(count == 1 ? "" : "s");
-
-            auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost, VideoCard::PlayButton);
-            card->setThumbnailPlaceholder(QStringLiteral("≡"));
-            connect(card, &VideoCard::playRequested, this, [this, path](const QUrl&, const QString&) {
-                emit playPlaylistRequested(path);
-                });
-            cardsFlow->addWidget(card);
-            m_cards.append({ card, r.title.toLower() });
-            continue; // no m_files entry (advance is the Queue's job), no thumbnail
-        }
-
-        m_files.append(path);
-        r.title = fi.completeBaseName();
-        r.channel = QLocale().formattedDataSize(fi.size()); // the meta line's first slot
-
-        auto* card = new VideoCard(r, nullptr, m_cardWidth, cardsHost,
-            VideoCard::PlayButton | VideoCard::QueueButton);
-
-        // Audio shows a music note while (or in case no) cover art arrives.
-        static const QStringList audioExts = { "mp3", "m4a", "opus", "wav", "flac" };
-        if (audioExts.contains(fi.suffix().toLower()))
-            card->setThumbnailPlaceholder(QStringLiteral("♪"));
-
-        const int index = m_files.size() - 1;
-        connect(card, &VideoCard::playRequested, this, [this, index](const QUrl& url, const QString&) {
-            m_currentPlayIndex = index;
-            emit playMediaRequested(url);
-            });
-        // Card "Queue" -> the Queue tab's local queue (purity handled there).
-        connect(card, &VideoCard::queueRequested, this, [this, path](const QUrl&, const QString&) {
-            emit enqueueLocalRequested({ path });
-            });
-        cardsFlow->addWidget(card);
-        m_cards.append({ card, r.title.toLower() });
-
-        m_pendingThumbs.insert(path, card);
-        thumbnailer->requestThumbnail(path);
-    }
-
-    applyCardWidth();
+    // One fill-width for the whole build; cards are created at that width.
+    m_cardWidth = fillCardWidth();
 
     // Default empty-note text for a truly empty folder; filterCards() decides
     // whether to show it (or a "no matches" note when a search filters all out).
@@ -298,7 +301,34 @@ void MediaLibrary::rebuild() {
     emptyLabel->setText(QString("Nothing here yet.\n%1 saved to\n%2\nwill show up here.")
         .arg(what, QDir::toNativeSeparators(dir.absolutePath())));
 
-    filterCards(); // apply the current search query to the new listing
+    // Build incrementally so a big folder never freezes the UI on a tab/category
+    // switch: first batch now, the rest on an idle timer.
+    if (!m_buildTimer) {
+        m_buildTimer = new QTimer(this);
+        m_buildTimer->setInterval(0); // fire between event-loop passes -> UI stays live
+        connect(m_buildTimer, &QTimer::timeout, this, &MediaLibrary::buildNextBatch);
+    }
+    buildNextBatch();
+    if (m_buildPos < m_buildQueue.size()) m_buildTimer->start();
+}
+
+void MediaLibrary::buildNextBatch() {
+    constexpr int kBatch = 16; // cards per pass: small enough to keep the UI responsive
+    const QString q = m_query.trimmed().toLower();
+    const int end = qMin(m_buildPos + kBatch, m_buildQueue.size());
+    for (; m_buildPos < end; ++m_buildPos) {
+        VideoCard* card = addCardForEntry(m_buildQueue[m_buildPos]);
+        // Respect the active query as cards appear (avoids an end-of-build flicker).
+        if (card && !q.isEmpty()) card->setVisible(m_cards.last().second.contains(q));
+    }
+    cardsFlow->invalidate(); // reflow the newly added cards
+
+    if (m_buildPos >= m_buildQueue.size()) {
+        if (m_buildTimer) m_buildTimer->stop();
+        m_buildQueue.clear();
+        applyCardWidth();
+        filterCards(); // final pass: visibility + empty-note + reflow
+    }
 }
 
 void MediaLibrary::filterCards() {
@@ -447,6 +477,7 @@ void MediaLibrary::showEvent(QShowEvent* event) {
 void MediaLibrary::hideEvent(QHideEvent* event) {
     QWidget::hideEvent(event);
     pillHoverTimer->stop(); // no cursor poll while another tab is active
+    if (m_buildTimer) m_buildTimer->stop(); // pause any in-progress build; showEvent rebuilds
 }
 
 void MediaLibrary::resizeEvent(QResizeEvent* event) {

@@ -34,6 +34,7 @@ void SgAppUpdate::checkForUpdate() {
     req.setRawHeader("User-Agent", "Seagull-Player");            // GitHub rejects UA-less requests
     req.setRawHeader("Accept", "application/vnd.github+json");
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    req.setTransferTimeout(8000); // don't let a slow check stall the startup update chain
 
     QNetworkReply* reply = m_nam->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {

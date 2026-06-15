@@ -9,6 +9,7 @@
 #include <QList>
 #include <QPair>
 #include <QElapsedTimer>
+#include <QFileInfoList>
 
 class QScrollArea;
 class QPushButton;
@@ -63,7 +64,9 @@ protected:
     bool eventFilter(QObject* obj, QEvent* event) override; // viewport resize -> refit cards
 
 private:
-    void rebuild();                 // folder listing -> cards
+    void rebuild();                 // folder listing -> kick off the incremental card build
+    void buildNextBatch();          // create the next chunk of cards (keeps the UI responsive)
+    VideoCard* addCardForEntry(const QFileInfo& fi); // build one card for a file/playlist entry
     void clearCards();
     void filterCards();             // hide cards not matching the search query
     void applyCardWidth();
@@ -99,6 +102,12 @@ private:
 
     QStringList m_files;          // displayed order (newest first)
     int m_currentPlayIndex = -1;
+
+    // Incremental grid build: entries are turned into cards a batch at a time on
+    // an idle timer, so a big folder never freezes the UI on a tab/category switch.
+    QFileInfoList m_buildQueue;
+    int     m_buildPos = 0;
+    QTimer* m_buildTimer = nullptr;
 
     int m_targetWidth = 240;      // Settings target; cards grow to fill the row
     int m_cardWidth = 240;
