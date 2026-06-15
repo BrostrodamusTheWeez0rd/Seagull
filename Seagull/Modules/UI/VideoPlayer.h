@@ -43,6 +43,7 @@ public:
     void raiseOverlays();      // re-stack overlays above the video (after fullscreen)
     void togglePlayPause();    // space-bar / single-click handler entry point
     void applyVisualizerSettings(); // re-read the visualizer config (settings changed)
+    void setVisualizerSuspended(bool on); // pause the visualizer's render timer while another module hammers the GUI thread (e.g. Library build)
 
     // Keyboard transport (driven by the host's key handling):
     void seekRelative(qint64 deltaMs); // arrow keys: nudge ±5s, clamped to [0,len]

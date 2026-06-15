@@ -33,6 +33,7 @@ public slots:
     void setMaxGulls(int n);                             // perf cap on the flock size
     void setMode(const QString& name);                   // "Seagull Sky" or "Seagull Waves"
     void setPaused(bool on);                             // freeze/resume the animation
+    void suspendRendering(bool on);                      // pause the render timer to free the GUI thread (e.g. Library build), independent of playback pause
     void triggerDeath();                                 // EOF: gulls spin and fall
     void reviveGulls();                                  // playback resumed: fresh flock
 
@@ -54,6 +55,7 @@ private:
     struct Cloud { qreal x, y, scale, speed; QVector<QPointF> puffs; QVector<qreal> pr; };
 
     void step();
+    void updateTimerState(); // run the animation only when visible, not paused, not suspended
     void seed();
     void seedClouds();    // (re)build clouds sized relative to the current widget
     void recycleGull(Gull& g);
@@ -95,6 +97,7 @@ private:
     bool  m_demo      = false;
     bool  m_dying     = false; // EOF death spiral in progress
     bool  m_paused    = false; // playback paused -> freeze the animation
+    bool  m_suspended = false; // GUI-thread pressure (e.g. Library build) -> pause rendering
 };
 
 #endif // VISUALIZER_H

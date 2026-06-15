@@ -56,10 +56,12 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
 
     engine = new PlaybackEngine(this);
 
-    // winId() forces the native window to exist; defer so it's ready first.
-    QTimer::singleShot(0, this, [this]() {
-        engine->setOutputWindow((void*)videoWidget->winId());
-        });
+    // VLC's output HWND is bound explicitly by the orchestrator early in
+    // Seagull::run() (via rebindOutputWindow), BEFORE any startup modal. This used
+    // to be a QTimer::singleShot(0) here, but that stray deferred call could fire
+    // inside a modal's nested event loop if a dialog ran before the window was
+    // shown, realizing the native window under an active modal block and leaving
+    // the whole app input-dead. Binding it deterministically removes that landmine.
 
     connect(engine, &PlaybackEngine::endReached, this, &VideoPlayer::onMediaEndReached);
     // Pause deliberately shows the frozen frame (VLC keeps it on screen) — the
@@ -1250,6 +1252,10 @@ void VideoPlayer::applyVisualizerSettings() {
     visualizer->setBehavior(cfg.value(bkey, "Drift").toString());
     visualizer->setMaxGulls(cfg.value("Visualizer/MaxGulls", 14).toInt());
     m_killGullsOnEnd = cfg.value("Visualizer/KillOnEnd", true).toBool();
+}
+
+void VideoPlayer::setVisualizerSuspended(bool on) {
+    if (visualizer) visualizer->suspendRendering(on);
 }
 
 void VideoPlayer::cycleVisualizer(int delta) {

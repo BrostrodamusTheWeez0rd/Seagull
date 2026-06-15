@@ -114,8 +114,19 @@ void Visualizer::setMode(const QString& name) {
 
 void Visualizer::setPaused(bool on) {
     m_paused = on;
-    if (on) m_timer->stop();                 // freeze where it is
-    else if (isVisible()) m_timer->start();  // resume
+    updateTimerState();
+}
+
+void Visualizer::suspendRendering(bool on) {
+    if (m_suspended == on) return;
+    m_suspended = on; // e.g. while the Library builds its card grid on the GUI thread
+    updateTimerState();
+}
+
+void Visualizer::updateTimerState() {
+    // Animate only when the sky is actually on screen and nothing wants it frozen.
+    if (isVisible() && !m_paused && !m_suspended) m_timer->start();
+    else                                          m_timer->stop();
 }
 
 void Visualizer::triggerDeath() {
@@ -141,7 +152,7 @@ void Visualizer::reviveGulls() {
 void Visualizer::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     seed();
-    if (!m_paused) m_timer->start();
+    updateTimerState();
 }
 
 void Visualizer::hideEvent(QHideEvent* event) {

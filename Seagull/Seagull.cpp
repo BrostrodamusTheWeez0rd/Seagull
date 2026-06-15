@@ -68,29 +68,21 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // user updates Seagull itself, the tool check is skipped and handled on the
     // fresh launch. The Settings button drives the same check manually.
     appUpdate = new SgAppUpdate(this);
+    // The startup Seagull-version check is driven by the UpdateDialog now; these
+    // handlers only serve the manual Settings "Check for Updates" path.
     connect(appUpdate, &SgAppUpdate::updateAvailable, this,
         [this](const QString& v, const QString& notes, const QString& url) {
-            if (m_appCheckStartup) {
-                m_appCheckStartup = false;
-                if (showAppUpdatePrompt(v, notes, url))
-                    m_selfUpdateFromStartup = true; // halt tools; the new launch checks them
-                else
-                    runToolUpdateFlow();            // user deferred -> proceed to tools
-                return;
-            }
-            m_appCheckManual = false;               // manual (Settings) path
+            if (!m_appCheckManual) return; // startup is owned by the UpdateDialog
+            m_appCheckManual = false;
             showAppUpdatePrompt(v, notes, url);
         });
     connect(appUpdate, &SgAppUpdate::upToDate, this, [this]() {
-        if (m_appCheckStartup) { m_appCheckStartup = false; runToolUpdateFlow(); return; }
         if (!m_appCheckManual) return;
         m_appCheckManual = false;
         QMessageBox::information(mainWindow, "Seagull",
             QString("You're on the latest version (%1).").arg(QString::fromLatin1(SEAGULL_VERSION)));
     });
     connect(appUpdate, &SgAppUpdate::checkFailed, this, [this](const QString& reason) {
-        // A failed app check must not block tools at startup.
-        if (m_appCheckStartup) { m_appCheckStartup = false; runToolUpdateFlow(); return; }
         if (!m_appCheckManual) return;
         m_appCheckManual = false;
         QMessageBox::warning(mainWindow, "Seagull",
@@ -189,6 +181,12 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // The queue itself enforces the local/online split (clear-first modal).
     connect(libraryModule, &MediaLibrary::enqueueLocalRequested, queueModule, &Queue::addLocalFilesToQueue);
     connect(explorerModule, &FileExplorer::enqueueRequested, queueModule, &Queue::addLocalFilesToQueue);
+
+    // While the Library builds its card grid (tab/category switch), pause the audio
+    // visualizer's render timer so the two don't fight over the GUI thread (the hitch
+    // only showed while local audio was playing — i.e. the visualizer was up).
+    connect(libraryModule, &MediaLibrary::buildBusyChanged,
+            videoPlayer, &VideoPlayer::setVisualizerSuspended);
 
     // A fresh playlist file landed in the playlist folder — flash the Library tab.
     connect(queueModule, &Queue::playlistSaved, this, [this](const QString&) { flashLibraryTab(); });
@@ -461,25 +459,21 @@ void Seagull::skipActive(int delta) {
 }
 
 bool Seagull::run() {
-    // The shell must be shown BEFORE the first-run dialog runs. Exec'ing an
-    // application-modal dialog before any window was shown left the whole app
-    // input-dead: deferred startup work (the player's winId()/VLC hookup)
-    // fired inside the dialog's nested event loop, creating the native window
-    // hierarchy underneath an active modal block.
-    mainWindow->show();
-
-    // Bind the Windows media controls to the now-realized top-level window. winId()
-    // forces native-window creation; SMTC is per-HWND for desktop apps.
-    mediaControls->attachToWindow(reinterpret_cast<void*>(mainWindow->winId()));
+    // The player's VLC output HWND is bound AFTER mainWindow->show() below — the
+    // proven timing. What lets the startup modals run while the window is still
+    // hidden is that the player no longer queues a deferred winId()/VLC hookup at
+    // construction (it was a QTimer::singleShot(0)). That stray deferred call was
+    // the landmine: it could fire inside a modal's nested event loop and realize
+    // the native windows under an active modal block, leaving the app input-dead.
+    // With it gone, nothing touches winId() while a pre-window modal is up.
 
     // First-run Terms of Use: must be accepted before the app is usable. Shown
-    // modally over the freshly shown main window (a modal before any window shows
-    // leaves the app input-dead, see above). Declining quits the app. The terms
-    // text is the disclaimer doc; closing or Escape counts as declining.
+    // modally BEFORE the window (safe now that the player's deferred winId hookup
+    // is gone). Declining quits the app. Closing or Escape counts as declining.
     {
         QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
         if (!cfg.value("Setup/TermsAccepted", false).toBool()) {
-            QDialog dlg(mainWindow);
+            QDialog dlg(nullptr);
             dlg.setWindowTitle("Seagull - Terms of Use");
             dlg.resize(560, 480);
             auto* lay = new QVBoxLayout(&dlg);
@@ -500,65 +494,63 @@ bool Seagull::run() {
         }
     }
 
-    // First run (or tools missing): folder confirmation + dependency download,
-    // modal over the fresh main window.
-    if (SetupDialog::isNeeded()) {
-        m_setupActive = true;
-        SetupDialog dlg(updaterWorker, mainWindow);
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    m_autoUpdateStartup = cfg.value("General/AutoUpdate", true).toBool();
+    const bool firstRunTools = SetupDialog::isNeeded();
+
+    // Two-stage updater modal, BEFORE the window (the window stays hidden until it
+    // closes), but ONLY when AutoUpdate is on. AutoUpdate now means "ask on startup,
+    // then run the check on Yes" — it never installs without a prompt. Off skips the
+    // startup check entirely; the Settings "Check for Updates" button is the only
+    // path then. Stage 1 checks Seagull; stage 2 checks the tools — except on first
+    // run, where SetupDialog below is the tool stage (runToolStage=false), which
+    // also sidesteps re-probing freshly-extracted tool exes (they'd misread their
+    // versions and silently re-download). The thumbnail ffmpeg queues stay held
+    // until finishStartupUpdates() so a tool swap can't race a running grab.
+    m_selfUpdateChosen = false;
+    if (m_autoUpdateStartup) {
+        UpdateDialog dlg(appUpdate, updaterWorker, /*autoInstall=*/true,
+                         /*skipAsk=*/false, /*runToolStage=*/!firstRunTools, nullptr);
+        connect(&dlg, &UpdateDialog::selfUpdateRequested, this,
+                [this]() { m_selfUpdateChosen = true; });
         dlg.exec();
+    }
+
+    if (m_selfUpdateChosen) {
+        // The user accepted a Seagull update at stage 1. Show the window, then run
+        // the self-update (its own progress dialog); it relaunches on success, or
+        // falls back to running normally on cancel/failure (finishStartupUpdates).
+        // The tool/Setup stage waits for the fresh launch.
+        m_selfUpdateFromStartup = true;
+        mainWindow->show();
+        videoPlayer->rebindOutputWindow(); // bind VLC now the render HWND exists
+        mediaControls->attachToWindow(reinterpret_cast<void*>(mainWindow->winId()));
+        startSelfUpdate();
+        return true;
+    }
+
+    // First run (or tools missing): folder confirmation + dependency download.
+    // This is stage 2 on first run, shown before the window like the rest.
+    if (firstRunTools) {
+        m_setupActive = true;
+        SetupDialog setup(updaterWorker, nullptr);
+        setup.exec();
         m_setupActive = false;
 
         // The Library already scanned with the pre-setup default folders;
         // rescan now that the user confirmed (possibly different) paths.
         libraryModule->refresh();
-
-        // Skip this launch's startup update check entirely: setup just drove
-        // the updater itself, and probing exes that were downloaded seconds
-        // ago can misread their versions (first-run self-extract + AV scan)
-        // and silently re-download everything. And if the user clicked Not
-        // Now, downloading behind their back would override that choice;
-        // setup asks again next launch instead.
-        releaseThumbnailHolds(); // fresh tools just landed; thumbnails may run
-        shutdownUpdater();       // setup was the updater's job this launch, done
-        return true;
     }
 
-    // Startup updates: Seagull FIRST, then the tools. Short delay so the first
-    // frame paints. The thumbnail queues stay held (an ffmpeg.exe swap must never
-    // race a running grab) until finishStartupUpdates() runs at the end.
-    // 0ms (not a visible delay): the updater modal comes up right away, but still
-    // AFTER mainWindow->show() returns — showing a modal before any window is shown
-    // is what left the app input-dead before (see the Terms/Setup note above).
-    QTimer::singleShot(0, this, [this]() { runStartupUpdates(); });
+    // Now reveal the window, bind VLC's output to the render frame's HWND, and bind
+    // the Windows media controls to the window HWND (SMTC is per-HWND for desktop
+    // apps).
+    mainWindow->show();
+    videoPlayer->rebindOutputWindow(); // bind VLC now the render HWND exists
+    mediaControls->attachToWindow(reinterpret_cast<void*>(mainWindow->winId()));
+
+    finishStartupUpdates(); // release thumbnail holds + shut the updater thread
     return true;
-}
-
-void Seagull::runStartupUpdates() {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
-    m_autoUpdateStartup = cfg.value("General/AutoUpdate", true).toBool();
-
-    if (!m_autoUpdateStartup) {
-        // Off: ask once before touching the network. This single ask covers both
-        // the Seagull check and (downstream) the tool check.
-        const auto ans = QMessageBox::question(mainWindow, "Seagull",
-            "Check for updates now?\n\nThis looks for a new version of Seagull and its tools.",
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-        if (ans != QMessageBox::Yes) { finishStartupUpdates(); return; } // skip everything
-    }
-
-    // Check Seagull itself first; the handlers chain into runToolUpdateFlow()
-    // unless the user chooses to update the app (then tools wait for next launch).
-    m_appCheckStartup = true;
-    appUpdate->checkForUpdate();
-}
-
-void Seagull::runToolUpdateFlow() {
-    // AutoUpdate on -> check + install automatically. Off -> we already asked in
-    // runStartupUpdates, so skipAsk goes straight to the check but still confirms
-    // before installing. Locks the app while it runs (no tool swap mid-use).
-    UpdateDialog dlg(updaterWorker, m_autoUpdateStartup, /*skipAsk=*/!m_autoUpdateStartup, mainWindow);
-    dlg.exec();
-    finishStartupUpdates();
 }
 
 void Seagull::finishStartupUpdates() {

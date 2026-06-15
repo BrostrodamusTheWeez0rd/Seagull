@@ -50,6 +50,7 @@ signals:
     void playMediaRequested(const QUrl& url);
     void playPlaylistRequested(const QString& path);       // .sgpl card -> Queue loads + plays it
     void enqueueLocalRequested(const QStringList& paths);  // card Queue button -> Queue tab
+    void buildBusyChanged(bool busy);                      // incremental card build running -> let the visualizer yield the GUI thread
 
 public slots:
     void playNextFile();   // auto-advance / skip, in displayed order
@@ -108,6 +109,8 @@ private:
     QFileInfoList m_buildQueue;
     int     m_buildPos = 0;
     QTimer* m_buildTimer = nullptr;
+    bool    m_buildBusy = false;
+    void    setBuildBusy(bool busy); // emit buildBusyChanged only on a real transition
 
     int m_targetWidth = 240;      // Settings target; cards grow to fill the row
     int m_cardWidth = 240;

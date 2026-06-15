@@ -79,18 +79,16 @@ private:
     // Checks GitHub Releases for a newer Seagull build and, if found, prompts the
     // user with the release notes + a button to open the download page.
     SgAppUpdate* appUpdate;
-    bool m_appCheckManual = false;        // user pressed "Check for Updates" (show "up to date" too)
-    bool m_appCheckStartup = false;       // app check is part of the startup chain (app -> tools)
-    bool m_autoUpdateStartup = true;      // cached AutoUpdate setting for the startup tool flow
+    bool m_appCheckManual = false;        // user pressed "Check for Updates" (Settings); show "up to date" too
+    bool m_autoUpdateStartup = true;      // cached AutoUpdate setting for the startup flow
     bool m_selfUpdateFromStartup = false; // a startup-initiated self-update is downloading
-    // Returns true if the user started a self-update (so the caller can halt the
-    // tool check, which the fresh launch will handle).
+    bool m_selfUpdateChosen = false;      // the startup UpdateDialog requested a Seagull self-update
+    // The Settings manual "Check for Updates" prompt (rich notes + open-page). The
+    // startup Seagull check is owned by the UpdateDialog instead.
     bool showAppUpdatePrompt(const QString& version, const QString& notes, const QString& pageUrl);
 
-    // Startup update sequence: ask (if AutoUpdate off), check Seagull FIRST, then
-    // run the tool check only if we're not busy replacing the app itself.
-    void runStartupUpdates();
-    void runToolUpdateFlow();
+    // Startup update flow runs entirely inside run(): the two-stage UpdateDialog
+    // (Seagull then tools) and, on first run, SetupDialog as the tool stage.
     void finishStartupUpdates(); // release thumbnail holds + shut the updater thread
 
     // Self-update: download + stage the new build (progress dialog), then launch a

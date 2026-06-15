@@ -279,8 +279,15 @@ VideoCard* MediaLibrary::addCardForEntry(const QFileInfo& fi) {
     return card;
 }
 
+void MediaLibrary::setBuildBusy(bool busy) {
+    if (m_buildBusy == busy) return;
+    m_buildBusy = busy;
+    emit buildBusyChanged(busy);
+}
+
 void MediaLibrary::rebuild() {
     if (m_buildTimer) m_buildTimer->stop(); // cancel any in-progress incremental build
+    setBuildBusy(true); // about to hammer the GUI thread building cards; let the visualizer yield
     clearCards();
     m_files.clear();
     m_currentPlayIndex = -1;
@@ -328,6 +335,7 @@ void MediaLibrary::buildNextBatch() {
         m_buildQueue.clear();
         applyCardWidth();
         filterCards(); // final pass: visibility + empty-note + reflow
+        setBuildBusy(false); // build done -> the visualizer can animate again
     }
 }
 
@@ -478,6 +486,7 @@ void MediaLibrary::hideEvent(QHideEvent* event) {
     QWidget::hideEvent(event);
     pillHoverTimer->stop(); // no cursor poll while another tab is active
     if (m_buildTimer) m_buildTimer->stop(); // pause any in-progress build; showEvent rebuilds
+    setBuildBusy(false); // build paused -> don't leave the visualizer suspended
 }
 
 void MediaLibrary::resizeEvent(QResizeEvent* event) {
