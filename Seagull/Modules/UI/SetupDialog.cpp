@@ -1,6 +1,7 @@
 #include "SetupDialog.h"
 #include "../Backend/SgPaths.h"
 #include "../Backend/SgUpdater.h"
+#include "../Backend/SgMediaControls.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -9,6 +10,7 @@
 #include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QFileDialog>
 #include <QSettings>
 #include <QCoreApplication>
@@ -89,6 +91,15 @@ SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)
         lay->addWidget(depNote);
     }
 
+    // Shortcuts (default on). The Start-menu one also gives Windows our app
+    // identity, so the media controls card shows "Seagull" instead of "unknown app".
+    desktopShortcutCheck = new QCheckBox("Add a desktop shortcut", this);
+    desktopShortcutCheck->setChecked(true);
+    lay->addWidget(desktopShortcutCheck);
+    startMenuShortcutCheck = new QCheckBox("Add a Start menu shortcut", this);
+    startMenuShortcutCheck->setChecked(true);
+    lay->addWidget(startMenuShortcutCheck);
+
     statusLabel = new QLabel(this);
     statusLabel->setObjectName("metaStats");
     statusLabel->hide();
@@ -132,6 +143,10 @@ void SetupDialog::onGetStarted() {
     // every confirmed folder so the Library tabs never point at nothing.
     for (const QLineEdit* e : { dlEdit, videoEdit, audioEdit, photoEdit, recEdit, playlistEdit })
         if (!e->text().isEmpty()) QDir().mkpath(e->text());
+
+    // Create the requested shortcuts (best-effort; never blocks setup).
+    if (desktopShortcutCheck->isChecked())   SgMediaControls::createDesktopShortcut();
+    if (startMenuShortcutCheck->isChecked()) SgMediaControls::createStartMenuShortcut();
 
     if (toolsMissing()) startToolDownload();
     else accept();

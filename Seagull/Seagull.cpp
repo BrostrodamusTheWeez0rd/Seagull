@@ -11,6 +11,12 @@
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
+#include <QLabel>
+#include <QFont>
+#include <QPushButton>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QMessageBox>
 #include <QFile>
 
 // Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
@@ -53,6 +59,29 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Windows media controls (SMTC): the OS now-playing overlay + media keys.
     // Bound to the main window's HWND in run() (after the window exists).
     mediaControls = new SgMediaControls(this);
+
+    // App self-update check (notify-only for now): prompts with release notes +
+    // a download link when GitHub has a newer Seagull build. Fired from run().
+    appUpdate = new SgAppUpdate(this);
+    connect(appUpdate, &SgAppUpdate::updateAvailable, this,
+        [this](const QString& v, const QString& notes, const QString& url) {
+            m_appCheckManual = false;
+            showAppUpdatePrompt(v, notes, url);
+        });
+    // "Up to date" / failure only surface for a manual check, so the startup check
+    // never nags. Settings' "Check for Updates" button drives the manual path.
+    connect(appUpdate, &SgAppUpdate::upToDate, this, [this]() {
+        if (!m_appCheckManual) return;
+        m_appCheckManual = false;
+        QMessageBox::information(mainWindow, "Seagull",
+            QString("You're on the latest version (%1).").arg(QString::fromLatin1(SEAGULL_VERSION)));
+    });
+    connect(appUpdate, &SgAppUpdate::checkFailed, this, [this](const QString& reason) {
+        if (!m_appCheckManual) return;
+        m_appCheckManual = false;
+        QMessageBox::warning(mainWindow, "Seagull",
+            "Could not check for updates.\n\n" + reason);
+    });
 
     // The tab modules.
     libraryModule = new MediaLibrary(spellChecker);
@@ -176,6 +205,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // and the on-close auto-clear when Search/ClearHistoryOnExit is ticked.
     connect(settingsModule, &Settings::clearHistoryRequested, searchModule, &Search::clearSearchHistory);
     connect(settingsModule, &Settings::visualizerSettingsChanged, videoPlayer, &VideoPlayer::applyVisualizerSettings);
+
+    // General "Check for Updates" button -> manual app-version check (shows an
+    // "up to date" message too, unlike the silent startup check).
+    connect(settingsModule, &Settings::checkForUpdatesRequested, this, [this]() {
+        m_appCheckManual = true;
+        appUpdate->checkForUpdate();
+    });
     connect(qApp, &QCoreApplication::aboutToQuit, searchModule, [this]() {
         QSettings s(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
         if (s.value("Search/ClearHistoryOnExit", false).toBool())
@@ -470,8 +506,50 @@ bool Seagull::run() {
         dlg.exec();
         releaseThumbnailHolds();
         shutdownUpdater(); // the startup flow was the updater's whole job
+
+        // App-version check runs AFTER the tool modal closes so they never stack,
+        // and respects the same decision: only when a check actually ran (AutoUpdate
+        // on, or the user accepted the ask). Silent unless an update is found.
+        if (dlg.ranCheck()) {
+            m_appCheckManual = false;
+            appUpdate->checkForUpdate();
+        }
         });
     return true;
+}
+
+void Seagull::showAppUpdatePrompt(const QString& version, const QString& notes, const QString& pageUrl) {
+    QDialog dlg(mainWindow);
+    dlg.setWindowTitle("Update Available");
+    dlg.resize(520, 460);
+    auto* lay = new QVBoxLayout(&dlg);
+
+    auto* heading = new QLabel(
+        QString("Seagull %1 is available. You have %2.")
+            .arg(version, QString::fromLatin1(SEAGULL_VERSION)), &dlg);
+    QFont hf = heading->font();
+    hf.setBold(true);
+    hf.setPointSize(hf.pointSize() + 1);
+    heading->setFont(hf);
+    heading->setWordWrap(true);
+    lay->addWidget(heading);
+
+    auto* notesView = new QTextBrowser(&dlg);
+    notesView->setOpenExternalLinks(true);
+    if (notes.trimmed().isEmpty()) notesView->setPlainText("No release notes were provided.");
+    else                           notesView->setMarkdown(notes);
+    lay->addWidget(notesView, 1);
+
+    auto* buttons = new QDialogButtonBox(&dlg);
+    auto* download = buttons->addButton("Download", QDialogButtonBox::AcceptRole);
+    buttons->addButton("Later", QDialogButtonBox::RejectRole);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    download->setDefault(true);
+    lay->addWidget(buttons);
+
+    if (dlg.exec() == QDialog::Accepted)
+        QDesktopServices::openUrl(QUrl(pageUrl)); // opens the release page in the browser
 }
 
 int main(int argc, char* argv[]) {

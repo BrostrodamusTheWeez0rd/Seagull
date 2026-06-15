@@ -18,6 +18,7 @@
 #include "Modules/Backend/SgHlsProxy.h"
 #include "Modules/Backend/SgRecorder.h"
 #include "Modules/Backend/SgMediaControls.h"
+#include "Modules/Backend/SgAppUpdate.h"
 
 class QTextBrowser;
 class SgThumbnailer;
@@ -73,6 +74,12 @@ private:
     SgMediaControls* mediaControls;
     QTimer* smtcTimelineTimer;
     void skipActive(int delta); // shared by the skip buttons + the SMTC next/prev keys
+
+    // Checks GitHub Releases for a newer Seagull build and, if found, prompts the
+    // user with the release notes + a button to open the download page.
+    SgAppUpdate* appUpdate;
+    bool m_appCheckManual = false; // true = user pressed "Check for Updates" (show "up to date" too)
+    void showAppUpdatePrompt(const QString& version, const QString& notes, const QString& pageUrl);
 
     // Answers the player's local-file poster requests (frame grab / cover art).
     // Held with the Library's thumbnailer until the startup update modal is done.

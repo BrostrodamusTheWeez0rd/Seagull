@@ -28,6 +28,12 @@ public:
     // (before any window or the SMTC session is created).
     static void registerAppIdentity();
 
+    // Create .lnk shortcuts to this exe. The Start-menu one carries the same
+    // AppUserModelID, which is what lets Windows resolve our name/icon on the SMTC
+    // card (instead of "unknown app"). Best-effort; failures are silent.
+    static void createDesktopShortcut();
+    static void createStartMenuShortcut();
+
     bool isAvailable() const;        // SMTC bound OK?
     void attachToWindow(void* hwnd); // bind to the app's top-level HWND (once)
 

@@ -26,6 +26,7 @@ signals:
     void cardWidthChanged(int width); // Display "Card size" -> Search card width (px)
     void clearHistoryRequested();     // General "Clear History Now" -> Search wipes its history
     void visualizerSettingsChanged(); // Display "Visualizer" -> player re-reads visualizer config
+    void checkForUpdatesRequested();  // General "Check Now" -> orchestrator runs the app check
 
 private slots:
     void saveSettings();
@@ -61,6 +62,7 @@ private:
 
     // General Tab elements
     QCheckBox* autoUpdateCheck;  // install tool updates silently vs ask first
+    QPushButton* checkUpdatesBtn; // General "Check Now" -> manual app update check
 
     // Display Tab elements
     QComboBox* themeCombo;

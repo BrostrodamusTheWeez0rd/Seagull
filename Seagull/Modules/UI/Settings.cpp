@@ -95,6 +95,11 @@ void Settings::setupUI() {
         "at startup. When off, Seagull asks before updating.");
     generalLayout->addRow("Auto Update:", autoUpdateCheck);
 
+    checkUpdatesBtn = new QPushButton("Check for Updates");
+    checkUpdatesBtn->setToolTip("Check now for a newer version of Seagull.");
+    generalLayout->addRow("", checkUpdatesBtn);
+    connect(checkUpdatesBtn, &QPushButton::clicked, this, &Settings::checkForUpdatesRequested);
+
     stackedWidget->addWidget(generalWidget);
 
     // === Display Tab ===

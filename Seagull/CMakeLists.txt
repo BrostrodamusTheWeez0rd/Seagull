@@ -81,6 +81,8 @@ add_executable(Seagull
     Modules/Backend/PlaybackEngine.cpp
     Modules/Backend/SgMediaControls.h
     Modules/Backend/SgMediaControls.cpp
+    Modules/Backend/SgAppUpdate.h
+    Modules/Backend/SgAppUpdate.cpp
     resources.qrc
     app.rc
 )

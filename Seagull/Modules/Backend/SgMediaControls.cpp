@@ -3,8 +3,12 @@
 #include <QDir>
 #include <QUrl>
 #include <QMetaObject>
+#include <QStandardPaths>
+#include <QCoreApplication>
 
+#include <string>
 #include <string_view>
+#include <cstring>
 #include <chrono>
 
 // C++/WinRT consumption of the SMTC. The WinRT headers ship with the Windows SDK
@@ -19,6 +23,9 @@
 #endif
 #include <windows.h>
 #include <shobjidl_core.h> // SetCurrentProcessExplicitAppUserModelID
+#include <shlobj.h>        // IShellLinkW, CLSID_ShellLink, IPersistFile
+#include <propsys.h>       // IPropertyStore (interface only; no propsys.lib needed)
+#include <propidl.h>       // PROPVARIANT
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.Media.h>
@@ -34,6 +41,58 @@ namespace {
 winrt::hstring toHString(const QString& s) {
     return winrt::hstring{ std::wstring_view{
         reinterpret_cast<const wchar_t*>(s.utf16()), static_cast<size_t>(s.size()) } };
+}
+
+// The process AppUserModelID — must match the Start-menu shortcut for Windows to
+// resolve our name/icon on the SMTC card.
+constexpr wchar_t kAumid[] = L"Seagull.MediaPlayer";
+
+// PKEY_AppUserModel_ID = {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, pid 5 (propkey.h).
+// Defined inline so we don't need to pull in the propkey GUID lib / INITGUID.
+const PROPERTYKEY kPkeyAppUserModelId =
+    { { 0x9F4C2855, 0x9F79, 0x4B39, { 0xA8,0xD0,0xE1,0xD4,0x2D,0xE1,0xD5,0xF3 } }, 5 };
+
+inline const wchar_t* wstr(const QString& s) {
+    return reinterpret_cast<const wchar_t*>(s.utf16());
+}
+
+// Write a .lnk to `target`, stamped with the AppUserModelID (so SMTC/taskbar
+// resolve our identity). Best-effort; returns false on any COM failure.
+bool writeShortcut(const QString& lnkPath, const QString& target, const QString& workdir) {
+    IShellLinkW* link = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+            IID_IShellLinkW, reinterpret_cast<void**>(&link))) || !link)
+        return false;
+
+    link->SetPath(wstr(target));
+    if (!workdir.isEmpty()) link->SetWorkingDirectory(wstr(workdir));
+    link->SetDescription(L"Seagull media player");
+
+    // Stamp the AUMID via the property store.
+    IPropertyStore* store = nullptr;
+    if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&store))) && store) {
+        PROPVARIANT pv;
+        PropVariantInit(&pv);
+        pv.vt = VT_LPWSTR;
+        const size_t bytes = (wcslen(kAumid) + 1) * sizeof(wchar_t);
+        pv.pwszVal = static_cast<PWSTR>(CoTaskMemAlloc(bytes));
+        if (pv.pwszVal) {
+            std::memcpy(pv.pwszVal, kAumid, bytes);
+            store->SetValue(kPkeyAppUserModelId, pv);
+            store->Commit();
+        }
+        PropVariantClear(&pv);
+        store->Release();
+    }
+
+    bool ok = false;
+    IPersistFile* file = nullptr;
+    if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&file))) && file) {
+        ok = SUCCEEDED(file->Save(wstr(lnkPath), TRUE));
+        file->Release();
+    }
+    link->Release();
+    return ok;
 }
 }
 
@@ -55,8 +114,25 @@ struct SgMediaControls::Impl {
 void SgMediaControls::registerAppIdentity() {
     // The id just needs to be a stable, unique, shell-legal string. Windows shows
     // a friendlier name/icon only if a Start-menu shortcut carries the same id
-    // (an installer concern); the metadata card populates regardless once set.
-    SetCurrentProcessExplicitAppUserModelID(L"Seagull.MediaPlayer");
+    // (see createStartMenuShortcut); the metadata card populates regardless.
+    SetCurrentProcessExplicitAppUserModelID(kAumid);
+}
+
+void SgMediaControls::createDesktopShortcut() {
+    const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    const QString dir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    const QString lnk = QDir(QStandardPaths::writableLocation(QStandardPaths::DesktopLocation))
+                            .filePath(QStringLiteral("Seagull.lnk"));
+    writeShortcut(QDir::toNativeSeparators(lnk), exe, dir);
+}
+
+void SgMediaControls::createStartMenuShortcut() {
+    const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    const QString dir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    // ApplicationsLocation on Windows == the per-user Start Menu\Programs folder.
+    const QString lnk = QDir(QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation))
+                            .filePath(QStringLiteral("Seagull.lnk"));
+    writeShortcut(QDir::toNativeSeparators(lnk), exe, dir);
 }
 
 SgMediaControls::SgMediaControls(QObject* parent) : QObject(parent), d(new Impl) {}

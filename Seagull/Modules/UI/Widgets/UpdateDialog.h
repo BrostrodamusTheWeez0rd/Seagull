@@ -27,6 +27,10 @@ class UpdateDialog : public QDialog {
 public:
     UpdateDialog(SgUpdater* updater, bool autoInstall, QWidget* parent = nullptr);
 
+    // True if a check actually ran (auto, or the user clicked Check Now). Lets the
+    // app-version check respect the same decision instead of re-prompting.
+    bool ranCheck() const { return m_checkStarted; }
+
 protected:
     void reject() override; // swallowed while checking/installing
 
@@ -44,6 +48,7 @@ private:
     SgUpdater* m_updater;
     bool  m_autoInstall;
     bool  m_busy = false;            // true while checking/installing (locks reject)
+    bool  m_checkStarted = false;    // a version check actually ran (see ranCheck)
     Stage m_stage = Stage::Checking;
 
     QLabel*       titleLabel;

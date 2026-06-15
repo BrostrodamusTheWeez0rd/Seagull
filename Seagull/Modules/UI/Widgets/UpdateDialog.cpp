@@ -95,6 +95,7 @@ void UpdateDialog::enterAskStage() {
 void UpdateDialog::beginCheck() {
     m_stage = Stage::Checking;
     m_busy  = true;
+    m_checkStarted = true; // a check is happening (auto, or user accepted the ask)
     titleLabel->setText("Checking for updates");
     bodyLabel->setText("Making sure yt-dlp, ffmpeg and Deno are current.");
     statusLabel->setText("Contacting update servers...");

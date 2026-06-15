@@ -7,6 +7,7 @@ class QLabel;
 class QLineEdit;
 class QProgressBar;
 class QPushButton;
+class QCheckBox;
 class SgUpdater;
 
 // First-run welcome modal: shows the default save folders for confirmation or
@@ -39,6 +40,9 @@ private:
     QLineEdit* photoEdit;
     QLineEdit* recEdit;
     QLineEdit* playlistEdit;
+
+    QCheckBox* desktopShortcutCheck;
+    QCheckBox* startMenuShortcutCheck;
 
     QLabel*       statusLabel;
     QProgressBar* progressBar;
