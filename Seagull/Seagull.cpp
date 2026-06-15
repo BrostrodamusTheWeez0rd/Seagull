@@ -526,7 +526,10 @@ bool Seagull::run() {
     // Startup updates: Seagull FIRST, then the tools. Short delay so the first
     // frame paints. The thumbnail queues stay held (an ffmpeg.exe swap must never
     // race a running grab) until finishStartupUpdates() runs at the end.
-    QTimer::singleShot(250, this, [this]() { runStartupUpdates(); });
+    // 0ms (not a visible delay): the updater modal comes up right away, but still
+    // AFTER mainWindow->show() returns — showing a modal before any window is shown
+    // is what left the app input-dead before (see the Terms/Setup note above).
+    QTimer::singleShot(0, this, [this]() { runStartupUpdates(); });
     return true;
 }
 

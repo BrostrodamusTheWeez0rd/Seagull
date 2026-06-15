@@ -11,7 +11,7 @@
 
 UpdateDialog::UpdateDialog(SgUpdater* updater, bool autoInstall, bool skipAsk, QWidget* parent)
     : QDialog(parent), m_updater(updater), m_autoInstall(autoInstall), m_skipAsk(skipAsk) {
-    setWindowTitle("Seagull Tool Updates");
+    setWindowTitle("Seagull Updater");
     setModal(true);
     setMinimumWidth(440);
     // No titlebar close button: the lock is the point. reject() swallows Escape.
@@ -97,7 +97,7 @@ void UpdateDialog::beginCheck() {
     m_stage = Stage::Checking;
     m_busy  = true;
     titleLabel->setText("Checking for updates");
-    bodyLabel->setText("Making sure yt-dlp, ffmpeg and Deno are current.");
+    bodyLabel->setText("Checking for a new version of Seagull, then its tools (yt-dlp, ffmpeg, Deno).");
     statusLabel->setText("Contacting update servers...");
     statusLabel->show();
     progressBar->setRange(0, 0); // indeterminate
