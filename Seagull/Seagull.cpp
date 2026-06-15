@@ -13,6 +13,11 @@
 #include <QDialogButtonBox>
 #include <QFile>
 
+// Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
+#ifndef SEAGULL_VERSION
+#define SEAGULL_VERSION "dev"
+#endif
+
 Seagull::Seagull(QObject* parent) : QObject(parent) {
     // The window everything hangs off of — a shell that hosts the video player.
     mainWindow = new MainWindow();
@@ -475,6 +480,8 @@ int main(int argc, char* argv[]) {
     SgMediaControls::registerAppIdentity();
 
     QApplication app(argc, argv);
+    QApplication::setApplicationName(QStringLiteral("Seagull"));
+    QApplication::setApplicationVersion(QString::fromLatin1(SEAGULL_VERSION));
 
     // Apply the saved theme before any widgets are built so the whole UI is themed.
     QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);

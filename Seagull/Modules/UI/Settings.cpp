@@ -11,8 +11,15 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTextBrowser>
+#include <QLabel>
+#include <QFont>
 #include <QFile>
 #include <QRegularExpression>
+
+// The build stamps this in (see CMakeLists). Fallback keeps a stray build compiling.
+#ifndef SEAGULL_VERSION
+#define SEAGULL_VERSION "dev"
+#endif
 
 namespace {
 // Load a bundled resource doc as text ("" if missing).
@@ -312,6 +319,15 @@ void Settings::setupUI() {
     auto* infoWidget = new QWidget();
     auto* infoLayout = new QVBoxLayout(infoWidget);
     infoLayout->setContentsMargins(20, 20, 20, 20);
+
+    // App version up top so bug reports can cite the exact build.
+    auto* versionLabel = new QLabel(QStringLiteral("Seagull %1").arg(QString::fromLatin1(SEAGULL_VERSION)));
+    versionLabel->setObjectName("infoVersionLabel");
+    QFont versionFont = versionLabel->font();
+    versionFont.setBold(true);
+    versionFont.setPointSize(versionFont.pointSize() + 2);
+    versionLabel->setFont(versionFont);
+    infoLayout->addWidget(versionLabel);
 
     auto* docTabs = new QTabWidget();
 

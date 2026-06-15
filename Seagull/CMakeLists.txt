@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(Seagull VERSION 1.0)
+# SemVer single source of truth. PROJECT_VERSION must stay numeric MAJOR.MINOR.PATCH;
+# the pre-release tag (e.g. -beta, or empty for a final release) is appended separately.
+project(Seagull VERSION 0.9.0)
+set(SEAGULL_VERSION_SUFFIX "-beta")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,6 +85,11 @@ add_executable(Seagull
     app.rc
 )
 
+
+# Hand the SemVer string to the code (e.g. "0.9.0-beta") so the app can show it.
+target_compile_definitions(Seagull PRIVATE
+    SEAGULL_VERSION="${PROJECT_VERSION}${SEAGULL_VERSION_SUFFIX}"
+)
 
 if(MSVC)
     target_compile_options(Seagull PRIVATE /Zc:__cplusplus)
