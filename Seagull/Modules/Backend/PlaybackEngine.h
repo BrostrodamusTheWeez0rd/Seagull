@@ -48,6 +48,11 @@ public:
     void   setTime(qint64 ms);
     State  state() const;
 
+    // Single-frame step (for paused frame-by-frame scrubbing). dir >= 0 advances
+    // one frame (VLC's native next-frame, which keeps the player paused); dir < 0
+    // steps back one frame's worth of time (VLC has no native previous-frame).
+    void stepFrame(int dir);
+
     void setVolume(int volume);
     void setMute(bool muted);
 

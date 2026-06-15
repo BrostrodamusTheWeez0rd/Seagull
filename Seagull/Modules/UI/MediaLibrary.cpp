@@ -1,6 +1,7 @@
 #include "MediaLibrary.h"
 #include "Widgets/FlowLayout.h"
 #include "Widgets/VideoCard.h"
+#include "Widgets/SpellCheckLineEdit.h"
 #include "../Backend/SgPaths.h"
 #include "../Backend/SgThumbnailer.h"
 
@@ -12,6 +13,11 @@
 #include <QButtonGroup>
 #include <QFrame>
 #include <QLabel>
+#include <QLineEdit>
+#include <QIcon>
+#include <QPixmap>
+#include <QPainter>
+#include <QPalette>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -32,7 +38,7 @@ constexpr int kPillTopMargin = 10;  // gap between the tab top and the floating 
 constexpr int kMaxCards = 300;      // hard cap so a huge folder can't stall the UI
 }
 
-MediaLibrary::MediaLibrary(QWidget* parent) : QWidget(parent) {
+MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(parent), m_spell(spell) {
     thumbnailer = new SgThumbnailer(this);
 
     auto* root = new QVBoxLayout(this);
@@ -93,6 +99,35 @@ MediaLibrary::MediaLibrary(QWidget* parent) : QWidget(parent) {
         rebuild();
         });
 
+    // Floating magnifier at the top-right. A plain child of the tab (like the
+    // type pill), it follows the same auto-hide rules. Clicking it reveals the
+    // search bar; the SVG glyph is tinted to the theme text colour in code.
+    searchButton = new QPushButton(this);
+    searchButton->setObjectName("librarySearchButton"); // themed in Theme::apply
+    searchButton->setCursor(Qt::PointingHandCursor);
+    searchButton->setFixedSize(34, 34);
+    searchButton->setToolTip("Search this library");
+    tintSearchIcon();
+    connect(searchButton, &QPushButton::clicked, this, &MediaLibrary::toggleSearch);
+
+    // The search bar itself: revealed on click, hidden by default. Uses the
+    // shared OS spell checker (red squiggles + suggestions), like the Search and
+    // File Explorer search fields.
+    librarySearch = new SpellCheckLineEdit(m_spell, this);
+    librarySearch->setObjectName("librarySearchBar"); // themed in Theme::apply
+    librarySearch->setPlaceholderText("Search\xE2\x80\xA6");
+    librarySearch->setClearButtonEnabled(true);
+    librarySearch->setFixedWidth(180);
+    librarySearch->hide();
+    connect(librarySearch, &QLineEdit::textChanged, this, [this](const QString& t) {
+        m_query = t;
+        filterCards();
+        });
+    // Empty + focus lost collapses the bar back to just the magnifier.
+    connect(librarySearch, &QLineEdit::editingFinished, this, [this] {
+        if (m_searchOpen && m_query.trimmed().isEmpty()) toggleSearch();
+        });
+
     // Keep the first row of cards clear of the pill's resting place. (FlowLayout
     // lays out within its own contents margins, so set them there.)
     const int pillH = typePill->sizeHint().height();
@@ -126,7 +161,19 @@ void MediaLibrary::updatePillVisibility() {
     // itself so recovering it isn't pixel-hunting.
     const QRect zone(0, 0, width(), typePill->height() + 2 * kPillTopMargin);
     const bool hovered = zone.contains(mapFromGlobal(QCursor::pos()));
-    typePill->setVisible(atTop || hovered);
+    const bool show = atTop || hovered;
+    typePill->setVisible(show);
+
+    // The magnifier follows the exact same rules. While the bar is open it takes
+    // the magnifier's place, but stays put as long as it has focus or holds a
+    // query so typing/reading while scrolled down doesn't yank it away.
+    if (m_searchOpen) {
+        searchButton->hide();
+        librarySearch->setVisible(show || librarySearch->hasFocus() || !m_query.trimmed().isEmpty());
+    } else {
+        librarySearch->hide();
+        searchButton->setVisible(show);
+    }
 }
 
 QString MediaLibrary::folderForType() const {
@@ -157,6 +204,7 @@ QStringList MediaLibrary::extensionsForType() const {
 void MediaLibrary::clearCards() {
     thumbnailer->cancelPending();
     m_pendingThumbs.clear();
+    m_cards.clear();
     QLayoutItem* item;
     while ((item = cardsFlow->takeAt(0)) != nullptr) {
         if (QWidget* w = item->widget()) w->deleteLater();
@@ -201,6 +249,7 @@ void MediaLibrary::rebuild() {
                 emit playPlaylistRequested(path);
                 });
             cardsFlow->addWidget(card);
+            m_cards.append({ card, r.title.toLower() });
             continue; // no m_files entry (advance is the Queue's job), no thumbnail
         }
 
@@ -226,6 +275,7 @@ void MediaLibrary::rebuild() {
             emit enqueueLocalRequested({ path });
             });
         cardsFlow->addWidget(card);
+        m_cards.append({ card, r.title.toLower() });
 
         m_pendingThumbs.insert(path, card);
         thumbnailer->requestThumbnail(path);
@@ -233,16 +283,38 @@ void MediaLibrary::rebuild() {
 
     applyCardWidth();
 
-    // Playlist cards don't populate m_files (advance is the Queue's job), so the
-    // empty check must count cards, not files.
-    const bool noCards = (cardsFlow->count() == 0);
+    // Default empty-note text for a truly empty folder; filterCards() decides
+    // whether to show it (or a "no matches" note when a search filters all out).
     const QString what = m_type == MediaType::Image    ? "Images"
                        : m_type == MediaType::Playlist ? "Playlists"
                                                        : "Media";
     emptyLabel->setText(QString("Nothing here yet.\n%1 saved to\n%2\nwill show up here.")
         .arg(what, QDir::toNativeSeparators(dir.absolutePath())));
-    emptyLabel->setVisible(noCards);
-    if (noCards) positionTypePill(); // also centers the empty note
+
+    filterCards(); // apply the current search query to the new listing
+}
+
+void MediaLibrary::filterCards() {
+    const QString q = m_query.trimmed().toLower();
+    int visible = 0;
+    for (const auto& entry : m_cards) {
+        VideoCard* c = entry.first;
+        if (!c) continue;
+        const bool match = q.isEmpty() || entry.second.contains(q);
+        c->setVisible(match);
+        if (match) ++visible;
+    }
+    cardsFlow->invalidate(); // re-flow now that some cards are hidden
+
+    if (m_cards.isEmpty()) {
+        emptyLabel->setVisible(true);            // folder message (set by rebuild)
+    } else if (visible == 0) {
+        emptyLabel->setText("No media matches your search.");
+        emptyLabel->setVisible(true);
+    } else {
+        emptyLabel->setVisible(false);
+    }
+    if (emptyLabel->isVisible()) positionTypePill(); // also centers the note
 }
 
 void MediaLibrary::refresh() {
@@ -300,11 +372,60 @@ void MediaLibrary::positionTypePill() {
     typePill->move((width() - pill.width()) / 2, kPillTopMargin);
     typePill->raise();
 
+    positionSearch();
+
     if (emptyLabel->isVisible()) {
         emptyLabel->adjustSize();
         emptyLabel->move((width() - emptyLabel->width()) / 2, height() / 2 - emptyLabel->height() / 2);
         emptyLabel->raise();
     }
+}
+
+void MediaLibrary::positionSearch() {
+    // Top-right, just inside the always-on vertical scrollbar so it never overlaps.
+    const int sb = cardsArea->verticalScrollBar()->isVisible()
+                       ? cardsArea->verticalScrollBar()->width() : 0;
+    const int rightEdge = width() - kPillTopMargin - sb;
+    searchButton->move(rightEdge - searchButton->width(), kPillTopMargin);
+    searchButton->raise();
+    librarySearch->move(rightEdge - librarySearch->width(),
+        kPillTopMargin + (searchButton->height() - librarySearch->height()) / 2);
+    librarySearch->raise();
+}
+
+void MediaLibrary::toggleSearch() {
+    m_searchOpen = !m_searchOpen;
+    if (m_searchOpen) {
+        librarySearch->show();
+        librarySearch->raise();
+        librarySearch->setFocus(Qt::OtherFocusReason);
+    } else {
+        librarySearch->clear(); // drops the filter
+        librarySearch->hide();
+    }
+    positionSearch();
+    updatePillVisibility();
+}
+
+void MediaLibrary::tintSearchIcon() {
+    if (!searchButton) return;
+    // QSS can't recolour a QIcon, so flat-tint the glyph to the theme text colour
+    // (same trick the player controls use). Re-run on every theme change.
+    const QSize sz(18, 18);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/search.svg")).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), palette().color(QPalette::WindowText));
+    p.end();
+    searchButton->setIcon(QIcon(pm));
+    searchButton->setIconSize(sz);
+}
+
+void MediaLibrary::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        tintSearchIcon();
 }
 
 void MediaLibrary::showEvent(QShowEvent* event) {

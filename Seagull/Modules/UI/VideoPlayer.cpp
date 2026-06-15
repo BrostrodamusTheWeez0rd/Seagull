@@ -662,6 +662,27 @@ void VideoPlayer::togglePlayPause() {
     else engine->play();
 }
 
+bool VideoPlayer::hasActiveMedia() const {
+    return engine && engine->hasMedia();
+}
+
+void VideoPlayer::seekRelative(qint64 deltaMs) {
+    if (!engine || !engine->hasMedia()) return;
+    const qint64 len = engine->length();
+    qint64 t = engine->time() + deltaMs;
+    if (t < 0) t = 0;
+    if (len > 0 && t > len) t = len;
+    engine->setTime(t);
+    showOSD(); // surface the seeker/controls so the jump is visible
+}
+
+void VideoPlayer::stepFrame(int dir) {
+    if (!engine || !engine->hasMedia()) return;
+    if (engine->state() != PlaybackEngine::State::Paused) return; // paused-only, per request
+    engine->stepFrame(dir);
+    showOSD();
+}
+
 bool VideoPlayer::eventFilter(QObject* watched, QEvent* event) {
     if (watched == videoWidget) {
         if (event->type() == QEvent::MouseButtonPress) clickTimer->start(250);

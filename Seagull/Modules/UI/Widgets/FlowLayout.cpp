@@ -64,7 +64,17 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const {
     int spaceY = verticalSpacing();
     if (spaceY < 0) spaceY = 8;
 
-    const int n = itemList.size();
+    // Lay out only visible items, so hidden ones (e.g. filtered-out cards) leave
+    // no gap.
+    QList<QLayoutItem*> items;
+    items.reserve(itemList.size());
+    for (QLayoutItem* it : itemList) {
+        QWidget* w = it->widget();
+        if (w && w->isHidden()) continue;
+        items.append(it);
+    }
+
+    const int n = items.size();
     int y = effective.y();
     int lastBottom = effective.y();
 
@@ -79,7 +89,7 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const {
         int lineHeight = 0;
         int j = i;
         while (j < n) {
-            const QSize hint = itemList[j]->sizeHint();
+            const QSize hint = items[j]->sizeHint();
             const int add = (j == i) ? hint.width() : spaceX + hint.width();
             if (j > i && rowWidth + add > availW) break; // always keep at least one
             rowWidth += add;
@@ -103,9 +113,9 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const {
         }
 
         for (int k = i; k < j; ++k) {
-            const QSize hint = itemList[k]->sizeHint();
+            const QSize hint = items[k]->sizeHint();
             if (!testOnly)
-                itemList[k]->setGeometry(QRect(QPoint(x, y), hint));
+                items[k]->setGeometry(QRect(QPoint(x, y), hint));
             x += hint.width() + gap;
         }
 

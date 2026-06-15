@@ -195,6 +195,10 @@ public slots:
     void playNextFile();
     void playPrevFile();
 
+protected:
+    // Drag files from the file table onto a folder in the tree to move them there.
+    bool eventFilter(QObject* obj, QEvent* event) override;
+
 private slots:
     void updateAddressBar(const QModelIndex& index);
     void createNewFolder();
@@ -220,6 +224,7 @@ private:
     // with Explorer in both directions.
     void cutCopySelection(bool cut);
     void pasteClipboard();
+    void moveFilesInto(const QStringList& srcPaths, const QString& destDir); // drag-drop move
     void deleteSelection();   // to the Recycle Bin, after confirmation
     void renameSelected();    // inline edit; QFileSystemModel::setData does the rename
     QStringList selectedFilePaths() const;

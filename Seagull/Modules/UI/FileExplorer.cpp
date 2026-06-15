@@ -22,6 +22,9 @@
 #include <QApplication>
 #include <QMimeData>
 #include <QMessageBox>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 
 FileExplorer::FileExplorer(SgSpellCheck* spell, QWidget* parent) : QWidget(parent), m_spell(spell) {
     mainLayout = new QVBoxLayout(this);
@@ -111,6 +114,16 @@ FileExplorer::FileExplorer(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     // Click a column header to sort by it (Name/Size/Type/Date), via lessThan.
     fileTable->setSortingEnabled(true);
     fileTable->sortByColumn(0, Qt::AscendingOrder);
+
+    // Drag rows out of the file table; drop them on a folder in the tree to move
+    // them there. The drop is handled in eventFilter on the tree's viewport.
+    fileTable->setDragEnabled(true);
+    fileTable->setDragDropMode(QAbstractItemView::DragOnly);
+    fileTable->setDefaultDropAction(Qt::MoveAction);
+    folderTree->setAcceptDrops(true);
+    folderTree->setDropIndicatorShown(true);
+    folderTree->setDragDropMode(QAbstractItemView::DropOnly);
+    folderTree->viewport()->installEventFilter(this);
 
     // --- File details panel (cover/thumbnail + metadata), right of the file table ---
     detailsPanel = new QWidget();
@@ -592,6 +605,73 @@ void FileExplorer::pasteClipboard() {
     if (move) QGuiApplication::clipboard()->clear(); // a cut pastes once, like Explorer
     if (!failed.isEmpty())
         QMessageBox::warning(this, "Paste", "Could not paste:\n" + failed.join('\n'));
+}
+
+bool FileExplorer::eventFilter(QObject* obj, QEvent* event) {
+    if (obj == folderTree->viewport()) {
+        // Folder under the cursor (mapped through the folder-only proxy).
+        auto folderAt = [this](const QPoint& pos) -> QString {
+            const QModelIndex src = treeFilter->mapToSource(folderTree->indexAt(pos));
+            if (src.isValid() && fileModel->isDir(src)) return fileModel->filePath(src);
+            return QString();
+        };
+        if (event->type() == QEvent::DragEnter) {
+            auto* e = static_cast<QDragEnterEvent*>(event);
+            if (e->mimeData()->hasUrls()) { e->setDropAction(Qt::MoveAction); e->accept(); return true; }
+        } else if (event->type() == QEvent::DragMove) {
+            auto* e = static_cast<QDragMoveEvent*>(event);
+            if (e->mimeData()->hasUrls()) {
+                if (!folderAt(e->position().toPoint()).isEmpty()) { e->setDropAction(Qt::MoveAction); e->accept(); }
+                else e->ignore(); // only folders are valid drop targets
+                return true;
+            }
+        } else if (event->type() == QEvent::Drop) {
+            auto* e = static_cast<QDropEvent*>(event);
+            if (e->mimeData()->hasUrls()) {
+                const QString dest = folderAt(e->position().toPoint());
+                if (!dest.isEmpty()) {
+                    QStringList paths;
+                    for (const QUrl& u : e->mimeData()->urls())
+                        if (u.isLocalFile()) paths << u.toLocalFile();
+                    moveFilesInto(paths, dest);
+                    e->setDropAction(Qt::MoveAction);
+                    e->accept();
+                }
+                return true;
+            }
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
+void FileExplorer::moveFilesInto(const QStringList& srcPaths, const QString& destDirPath) {
+    const QDir destDir(destDirPath);
+    if (srcPaths.isEmpty() || !destDir.exists()) return;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QStringList failed;
+    for (const QString& src : srcPaths) {
+        const QFileInfo si(src);
+        if (!si.exists()) continue;
+        // No-op moving into the file's own folder.
+        if (QString::compare(si.absolutePath(), destDir.absolutePath(), Qt::CaseInsensitive) == 0)
+            continue;
+        // Don't move a folder into itself or one of its descendants.
+        if (si.isDir() && (destDir.absolutePath() + "/").startsWith(si.absoluteFilePath() + "/", Qt::CaseInsensitive))
+            continue;
+        const QString dst = uniqueDestPath(destDir, si.fileName());
+        bool ok = si.isDir() ? QDir().rename(src, dst) : QFile::rename(src, dst);
+        if (!ok) { // rename fails across drives — fall back to copy + delete
+            ok = copyPath(src, dst);
+            if (ok) ok = si.isDir() ? QDir(src).removeRecursively() : QFile::remove(src);
+        }
+        if (!ok) failed << si.fileName();
+    }
+    QApplication::restoreOverrideCursor();
+
+    if (!failed.isEmpty())
+        QMessageBox::warning(this, "Move", "Could not move:\n" + failed.join('\n'));
+    refreshView();
 }
 
 void FileExplorer::deleteSelection() {

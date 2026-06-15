@@ -101,6 +101,9 @@ protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    // Player transport keys: arrows seek ±5s, comma/period frame-step (paused).
+    // Returns true if it consumed the key (so item views / sliders keep arrows).
+    bool handleMediaKey(QKeyEvent* event);
     void resizeEvent(QResizeEvent* event) override;
     void moveEvent(QMoveEvent* event) override;
     void showEvent(QShowEvent* event) override;

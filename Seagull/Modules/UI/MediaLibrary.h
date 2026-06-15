@@ -6,6 +6,9 @@
 #include <QHash>
 #include <QPointer>
 
+#include <QList>
+#include <QPair>
+
 class QScrollArea;
 class QPushButton;
 class QButtonGroup;
@@ -15,6 +18,8 @@ class QTimer;
 class FlowLayout;
 class VideoCard;
 class SgThumbnailer;
+class SgSpellCheck;
+class SpellCheckLineEdit;
 
 // The "Library" tab: a card-grid view of the user's saved media, one content
 // type at a time. The floating pill at the top switches between the SgPaths
@@ -28,7 +33,7 @@ class MediaLibrary : public QWidget {
 public:
     enum class MediaType { Video, Audio, Image, Recording, Playlist };
 
-    explicit MediaLibrary(QWidget* parent = nullptr);
+    explicit MediaLibrary(SgSpellCheck* spell, QWidget* parent = nullptr);
 
     void setCardWidth(int targetWidth); // live from Settings -> Display "Card size"
 
@@ -53,22 +58,34 @@ protected:
     void showEvent(QShowEvent* event) override;       // refresh on tab switch
     void hideEvent(QHideEvent* event) override;       // pause the pill hover poll
     void resizeEvent(QResizeEvent* event) override;   // reposition the floating pill
+    void changeEvent(QEvent* event) override;         // re-tint the search icon on theme change
     bool eventFilter(QObject* obj, QEvent* event) override; // viewport resize -> refit cards
 
 private:
     void rebuild();                 // folder listing -> cards
     void clearCards();
+    void filterCards();             // hide cards not matching the search query
     void applyCardWidth();
     int  fillCardWidth() const;
     QString folderForType() const;       // the SgPaths folder for the active type
     QStringList extensionsForType() const;
     void positionTypePill();
     void updatePillVisibility(); // visible at scroll-top or when its strip is hovered
+    void positionSearch();       // place the magnifier button / bar at the top-right
+    void toggleSearch();         // magnifier click: reveal the search bar (or collapse)
+    void tintSearchIcon();       // recolour the magnifier glyph to the theme text colour
 
     MediaType m_type = MediaType::Video;
 
     QFrame*       typePill = nullptr;     // floating translucent type switcher
     QButtonGroup* typeGroup = nullptr;
+    QPushButton*  searchButton = nullptr;  // floating magnifier at the top-right
+    SpellCheckLineEdit* librarySearch = nullptr; // revealed on click; filters the active type
+    bool          m_searchOpen = false;    // is the search bar revealed?
+    SgSpellCheck* m_spell = nullptr;       // shared OS spell checker (owned by Seagull)
+    QString       m_query;                // current search text (lowercased on use)
+    // Each displayed card + its lowercased title, for live filtering.
+    QList<QPair<QPointer<VideoCard>, QString>> m_cards;
     QScrollArea*  cardsArea = nullptr;
     QWidget*      cardsHost = nullptr;
     FlowLayout*   cardsFlow = nullptr;

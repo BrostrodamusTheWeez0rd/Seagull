@@ -253,6 +253,11 @@ void Theme::apply(const QString& name) {
         "QPushButton#libraryTypeButton { background:transparent; color:%2; border:none; border-radius:12px; padding:5px 16px; font-weight:bold; }"
         "QPushButton#libraryTypeButton:hover { background-color:%5; }"
         "QPushButton#libraryTypeButton:checked { background-color:%6; color:%3; }"
+        "QLineEdit#librarySearchBar { background-color:%4; color:%2; border:1px solid %6; border-radius:11px; padding:2px 8px; }"
+        // Floating round magnifier at the top-right (same pill surface/outline as
+        // the type switcher; the glyph itself is tinted in code).
+        "QPushButton#librarySearchButton { background-color:%1; border:1px solid %6; border-radius:17px; }"
+        "QPushButton#librarySearchButton:hover { background-color:%5; }"
         "QLabel#libraryEmptyLabel { color:%2; background:transparent; }"
         // Search tab: small filter pill (All / Videos / Shorts) — same pill idiom.
         "QFrame#searchFilterPill { background-color:%1; border:1px solid %6; border-radius:14px; }"

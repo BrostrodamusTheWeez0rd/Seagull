@@ -43,6 +43,11 @@ public:
     void togglePlayPause();    // space-bar / single-click handler entry point
     void applyVisualizerSettings(); // re-read the visualizer config (settings changed)
 
+    // Keyboard transport (driven by the host's key handling):
+    void seekRelative(qint64 deltaMs); // arrow keys: nudge ±5s, clamped to [0,len]
+    void stepFrame(int dir);           // comma/period: one frame back/forward, paused only
+    bool hasActiveMedia() const;       // is there media loaded to act on?
+
     // Shorts-feed behaviour (YouTube style): the short loops at the end instead
     // of dropping into ended mode, and wheel-scrolling over the video emits
     // shortsScrolled so the feed owner can advance. Cleared on every new media;

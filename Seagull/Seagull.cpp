@@ -46,7 +46,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     recorder = new SgRecorder(this);
 
     // The tab modules.
-    libraryModule = new MediaLibrary();
+    libraryModule = new MediaLibrary(spellChecker);
     explorerModule = new FileExplorer(spellChecker);
     queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);
     searchModule = new Search(searchWorker, spellChecker);

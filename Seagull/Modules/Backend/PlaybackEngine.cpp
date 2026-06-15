@@ -199,6 +199,20 @@ qint64 PlaybackEngine::time() const { return m_player ? m_player->time() : 0; }
 qint64 PlaybackEngine::length() const { return m_player ? m_player->length() : 0; }
 void PlaybackEngine::setTime(qint64 ms) { if (m_player) m_player->setTime(ms); }
 
+void PlaybackEngine::stepFrame(int dir) {
+    if (!m_player) return;
+    if (dir >= 0) {
+        m_player->nextFrame(); // advances one frame and holds the player paused
+        return;
+    }
+    // No native previous-frame in VLC: step back by one frame's duration, derived
+    // from the current FPS (fall back to ~25fps if VLC can't report it yet).
+    // vlcpp only wraps fps() pre-3.0, so call the (still-exported) C API directly.
+    const float f = libvlc_media_player_get_fps(*m_player);
+    const qint64 frameMs = (f > 1.0f) ? qint64(1000.0f / f + 0.5f) : 40;
+    m_player->setTime(qMax<qint64>(0, m_player->time() - frameMs));
+}
+
 PlaybackEngine::State PlaybackEngine::state() const {
     if (!m_player) return State::Idle;
     switch (m_player->state()) {

@@ -10,6 +10,8 @@
 #include <QTextEdit>
 #include <QComboBox>
 #include <QAbstractSpinBox>
+#include <QAbstractItemView>
+#include <QAbstractSlider>
 #include <QScrollArea>
 #include <QTabBar>
 #include <QToolButton>
@@ -427,6 +429,18 @@ void PlayerWindow::keyPressEvent(QKeyEvent* event) {
     case Qt::Key_Space:
         if (m_host->videoPlayer) m_host->videoPlayer->togglePlayPause();
         break;
+    case Qt::Key_Left:
+        if (m_host->videoPlayer) m_host->videoPlayer->seekRelative(-5000);
+        break;
+    case Qt::Key_Right:
+        if (m_host->videoPlayer) m_host->videoPlayer->seekRelative(+5000);
+        break;
+    case Qt::Key_Comma:
+        if (m_host->videoPlayer) m_host->videoPlayer->stepFrame(-1);
+        break;
+    case Qt::Key_Period:
+        if (m_host->videoPlayer) m_host->videoPlayer->stepFrame(+1);
+        break;
     default: QWidget::keyPressEvent(event);
     }
 }
@@ -804,7 +818,26 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     QMainWindow::closeEvent(event);
 }
 
+bool MainWindow::handleMediaKey(QKeyEvent* event) {
+    if (!videoPlayer || !videoPlayer->hasActiveMedia()) return false;
+    // These widgets legitimately own the arrow keys (and text entry), so let them
+    // through rather than hijacking navigation/scrubbing for the player.
+    QWidget* fw = QApplication::focusWidget();
+    if (qobject_cast<QAbstractItemView*>(fw) || qobject_cast<QAbstractSlider*>(fw)
+        || qobject_cast<QLineEdit*>(fw)      || qobject_cast<QTextEdit*>(fw)
+        || qobject_cast<QAbstractSpinBox*>(fw) || qobject_cast<QComboBox*>(fw))
+        return false;
+    switch (event->key()) {
+    case Qt::Key_Left:   videoPlayer->seekRelative(-5000); return true;
+    case Qt::Key_Right:  videoPlayer->seekRelative(+5000); return true;
+    case Qt::Key_Comma:  videoPlayer->stepFrame(-1);       return true; // ,
+    case Qt::Key_Period: videoPlayer->stepFrame(+1);       return true; // .
+    default: return false;
+    }
+}
+
 void MainWindow::keyPressEvent(QKeyEvent* event) {
+    if (handleMediaKey(event)) return;
     switch (event->key()) {
     case Qt::Key_Escape:
         if (isFullScreen()) exitFullScreen();
@@ -909,6 +942,9 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                          || qobject_cast<QAbstractSpinBox*>(fw)
                          || qobject_cast<QComboBox*>(fw);
         if (typing && keyEvent->key() != Qt::Key_Escape) return false;
+        // Player transport keys (arrows / , / .) — handleMediaKey self-guards
+        // against item views and sliders that need the arrows.
+        if (handleMediaKey(keyEvent)) return true;
         keyPressEvent(keyEvent);
         if (keyEvent->key() == Qt::Key_Space || keyEvent->key() == Qt::Key_Escape) return true;
         return false;
