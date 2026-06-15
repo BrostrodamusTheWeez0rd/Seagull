@@ -9,10 +9,9 @@
 #include <memory>
 #include <vlcpp/vlc.hpp>
 
-class QAudioSink;
 class AudioFifo;
-class QIODevice;
-class QTimer;
+class AudioSinkWorker;
+class QThread;
 
 // Wraps libVLC so the rest of the app never touches vlcpp directly. Owns the VLC
 // instance + media player, exposes a neutral transport API, and turns VLC's
@@ -81,10 +80,8 @@ private:
     void createPlayer(); // (re)build the media player + hook its events
     void hookEvents();
     void onAudioData(const void* samples, unsigned count, int64_t pts); // VLC audio thread
-    bool startTapSink();
-    void stopTapSink();
-    void drainToSink();                            // GUI thread: ring -> QAudioSink (push mode)
-    void analyzeForVisualizer(const QByteArray& chunk); // GUI thread: analyse consumed PCM
+    void ensureAudioThread(); // lazily create the dedicated audio output thread + worker
+    void analyzeForVisualizer(const QByteArray& chunk); // sink pull thread: analyse consumed PCM
     void applyVolumeToSink();
     // Synthesise a local HLS master tying a video-only + audio-only chunklist
     // together (for sites that split them); returns false on write failure.
@@ -97,10 +94,9 @@ private:
 
     // Audio tap state.
     bool          m_tapOn       = false;
-    QAudioSink*   m_sink        = nullptr; // our output while tapping (parented to this)
-    QIODevice*    m_sinkDev     = nullptr; // the sink's push-mode write device (owned by m_sink)
-    QTimer*       m_drainTimer  = nullptr; // drives ring -> sink writes on the GUI thread
-    AudioFifo*    m_fifo        = nullptr; // thread-safe PCM ring (plain, deleted manually)
+    QThread*        m_audioThread = nullptr; // dedicated output thread (immune to GUI freezes)
+    AudioSinkWorker* m_audioWorker = nullptr; // owns the QAudioSink on m_audioThread
+    AudioFifo*      m_fifo         = nullptr; // thread-safe PCM ring (plain, deleted manually)
     int           m_volume      = 100;     // cached so volume applies to whichever output is live
     bool          m_muted       = false;
     unsigned      m_tapRate     = 44100;

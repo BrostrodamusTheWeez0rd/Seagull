@@ -9,13 +9,14 @@
 #include <QIODevice>
 #include <QTimer>
 #include <QMutex>
+#include <QThread>
+#include <functional>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
 
-// Thread-safe PCM ring between VLC's audio thread (push) and the GUI thread
-// (pop, which writes to the QAudioSink in push mode). Capped so a stalled sink
-// can't grow it unbounded.
+// Thread-safe PCM ring between VLC's audio thread (push) and the QAudioSink's
+// pull thread (pop). Capped so a stalled consumer can't grow it unbounded.
 class AudioFifo {
 public:
     void clear() { QMutexLocker l(&m_mx); m_buf.clear(); }
@@ -35,6 +36,84 @@ public:
 private:
     mutable QMutex m_mx;
     QByteArray m_buf;
+};
+
+// Pull-mode source for the QAudioSink. The sink reads this on its OWN audio
+// thread, so audio keeps flowing even when the GUI event loop is frozen (e.g. the
+// Windows modal window-move/resize loop) — which a GUI-timer-driven push mode
+// could not survive. Underruns are zero-padded so the sink never idles on a brief
+// gap (VLC decodes ahead on its own thread, so genuine underruns are rare).
+class FifoDevice : public QIODevice {
+public:
+    FifoDevice(AudioFifo* fifo, std::function<void(const QByteArray&)> onConsumed,
+               QObject* parent = nullptr)
+        : QIODevice(parent), m_fifo(fifo), m_onConsumed(std::move(onConsumed)) {}
+
+protected:
+    qint64 readData(char* data, qint64 maxlen) override {
+        const QByteArray chunk = m_fifo->pop(maxlen);
+        const qint64 got = chunk.size();
+        if (got > 0) std::memcpy(data, chunk.constData(), size_t(got));
+        if (got < maxlen) std::memset(data + got, 0, size_t(maxlen - got)); // pad silence
+        if (got > 0 && m_onConsumed) m_onConsumed(chunk);
+        return maxlen; // always full so the sink stays Active across brief gaps
+    }
+    qint64 writeData(const char*, qint64) override { return -1; }
+
+public:
+    bool isSequential() const override { return true; }
+    // The sink only pulls while it believes data is available. We always have
+    // something to give (real PCM, or zero-padded silence in readData), so report
+    // a steady non-zero amount or the sink would idle and play nothing.
+    qint64 bytesAvailable() const override {
+        return (qint64(1) << 16) + QIODevice::bytesAvailable();
+    }
+
+private:
+    AudioFifo* m_fifo;
+    std::function<void(const QByteArray&)> m_onConsumed;
+};
+
+// Owns the QAudioSink on a DEDICATED thread, so the sink's pull runs on that
+// thread and survives the GUI event loop freezing (Windows modal move/resize
+// loop). Created on the GUI thread then moved to its thread; start/stop/setVolume
+// are invoked queued so they execute there (and the sink/device are created there,
+// giving them the right thread affinity). No Q_OBJECT needed — driven by functor
+// QMetaObject::invokeMethod, not slots.
+class AudioSinkWorker : public QObject {
+public:
+    AudioSinkWorker(AudioFifo* fifo, std::function<void(const QByteArray&)> onConsumed)
+        : m_fifo(fifo), m_onConsumed(std::move(onConsumed)) {}
+    ~AudioSinkWorker() override { stop(); }
+
+    void start(int rate, int channels, int volume, bool muted) {
+        stop();
+        QAudioFormat fmt;
+        fmt.setSampleRate(rate);
+        fmt.setChannelCount(channels);
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+        if (dev.isNull() || !dev.isFormatSupported(fmt)) return;
+        m_device = new FifoDevice(m_fifo, m_onConsumed);
+        m_device->open(QIODevice::ReadOnly);
+        m_sink = new QAudioSink(dev, fmt);
+        m_sink->setBufferSize(fmt.bytesForDuration(100000)); // ~100ms: low latency, glitch-safe
+        setVolume(volume, muted);
+        m_sink->start(m_device); // pull mode, on this (audio) thread
+    }
+    void stop() {
+        if (m_sink) { m_sink->stop(); delete m_sink; m_sink = nullptr; }
+        if (m_device) { delete m_device; m_device = nullptr; }
+    }
+    void setVolume(int volume, bool muted) {
+        if (m_sink) m_sink->setVolume(muted ? 0.0 : qBound(0, volume, 100) / 100.0);
+    }
+
+private:
+    AudioFifo* m_fifo;
+    std::function<void(const QByteArray&)> m_onConsumed;
+    QAudioSink* m_sink = nullptr;
+    QIODevice*  m_device = nullptr;
 };
 
 PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
@@ -61,8 +140,18 @@ void PlaybackEngine::createPlayer() {
 }
 
 PlaybackEngine::~PlaybackEngine() {
-    if (m_player) m_player->stop();
-    stopTapSink();
+    if (m_player) m_player->stop(); // stop VLC first -> no more onAudioData into the ring
+    if (m_audioThread) {
+        // Stop the sink on its own thread and wait, then tear the thread down, so
+        // no pull (and thus no analyzeForVisualizer callback into us) can run after.
+        if (m_audioWorker)
+            QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker]() { w->stop(); },
+                                      Qt::BlockingQueuedConnection);
+        m_audioThread->quit();
+        m_audioThread->wait();
+        delete m_audioWorker; m_audioWorker = nullptr;
+        delete m_audioThread; m_audioThread = nullptr;
+    }
     delete m_fifo; m_fifo = nullptr;
     if (!m_hlsMasterPath.isEmpty()) QFile::remove(m_hlsMasterPath);
 }
@@ -239,34 +328,70 @@ void PlaybackEngine::setMute(bool muted) {
 }
 
 void PlaybackEngine::applyVolumeToSink() {
-    if (m_sink) m_sink->setVolume(m_muted ? 0.0 : qBound(0, m_volume, 100) / 100.0);
+    if (!m_audioWorker) return;
+    const int vol = m_volume; const bool mu = m_muted;
+    QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker, vol, mu]() { w->setVolume(vol, mu); },
+                              Qt::QueuedConnection);
 }
 
 // --- Audio tap (audio-only media) -------------------------------------------
 
+void PlaybackEngine::ensureAudioThread() {
+    if (m_audioThread) return;
+    if (!m_fifo) m_fifo = new AudioFifo();
+    m_audioThread = new QThread();
+    m_audioThread->setObjectName("SeagullAudioOut");
+    // Analysis runs on the audio thread (in the pull) and marshals its emit to the
+    // GUI thread itself (see analyzeForVisualizer).
+    m_audioWorker = new AudioSinkWorker(m_fifo, [this](const QByteArray& c) { analyzeForVisualizer(c); });
+    m_audioWorker->moveToThread(m_audioThread);
+    m_audioThread->start(QThread::HighPriority);
+}
+
 void PlaybackEngine::setAudioTap(bool on) {
     if (on == m_tapOn) return;
     if (on) {
-        if (!startTapSink()) return; // device unavailable: stay on VLC's audio output
+        // Device-support check on this (GUI) thread so we can fall back to VLC's
+        // native audio if there's no usable output, before committing to the tap.
+        QAudioFormat fmt;
+        fmt.setSampleRate(int(m_tapRate));
+        fmt.setChannelCount(int(m_tapChannels));
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+        if (dev.isNull() || !dev.isFormatSupported(fmt)) return; // stay on VLC's audio output
+
         m_tapOn = true;
         m_energyEma = 0.0;
         m_lastBeatMs = 0;
         m_lpLow = m_lpLow2 = m_lpMid = 0.0;
         m_peakLevel = m_peakBass = m_peakMid = m_peakTreble = 0.0;
         m_beatClock.restart();
-        // Custom decoded-audio output: VLC hands us S16 interleaved samples; we
-        // play + analyse them. flush() clears the ring on seek so stale audio
-        // isn't replayed.
+
+        if (!m_fifo) m_fifo = new AudioFifo();
+        m_fifo->clear();
+        ensureAudioThread();
+
+        // Custom decoded-audio output: VLC hands us S16 interleaved samples; the
+        // worker thread's sink plays them, we analyse them. flush() clears the ring
+        // on seek so stale audio isn't replayed.
         m_player->setAudioCallbacks(
             [this](const void* s, unsigned c, int64_t pts) { onAudioData(s, c, pts); },
             nullptr, nullptr,
             [this](int64_t) { if (m_fifo) m_fifo->clear(); },
             nullptr);
         m_player->setAudioFormat("S16N", m_tapRate, m_tapChannels);
-        applyVolumeToSink();
+
+        // Start the sink on the audio thread (it owns/creates the sink there).
+        const int rate = int(m_tapRate), ch = int(m_tapChannels), vol = m_volume;
+        const bool mu = m_muted;
+        QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker, rate, ch, vol, mu]() {
+            w->start(rate, ch, vol, mu);
+        }, Qt::QueuedConnection);
     } else {
         m_tapOn = false;
-        stopTapSink();
+        if (m_audioWorker)
+            QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker]() { w->stop(); },
+                                      Qt::QueuedConnection);
         // libVLC can't cleanly switch a player off its callback (amem) audio
         // output, so rebuild the player to restore normal audio. The caller
         // rebinds the video window and loads media immediately after.
@@ -276,55 +401,11 @@ void PlaybackEngine::setAudioTap(bool on) {
     }
 }
 
-bool PlaybackEngine::startTapSink() {
-    QAudioFormat fmt;
-    fmt.setSampleRate(int(m_tapRate));
-    fmt.setChannelCount(int(m_tapChannels));
-    fmt.setSampleFormat(QAudioFormat::Int16);
-    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
-    if (dev.isNull() || !dev.isFormatSupported(fmt)) return false;
-
-    if (!m_fifo) m_fifo = new AudioFifo();
-    m_fifo->clear();
-
-    delete m_sink;
-    m_sink = new QAudioSink(dev, fmt, this);
-    m_sink->setBufferSize(fmt.bytesForDuration(100000)); // ~100ms: low latency, still glitch-safe
-    m_sinkDev = m_sink->start(); // push mode: we write decoded PCM to this device
-    if (!m_sinkDev || m_sink->error() != QAudio::NoError) {
-        delete m_sink; m_sink = nullptr; m_sinkDev = nullptr;
-        return false;
-    }
-    if (!m_drainTimer) {
-        m_drainTimer = new QTimer(this);
-        m_drainTimer->setInterval(8); // ~ keep the sink fed without busy-spinning
-        connect(m_drainTimer, &QTimer::timeout, this, &PlaybackEngine::drainToSink);
-    }
-    m_drainTimer->start();
-    return true;
-}
-
-void PlaybackEngine::stopTapSink() {
-    if (m_drainTimer) m_drainTimer->stop();
-    if (m_sink) { m_sink->stop(); delete m_sink; m_sink = nullptr; }
-    m_sinkDev = nullptr;
-    if (m_fifo) m_fifo->clear();
-}
-
-void PlaybackEngine::drainToSink() {
-    if (!m_sink || !m_sinkDev || !m_fifo) return;
-    const int free = m_sink->bytesFree();
-    if (free <= 0) return;
-    const QByteArray chunk = m_fifo->pop(free);
-    if (chunk.isEmpty()) return;
-    m_sinkDev->write(chunk);
-    analyzeForVisualizer(chunk); // analyse at CONSUMPTION time (in sync with playback)
-}
-
-// Runs on this (GUI) thread from the drain timer, on the exact PCM being sent to
-// the sink — so the visualizer tracks what's HEARD, not what VLC has decoded
-// ahead (VLC front-loads the ring, which made the analysis run ~a buffer ahead).
-// The only remaining lead is the sink's own buffer, held back by kVisualDelayMs.
+// Runs on the sink's pull thread, on the exact PCM being sent to the sink — so the
+// visualizer tracks what's HEARD, not what VLC has decoded ahead (VLC front-loads
+// the ring). The only remaining lead is the sink's own buffer, held back by
+// kVisualDelayMs. The compute is light (per-sample IIR); the emit is marshalled to
+// the GUI thread, so during a UI freeze the visualizer pauses but audio does not.
 void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
     const int ch = qMax(1, int(m_tapChannels));
     const qint64 frames = (chunk.size() / 2) / ch;
@@ -373,17 +454,21 @@ void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
     m_energyEma = m_energyEma * 0.92 + bassMeanSq * 0.08;
 
     constexpr int kVisualDelayMs = 90; // ~ the sink buffer, so the visual lands when heard
-    QTimer::singleShot(kVisualDelayMs, this, [this, level, bass, mid, treble, isBeat]() {
-        emit audioLevel(level);
-        emit audioSpectrum(bass, mid, treble);
-        if (isBeat) emit beat();
-    });
+    // We're on the sink's pull thread; hop to the GUI thread before touching timers
+    // or emitting to the (GUI) visualizer.
+    QMetaObject::invokeMethod(this, [this, level, bass, mid, treble, isBeat]() {
+        QTimer::singleShot(kVisualDelayMs, this, [this, level, bass, mid, treble, isBeat]() {
+            emit audioLevel(level);
+            emit audioSpectrum(bass, mid, treble);
+            if (isBeat) emit beat();
+        });
+    }, Qt::QueuedConnection);
 }
 
 void PlaybackEngine::onAudioData(const void* samples, unsigned count, int64_t /*pts*/) {
     // VLC's audio thread: just hand the PCM to the ring. Analysis happens at
-    // CONSUMPTION time in analyzeForVisualizer() (called from drainToSink) so the
-    // visualizer stays in sync with what's actually being heard.
+    // CONSUMPTION time in analyzeForVisualizer() (called from the sink's pull
+    // device) so the visualizer stays in sync with what's actually being heard.
     if (!m_fifo) return;
     const qint64 nSamples = qint64(count) * m_tapChannels;
     m_fifo->push(static_cast<const char*>(samples), nSamples * 2); // S16 = 2 bytes
