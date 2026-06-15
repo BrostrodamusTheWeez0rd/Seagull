@@ -59,6 +59,7 @@ signals:
 private slots:
     void performSearch();
     void onResultsReady(const QList<SearchResult>& results);
+    void onChannelVideosReady(const SearchResult& channelInfo, const QList<SearchResult>& videos);
     void onSearchFailed(const QString& message);
 
 protected:
@@ -69,6 +70,17 @@ protected:
 
 private:
     enum class FilterMode { All, Videos, Shorts };
+    // Search results vs. a single channel's video page. Channel pages are reached
+    // and left with the same back/forward buttons (native-browser feel).
+    enum class ViewMode { Search, Channel };
+
+    // One step in the browser-style history: a search query or a channel page.
+    struct NavEntry {
+        enum Kind { Query, Channel };
+        Kind    kind;
+        QString target; // the query string, or the channel URL
+        QString label;  // what to show in the query bar
+    };
 
     bool siteIsYoutube() const;
     void clearResults();
@@ -80,9 +92,18 @@ private:
     void setStatus(const QString& text, bool busy);
 
     void startSearch(const QString& query);
+    void ingestResults(const QList<SearchResult>& results); // append + dedupe + cards + paging
     void playResultAt(int index);
-    void pushNavEntry(const QString& query);
+    void pushNavEntry(const NavEntry& entry);
+    void navigateTo(int index); // replay history entry `index` (search or channel)
     void updateNavButtons();
+
+    // Channel pages
+    void setViewMode(ViewMode mode);
+    void openChannel(const QString& channelUrl, const QString& name); // pushes history, then opens
+    void openChannelUrl(const QString& channelUrl, const QString& label); // opens without pushing
+    void updateChannelHeader(const SearchResult& info);
+    void loadAvatar(const QString& url); // channel header avatar, WebP-tolerant via ffmpeg
     void addToHistory(const QString& query);
     void loadHistory();  // read the persisted history file into the completer
     void saveHistory();  // rewrite the file (plain text, one query per line)
@@ -110,6 +131,13 @@ private:
     QPushButton* m_filterShortsBtn;
     QTimer*      pillHoverTimer;
 
+    // Channel page header (avatar + name + subscribers), shown above the grid in
+    // channel view, hidden in search view. Direct child of this widget's layout.
+    QFrame*      m_channelHeader;
+    QLabel*      m_channelAvatar;
+    QLabel*      m_channelName;
+    QLabel*      m_channelSubs;
+
     QScrollArea* resultsArea;
     QWidget*     resultsHost;
     FlowLayout*  resultsFlow;
@@ -127,6 +155,8 @@ private:
     QList<SearchResult> m_allResults;
     QSet<QString>       m_seenUrls; // dedup: YouTube search returns the same video twice
     FilterMode   m_filterMode  = FilterMode::Videos; // Videos is the launch default
+    ViewMode     m_viewMode    = ViewMode::Search;
+    QString      m_currentChannelUrl; // the channel being shown in Channel view
 
     // Feed position: index (into m_allResults) of the playing result, -1 none.
     // m_advancePending = a feed advance ran off the loaded tail and resumes
@@ -134,8 +164,8 @@ private:
     int          m_playingIndex   = -1;
     bool         m_advancePending = false;
 
-    QStringList  m_navHistory;
-    int          m_navIndex    = -1;
+    QList<NavEntry> m_navHistory;
+    int             m_navIndex = -1;
 
     QStringList  m_searchHistory;
 

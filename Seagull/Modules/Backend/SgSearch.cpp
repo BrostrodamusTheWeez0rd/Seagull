@@ -29,6 +29,7 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
     cancel(); // drop any in-flight query (a new search supersedes it; no 'failed' emitted)
 
     m_site = site;
+    m_mode = Mode::VideoSearch;
     m_buffer.clear();
 
     if (shortsOnly && site == Site::YouTube) {
@@ -49,6 +50,32 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
     }
 
     emit logMessage("Searching: " + query.trimmed());
+    m_process->start(exePath, args);
+}
+
+void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit) {
+    if (channelUrl.trimmed().isEmpty()) { emit failed("No channel to open."); return; }
+
+    cancel(); // a channel open supersedes any in-flight query
+
+    m_site = Site::YouTube;
+    m_mode = Mode::ChannelList;
+    m_buffer.clear();
+
+    const QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
+
+    // The channel's uploads tab. Strip a trailing slash, then target /videos
+    // (so a bare channel/handle URL doesn't list every tab as nested playlists).
+    QString url = channelUrl.trimmed();
+    while (url.endsWith('/')) url.chop(1);
+    if (!url.endsWith("/videos")) url += "/videos";
+
+    QStringList args;
+    args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings"
+         << "--playlist-end" << QString::number(qMax(1, limit))
+         << url;
+
+    emit logMessage("Opening channel: " + url);
     m_process->start(exePath, args);
 }
 
@@ -88,6 +115,14 @@ void SgSearch::handleFinished(int exitCode, QProcess::ExitStatus exitStatus) {
         return;
     }
 
+    if (m_mode == Mode::ChannelList) {
+        SearchResult info;
+        QList<SearchResult> videos;
+        parseChannelList(doc.object(), info, videos);
+        emit channelVideosReady(info, videos);
+        return;
+    }
+
     QList<SearchResult> results;
     switch (m_site) {
     case Site::YouTube:
@@ -97,56 +132,138 @@ void SgSearch::handleFinished(int exitCode, QProcess::ExitStatus exitStatus) {
     emit resultsReady(results);
 }
 
+namespace {
+// Pick a channel avatar from a yt-dlp thumbnails[] array. Prefer a near-square
+// image (the avatar) over a wide one (the channel banner); among candidates, the
+// largest. Falls back to the first url if none carry dimensions.
+QString pickAvatar(const QJsonArray& thumbs) {
+    QString url;
+    int bestScore = -1;
+    for (const auto& t : thumbs) {
+        const QJsonObject to = t.toObject();
+        const QString u = to["url"].toString();
+        if (u.isEmpty()) continue;
+        const int w = to["width"].toInt();
+        const int h = to["height"].toInt();
+        if (w <= 0 || h <= 0) { if (url.isEmpty()) url = u; continue; }
+        const double ar = double(w) / double(h);
+        const bool square = ar > 0.7 && ar < 1.4;        // avatar, not banner
+        const int score = (square ? 1000000 : 0) + w;    // square wins, then size
+        if (score > bestScore) { bestScore = score; url = u; }
+    }
+    return url;
+}
+}
+
+bool SgSearch::parseVideoEntry(const QJsonObject& e, SearchResult& r) const {
+    // Flat search entries put the watch URL in "url" (webpage_url is empty).
+    const QString url = e["url"].toString();
+    const QString title = e["title"].toString();
+    if (url.isEmpty() || title.isEmpty()) return false;
+
+    r.title = title;
+    r.url = url;
+    r.channel = e["channel"].toString();
+    if (r.channel.isEmpty()) r.channel = e["uploader"].toString();
+    // The uploader's channel page, so the card's channel name is clickable.
+    r.channelUrl = e["channel_url"].toString();
+    if (r.channelUrl.isEmpty()) r.channelUrl = e["uploader_url"].toString();
+
+    // YouTube's thumbnails[] urls are .jpg-named but actually serve WebP (the
+    // signed sqp/rs variants), which QPixmap can't decode without the WebP plugin.
+    // The canonical /vi/<id>/mqdefault.jpg is a real 16:9 JPEG that always exists
+    // and loads fine, so build that from the video id instead.
+    const QString id = e["id"].toString();
+    if (!id.isEmpty())
+        r.thumbnail = QString("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(id);
+    else {
+        int bestW = -1;
+        for (const auto& t : e["thumbnails"].toArray()) {
+            const QJsonObject to = t.toObject();
+            const int w = to["width"].toInt();
+            if (w > bestW) { bestW = w; r.thumbnail = to["url"].toString(); }
+        }
+    }
+
+    r.duration = e.contains("duration") && !e["duration"].isNull()
+        ? static_cast<qint64>(e["duration"].toDouble()) : -1;
+    r.viewCount = e.contains("view_count") && !e["view_count"].isNull()
+        ? static_cast<qint64>(e["view_count"].toDouble()) : -1;
+
+    // Shorts rarely surface in normal yt-dlp search (the shorts shelf is skipped),
+    // but tag any that do by their URL so the filter sees them.
+    r.isShort = r.url.contains("/shorts/", Qt::CaseInsensitive);
+    return true;
+}
+
 QList<SearchResult> SgSearch::parseYoutube(const QJsonObject& root) const {
     QList<SearchResult> out;
     const QJsonArray entries = root["entries"].toArray();
 
     for (const auto& it : entries) {
         const QJsonObject e = it.toObject();
-        // Skip non-video entries (channels, playlists) — their ie_key is "YoutubeTab"
-        // or similar. Videos use "Youtube".
         const QString ieKey = e["ie_key"].toString();
+
+        // Channel results (ie_key "YoutubeTab") were dropped before; surface them
+        // as channel cards now. Playlists are also "YoutubeTab" but carry a list
+        // URL — still skip those.
+        if (ieKey == "YoutubeTab") {
+            const QString url = e["url"].toString();
+            if (url.isEmpty() || url.contains("list=")) continue; // playlist/other tab
+            SearchResult r;
+            r.isChannel = true;
+            r.title = e["title"].toString();
+            if (r.title.isEmpty()) r.title = e["channel"].toString();
+            if (r.title.isEmpty()) continue;
+            r.channel    = r.title;
+            r.url        = url;
+            r.channelUrl = url;
+            r.thumbnail  = pickAvatar(e["thumbnails"].toArray());
+            r.subscriberCount =
+                e.contains("channel_follower_count") && !e["channel_follower_count"].isNull()
+                    ? static_cast<qint64>(e["channel_follower_count"].toDouble()) : -1;
+            out.append(r);
+            continue;
+        }
+        // Any other non-video kind — skip. Videos use ie_key "Youtube".
         if (!ieKey.isEmpty() && ieKey != "Youtube") continue;
 
-        // Flat search entries put the watch URL in "url" (webpage_url is empty).
-        const QString url = e["url"].toString();
-        const QString title = e["title"].toString();
-        if (url.isEmpty() || title.isEmpty()) continue;
-
         SearchResult r;
-        r.title = title;
-        r.url = url;
-        r.channel = e["channel"].toString();
-        if (r.channel.isEmpty()) r.channel = e["uploader"].toString();
-
-        // YouTube's thumbnails[] urls are .jpg-named but actually serve WebP (the
-        // signed sqp/rs variants), which QPixmap can't decode without the WebP
-        // plugin. The canonical /vi/<id>/mqdefault.jpg is a real 16:9 JPEG that
-        // always exists and loads fine, so build that from the video id instead.
-        const QString id = e["id"].toString();
-        if (!id.isEmpty())
-            r.thumbnail = QString("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(id);
-        else {
-            int bestW = -1;
-            for (const auto& t : e["thumbnails"].toArray()) {
-                const QJsonObject to = t.toObject();
-                const int w = to["width"].toInt();
-                if (w > bestW) { bestW = w; r.thumbnail = to["url"].toString(); }
-            }
-        }
-
-        r.duration = e.contains("duration") && !e["duration"].isNull()
-            ? static_cast<qint64>(e["duration"].toDouble()) : -1;
-        r.viewCount = e.contains("view_count") && !e["view_count"].isNull()
-            ? static_cast<qint64>(e["view_count"].toDouble()) : -1;
-
-        // Shorts rarely surface in normal yt-dlp search (the shorts shelf is
-        // skipped), but tag any that do by their URL so the filter sees them.
-        r.isShort = r.url.contains("/shorts/", Qt::CaseInsensitive);
-
-        out.append(r);
+        if (parseVideoEntry(e, r)) out.append(r);
     }
     return out;
+}
+
+void SgSearch::parseChannelList(const QJsonObject& root, SearchResult& info,
+                                QList<SearchResult>& videos) const {
+    info.isChannel = true;
+    info.title = root["channel"].toString();
+    if (info.title.isEmpty()) info.title = root["uploader"].toString();
+    if (info.title.isEmpty()) info.title = root["title"].toString();
+    info.channel = info.title;
+    info.url = root["channel_url"].toString();
+    if (info.url.isEmpty()) info.url = root["uploader_url"].toString();
+    if (info.url.isEmpty()) info.url = root["webpage_url"].toString();
+    info.channelUrl = info.url;
+    info.thumbnail = pickAvatar(root["thumbnails"].toArray());
+    info.subscriberCount =
+        root.contains("channel_follower_count") && !root["channel_follower_count"].isNull()
+            ? static_cast<qint64>(root["channel_follower_count"].toDouble()) : -1;
+
+    for (const auto& it : root["entries"].toArray()) {
+        const QJsonObject e = it.toObject();
+        // A channel root can come back as tabs/playlists nesting the videos one
+        // level down — flatten that. (Targeting /videos usually avoids it.)
+        if (e.contains("entries")) {
+            for (const auto& it2 : e["entries"].toArray()) {
+                SearchResult r;
+                if (parseVideoEntry(it2.toObject(), r)) videos.append(r);
+            }
+            continue;
+        }
+        SearchResult r;
+        if (parseVideoEntry(e, r)) videos.append(r);
+    }
 }
 
 // ---------------------------------------------------------------------------

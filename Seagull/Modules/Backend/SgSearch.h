@@ -21,6 +21,13 @@ struct SearchResult {
     qint64  duration  = -1;
     qint64  viewCount = -1;
     bool    isShort   = false;
+    // Channel support. isChannel marks a channel result (the tile becomes a
+    // channel card). channelUrl is the channel/uploader page: on a video result it
+    // makes the uploader name clickable; on a channel result it's the page to open.
+    // subscriberCount is the channel's follower count (-1 unknown).
+    bool    isChannel = false;
+    QString channelUrl;
+    qint64  subscriberCount = -1;
 };
 
 // Backend search worker — a peer to SgYtDlp, dedicated to discovery rather than
@@ -42,10 +49,18 @@ public:
     ~SgSearch();
 
     void search(Site site, const QString& query, int limit = 20, bool shortsOnly = false);
+
+    // List a channel's uploads (its /videos tab) via yt-dlp, up to `limit`. The
+    // root object yields the channel header (name, avatar, subscribers); the
+    // entries are normal video results. Answers on channelVideosReady. Paging
+    // works like search: call again with a larger limit.
+    void fetchChannelVideos(const QString& channelUrl, int limit = 30);
+
     void cancel();
 
 signals:
     void resultsReady(const QList<SearchResult>& results);
+    void channelVideosReady(const SearchResult& channelInfo, const QList<SearchResult>& videos);
     void failed(const QString& message);
     void logMessage(const QString& message);
 
@@ -53,7 +68,16 @@ private slots:
     void handleFinished(int exitCode, QProcess::ExitStatus exitStatus);
 
 private:
+    // What the shared QProcess is currently doing, so handleFinished parses + emits
+    // the right thing.
+    enum class Mode { VideoSearch, ChannelList };
+
     QList<SearchResult> parseYoutube(const QJsonObject& root) const;
+    // Parse one flat video entry into `out`; false if it isn't a usable video.
+    bool parseVideoEntry(const QJsonObject& e, SearchResult& out) const;
+    // Channel listing root -> header info + video results.
+    void parseChannelList(const QJsonObject& root, SearchResult& info,
+                          QList<SearchResult>& videos) const;
 
     void startShortsSearch(const QString& query, int limit);
     void fetchShortsPage();
@@ -64,6 +88,7 @@ private:
     QProcess*  m_process;
     QByteArray m_buffer;
     Site       m_site = Site::YouTube;
+    Mode       m_mode = Mode::VideoSearch; // what the current m_process run is doing
     bool       m_cancelled = false; // suppresses the finished handler for a killed query
 
     // Shorts search state (YouTube internal API path). Results accumulate per

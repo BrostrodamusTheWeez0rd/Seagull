@@ -3,6 +3,7 @@
 #include "Widgets/VideoCard.h"
 #include "Widgets/SpellCheckLineEdit.h"
 #include "../Backend/SgSearch.h"
+#include "../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -15,6 +16,8 @@
 #include <QLabel>
 #include <QWidget>
 #include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
 #include <QMovie>
 #include <QSettings>
 #include <QCoreApplication>
@@ -29,6 +32,9 @@
 #include <QCursor>
 #include <QFile>
 #include <QTextStream>
+#include <QPainter>
+#include <QPainterPath>
+#include <QSvgRenderer>
 
 namespace { constexpr int kGridSpacing = 12; }
 
@@ -115,6 +121,34 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     sep->setObjectName("searchSeparator");
     sep->setFixedHeight(1);
     root->addWidget(sep);
+
+    // --- Channel header (avatar + name + subscribers) ---
+    // Shown above the grid only in channel view; back/forward leave it.
+    m_channelHeader = new QFrame();
+    m_channelHeader->setObjectName("channelHeader");
+    auto* chLay = new QHBoxLayout(m_channelHeader);
+    chLay->setContentsMargins(14, 10, 14, 10);
+    chLay->setSpacing(12);
+    m_channelAvatar = new QLabel(m_channelHeader);
+    m_channelAvatar->setFixedSize(56, 56);
+    m_channelAvatar->setScaledContents(false);
+    chLay->addWidget(m_channelAvatar);
+    auto* chText = new QVBoxLayout();
+    chText->setSpacing(2);
+    m_channelName = new QLabel(m_channelHeader);
+    m_channelName->setObjectName("channelHeaderName");
+    QFont chf = m_channelName->font();
+    chf.setBold(true);
+    chf.setPointSizeF(chf.pointSizeF() + 3);
+    m_channelName->setFont(chf);
+    m_channelSubs = new QLabel(m_channelHeader);
+    m_channelSubs->setObjectName("metaStats");
+    chText->addWidget(m_channelName);
+    chText->addWidget(m_channelSubs);
+    chLay->addLayout(chText);
+    chLay->addStretch(1);
+    m_channelHeader->hide();
+    root->addWidget(m_channelHeader);
 
     // --- Results area (full width) ---
     resultsArea = new QScrollArea();
@@ -205,26 +239,18 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     connect(siteBar,  &QLineEdit::returnPressed, this, [this]() { queryBar->setFocus(); });
 
     connect(backBtn, &QPushButton::clicked, this, [this]() {
-        if (m_navIndex <= 0) return;
-        --m_navIndex;
-        queryBar->setCurrentText(m_navHistory[m_navIndex]);
-        startSearch(m_navHistory[m_navIndex]);
-        updateNavButtons();
+        if (m_navIndex > 0) navigateTo(m_navIndex - 1);
     });
 
     connect(forwardBtn, &QPushButton::clicked, this, [this]() {
-        if (m_navIndex >= m_navHistory.size() - 1) return;
-        ++m_navIndex;
-        queryBar->setCurrentText(m_navHistory[m_navIndex]);
-        startSearch(m_navHistory[m_navIndex]);
-        updateNavButtons();
+        if (m_navIndex < m_navHistory.size() - 1) navigateTo(m_navIndex + 1);
     });
 
     connect(refreshBtn, &QPushButton::clicked, this, [this]() {
-        if (m_currentQuery.isEmpty()) return;
+        if (m_navIndex < 0 || m_navIndex >= m_navHistory.size()) return;
         for (const SearchResult& r : m_allResults)
             if (!r.thumbnail.isEmpty()) QPixmapCache::remove(r.thumbnail);
-        startSearch(m_currentQuery);
+        navigateTo(m_navIndex); // reload the current page (search or channel)
     });
 
     // Filter pill: clicking the active button unchecks it (= show all).
@@ -246,8 +272,9 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     });
 
     if (m_search) {
-        connect(m_search, &SgSearch::resultsReady, this, &Search::onResultsReady);
-        connect(m_search, &SgSearch::failed,       this, &Search::onSearchFailed);
+        connect(m_search, &SgSearch::resultsReady,       this, &Search::onResultsReady);
+        connect(m_search, &SgSearch::channelVideosReady, this, &Search::onChannelVideosReady);
+        connect(m_search, &SgSearch::failed,             this, &Search::onSearchFailed);
     }
 }
 
@@ -280,6 +307,7 @@ void Search::positionFilterPill() {
 }
 
 void Search::updateFilterPillVisibility() {
+    if (m_viewMode == ViewMode::Channel) { m_filterPill->hide(); return; } // no pill on a channel page
     const bool atTop = (resultsArea->verticalScrollBar()->value() <= 0);
     // Zone is relative to resultsArea (the pill's parent).
     const QRect zone(0, 0, resultsArea->width(), m_filterPill->height() + 2 * kPillTopMargin);
@@ -291,11 +319,21 @@ void Search::updateFilterPillVisibility() {
 // Navigation helpers
 // ---------------------------------------------------------------------------
 
-void Search::pushNavEntry(const QString& query) {
+void Search::pushNavEntry(const NavEntry& entry) {
     if (m_navIndex < m_navHistory.size() - 1)
         m_navHistory = m_navHistory.mid(0, m_navIndex + 1);
-    m_navHistory.append(query);
+    m_navHistory.append(entry);
     m_navIndex = m_navHistory.size() - 1;
+    updateNavButtons();
+}
+
+void Search::navigateTo(int index) {
+    if (index < 0 || index >= m_navHistory.size()) return;
+    m_navIndex = index;
+    const NavEntry& e = m_navHistory[index];
+    queryBar->setCurrentText(e.label);
+    if (e.kind == NavEntry::Channel) openChannelUrl(e.target, e.label);
+    else                             startSearch(e.target);
     updateNavButtons();
 }
 
@@ -388,12 +426,13 @@ void Search::performSearch() {
         return;
     }
 
-    pushNavEntry(query);
+    pushNavEntry({ NavEntry::Query, query, query });
     addToHistory(query);
     startSearch(query);
 }
 
 void Search::startSearch(const QString& query) {
+    setViewMode(ViewMode::Search);
     clearResults();
     m_currentQuery = query;
     m_shownCount   = 0;
@@ -415,9 +454,14 @@ void Search::loadMore() {
 
     m_loadingMore = true;
     m_lastRequested = qMin(m_shownCount + m_batchSize, kMaxResults);
-    setStatus("Loading more results", true);
-    m_search->search(SgSearch::Site::YouTube, m_currentQuery, m_lastRequested,
-                     m_filterMode == FilterMode::Shorts);
+    if (m_viewMode == ViewMode::Channel) {
+        setStatus("Loading more videos", true);
+        m_search->fetchChannelVideos(m_currentChannelUrl, m_lastRequested);
+    } else {
+        setStatus("Loading more results", true);
+        m_search->search(SgSearch::Site::YouTube, m_currentQuery, m_lastRequested,
+                         m_filterMode == FilterMode::Shorts);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +508,18 @@ void Search::playResultAt(int index) {
 // ---------------------------------------------------------------------------
 
 void Search::onResultsReady(const QList<SearchResult>& results) {
+    if (m_viewMode != ViewMode::Search) return; // a late search reply after opening a channel
+    ingestResults(results);
+}
+
+void Search::onChannelVideosReady(const SearchResult& channelInfo,
+                                  const QList<SearchResult>& videos) {
+    if (m_viewMode != ViewMode::Channel) return; // late reply after navigating away
+    if (m_shownCount == 0) updateChannelHeader(channelInfo); // first page fills the header
+    ingestResults(videos);
+}
+
+void Search::ingestResults(const QList<SearchResult>& results) {
     m_loadingMore = false;
 
     if (results.size() < m_lastRequested || results.size() <= m_shownCount)
@@ -523,6 +579,7 @@ void Search::onSearchFailed(const QString& message) {
 // ---------------------------------------------------------------------------
 
 bool Search::passesFilter(const SearchResult& r) const {
+    if (m_viewMode == ViewMode::Channel) return true; // a channel page shows all its videos
     switch (m_filterMode) {
     case FilterMode::Videos:  return !r.isShort;
     case FilterMode::Shorts:  return r.isShort;
@@ -573,6 +630,101 @@ void Search::rebuildCards() {
 }
 
 // ---------------------------------------------------------------------------
+// Channel pages (reached / left with the back/forward buttons)
+// ---------------------------------------------------------------------------
+
+void Search::setViewMode(ViewMode mode) {
+    m_viewMode = mode;
+    m_channelHeader->setVisible(mode == ViewMode::Channel);
+    updateFilterPillVisibility(); // hides the Videos/Shorts pill in channel view
+}
+
+void Search::openChannel(const QString& channelUrl, const QString& name) {
+    if (channelUrl.trimmed().isEmpty()) return;
+    pushNavEntry({ NavEntry::Channel, channelUrl, name });
+    openChannelUrl(channelUrl, name);
+}
+
+void Search::openChannelUrl(const QString& channelUrl, const QString& label) {
+    if (!m_search) return;
+    setViewMode(ViewMode::Channel);
+    queryBar->setCurrentText(label); // address-bar shows where you are
+    clearResults();
+    m_currentChannelUrl = channelUrl;
+    m_shownCount  = 0;
+    m_loadingMore = false;
+    m_endReached  = false;
+    refreshBtn->setEnabled(true);
+
+    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    m_batchSize = qBound(5, settings.value("Search/ResultLimit", 20).toInt(), 100);
+    m_lastRequested = m_batchSize;
+
+    // Provisional header; the real name/subs/avatar arrive with the first batch.
+    m_channelName->setText(label);
+    m_channelSubs->clear();
+    loadAvatar(QString()); // MDI glyph until the avatar lands
+    resultsArea->verticalScrollBar()->setValue(0);
+
+    setStatus("Loading channel.", true);
+    m_search->fetchChannelVideos(channelUrl, m_lastRequested);
+}
+
+void Search::updateChannelHeader(const SearchResult& info) {
+    if (!info.title.isEmpty()) m_channelName->setText(info.title);
+    m_channelSubs->setText(info.subscriberCount >= 0
+        ? VideoCard::formatViewCount(info.subscriberCount) + " subscribers"
+        : QString());
+    if (!info.thumbnail.isEmpty()) loadAvatar(info.thumbnail);
+}
+
+void Search::loadAvatar(const QString& url) {
+    const int d = m_channelAvatar->width();
+    auto setGlyph = [this, d]() {
+        QPixmap pm(d, d);
+        pm.fill(Qt::transparent);
+        QSvgRenderer r(QStringLiteral(":/Assets/icons/account.svg"));
+        QPainter p(&pm);
+        const int g = d * 3 / 4;
+        r.render(&p, QRectF((d - g) / 2.0, (d - g) / 2.0, g, g));
+        p.end();
+        m_channelAvatar->setPixmap(pm);
+    };
+    auto setCircular = [this, d](const QPixmap& src) {
+        QPixmap scaled = src.scaled(d, d, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        QPixmap out(d, d);
+        out.fill(Qt::transparent);
+        QPainter p(&out);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        QPainterPath path;
+        path.addEllipse(0, 0, d, d);
+        p.setClipPath(path);
+        p.drawPixmap((d - scaled.width()) / 2, (d - scaled.height()) / 2, scaled);
+        p.end();
+        m_channelAvatar->setPixmap(out);
+    };
+
+    if (url.isEmpty()) { setGlyph(); return; }
+
+    QNetworkRequest req((QUrl(url)));
+    req.setRawHeader("User-Agent", "Seagull-Player");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = m_nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, setGlyph, setCircular]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) { setGlyph(); return; }
+        const QByteArray data = reply->readAll();
+        QPixmap pm;
+        if (pm.loadFromData(data)) { setCircular(pm); return; }
+        // WebP avatar (this Qt has no qwebp plugin) -> decode via ffmpeg.
+        SgThumbnailer::decodeViaFfmpeg(data, this, [setGlyph, setCircular](const QPixmap& dec) {
+            if (dec.isNull()) setGlyph(); else setCircular(dec);
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -613,6 +765,9 @@ void Search::addCard(const SearchResult& result) {
     });
     connect(card, &VideoCard::queueRequested,    this, &Search::enqueueRequested);
     connect(card, &VideoCard::downloadRequested, this, &Search::downloadRequested);
+    // Uploader link (video cards) or "View Channel" (channel cards) -> open the
+    // channel's video page as a browser-style navigation.
+    connect(card, &VideoCard::channelRequested,  this, &Search::openChannel);
     resultsFlow->addWidget(card);
 }
 

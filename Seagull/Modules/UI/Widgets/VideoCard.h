@@ -9,7 +9,9 @@ class QNetworkAccessManager;
 class RoundedThumb;
 
 // A reusable result tile: thumbnail + title + "channel | length | views", styled
-// by the theme. Clicking the card (or its Play button) asks to play the video.
+// by the theme. Clicking the thumbnail or the title (or the Play button) asks to
+// play the video; the rest of the card doesn't, so the uploader-name link in the
+// meta line stays clickable. (Channel cards open the channel instead of playing.)
 // The card is sized by the Search grid to fill the row width (grow-to-fill). Its
 // thumbnail is rounded once and then *scaled* to the card size, so resizing the
 // window never re-renders it — it just stretches a cached pixmap (cheap).
@@ -49,16 +51,20 @@ signals:
     void playRequested(const QUrl& url, const QString& title);
     void queueRequested(const QUrl& url, const QString& title);
     void downloadRequested(const QUrl& url, const QString& title);
+    // The uploader name (video card) or "View Channel" (channel card) was clicked.
+    void channelRequested(const QString& channelUrl, const QString& channelName);
 
 protected:
-    void mousePressEvent(QMouseEvent* event) override; // click anywhere = play
+    void mousePressEvent(QMouseEvent* event) override; // click anywhere = play (or open channel)
 
 private:
     void loadThumbnail(QNetworkAccessManager* nam);
+    void applyThumbnail(QPixmap pm, const QString& cacheKey); // cap + cache + show
     static int chromeHeight(); // fixed height below the thumbnail (title+meta+buttons)
 
     SearchResult  m_result;
     RoundedThumb* m_thumb;
+    QWidget*      m_title = nullptr; // click-to-play is limited to the thumbnail + title
 };
 
 #endif // VIDEOCARD_H

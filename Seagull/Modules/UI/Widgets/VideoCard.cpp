@@ -17,6 +17,8 @@
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+#include <QSvgRenderer>
+#include "../../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
 
 namespace {
 constexpr int kCardMargin = 8;    // QVBoxLayout content margin (left+right)
@@ -52,6 +54,18 @@ public:
         update();
     }
 
+    // An SVG glyph drawn (centred, themed) when there's no image — used for the
+    // channel avatar fallback (the MDI "account" symbol).
+    void setPlaceholderIcon(const QString& svgResource) {
+        QSvgRenderer r(svgResource);
+        QPixmap pm(128, 128);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        r.render(&p);
+        m_placeholderIcon = pm;
+        update();
+    }
+
     QSize minimumSizeHint() const override { return QSize(40, 23); }
 
 protected:
@@ -68,6 +82,13 @@ protected:
             QPainterPath path;
             path.addRoundedRect(r, radius, radius);
             p.fillPath(path, palette().color(QPalette::AlternateBase));
+            if (!m_placeholderIcon.isNull()) {
+                // Centre the glyph at ~half the tile's short side.
+                const int s = qMax(16, qMin(r.width(), r.height()) / 2);
+                const QRect ir(r.center().x() - s / 2, r.center().y() - s / 2, s, s);
+                p.drawPixmap(ir, m_placeholderIcon);
+                return;
+            }
             p.setPen(palette().color(QPalette::PlaceholderText));
             QFont f = p.font();
             f.setPixelSize(qMax(12, r.height() / 3));
@@ -100,6 +121,7 @@ private:
 
     QPixmap m_rounded; // rounded render at reference size
     QString m_placeholder = QStringLiteral("…");
+    QPixmap m_placeholderIcon; // optional SVG glyph (channel avatar fallback)
 };
 
 VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth,
@@ -115,6 +137,7 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
 
     m_thumb = new RoundedThumb(this);
     m_thumb->setObjectName("videoCardThumb");
+    if (m_result.isChannel) m_thumb->setPlaceholderIcon(QStringLiteral(":/Assets/icons/account.svg"));
     lay->addWidget(m_thumb);
 
     auto* title = new QLabel(m_result.title, this);
@@ -125,31 +148,66 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
     title->setWordWrap(true);
     title->setFixedHeight(QFontMetrics(tf).height() * 2 + 2); // exactly 2 lines (deterministic)
     lay->addWidget(title);
+    m_title = title; // click-to-play target (with the thumbnail)
 
-    QStringList bits;
-    if (!m_result.channel.isEmpty()) bits << m_result.channel;
-    if (m_result.duration >= 0)      bits << formatDuration(m_result.duration);
-    if (m_result.viewCount >= 0)     bits << (formatViewCount(m_result.viewCount) + " views");
-    auto* meta = new QLabel(bits.join("   |   "), this);
+    auto* meta = new QLabel(this);
     meta->setObjectName("metaStats"); // reuse the theme's dimmed stat styling
     meta->setWordWrap(false);         // single line keeps card height deterministic
+    if (m_result.isChannel) {
+        meta->setText(m_result.subscriberCount >= 0
+            ? formatViewCount(m_result.subscriberCount) + " subscribers"
+            : QStringLiteral("Channel"));
+    } else if (!m_result.channelUrl.isEmpty() && !m_result.channel.isEmpty()) {
+        // Uploader name is a clickable link; the rest of the meta stays plain. The
+        // inline style keeps it looking like the dimmed meta, underlined to signal
+        // it's clickable (theme-aware via the palette's placeholder colour).
+        meta->setTextFormat(Qt::RichText);
+        meta->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        const QString dim = palette().color(QPalette::PlaceholderText).name();
+        QStringList bits;
+        bits << QString("<a href=\"#\" style=\"color:%1;text-decoration:underline;\">%2</a>")
+                    .arg(dim, m_result.channel.toHtmlEscaped());
+        if (m_result.duration >= 0)  bits << formatDuration(m_result.duration).toHtmlEscaped();
+        if (m_result.viewCount >= 0) bits << (formatViewCount(m_result.viewCount).toHtmlEscaped() + " views");
+        meta->setText(bits.join("   |   "));
+        connect(meta, &QLabel::linkActivated, this, [this](const QString&) {
+            emit channelRequested(m_result.channelUrl, m_result.channel);
+        });
+    } else {
+        QStringList bits;
+        if (!m_result.channel.isEmpty()) bits << m_result.channel;
+        if (m_result.duration >= 0)      bits << formatDuration(m_result.duration);
+        if (m_result.viewCount >= 0)     bits << (formatViewCount(m_result.viewCount) + " views");
+        meta->setText(bits.join("   |   "));
+    }
     lay->addWidget(meta);
 
     auto* btnRow = new QHBoxLayout();
     btnRow->setSpacing(4);
 
-    auto addButton = [&](const QString& label, auto signal) {
-        auto* b = new QPushButton(label, this);
+    if (m_result.isChannel) {
+        // Channel card: a single action that opens the channel's video page.
+        auto* b = new QPushButton(QStringLiteral("View Channel"), this);
         b->setObjectName("videoCardButton");
         b->setCursor(Qt::PointingHandCursor);
-        btnRow->addWidget(b, 1); // share the card width evenly
-        connect(b, &QPushButton::clicked, this, [this, signal]() {
-            emit (this->*signal)(QUrl(m_result.url), m_result.title);
-            });
-        };
-    if (buttons & PlayButton)     addButton(playLabel.isEmpty() ? QStringLiteral("▶ Play") : playLabel, &VideoCard::playRequested);
-    if (buttons & QueueButton)    addButton("Queue", &VideoCard::queueRequested);
-    if (buttons & DownloadButton) addButton("Download", &VideoCard::downloadRequested);
+        btnRow->addWidget(b, 1);
+        connect(b, &QPushButton::clicked, this, [this]() {
+            emit channelRequested(m_result.channelUrl, m_result.channel);
+        });
+    } else {
+        auto addButton = [&](const QString& label, auto signal) {
+            auto* b = new QPushButton(label, this);
+            b->setObjectName("videoCardButton");
+            b->setCursor(Qt::PointingHandCursor);
+            btnRow->addWidget(b, 1); // share the card width evenly
+            connect(b, &QPushButton::clicked, this, [this, signal]() {
+                emit (this->*signal)(QUrl(m_result.url), m_result.title);
+                });
+            };
+        if (buttons & PlayButton)     addButton(playLabel.isEmpty() ? QStringLiteral("▶ Play") : playLabel, &VideoCard::playRequested);
+        if (buttons & QueueButton)    addButton("Queue", &VideoCard::queueRequested);
+        if (buttons & DownloadButton) addButton("Download", &VideoCard::downloadRequested);
+    }
     lay->addLayout(btnRow);
 
     setCardWidth(cardWidth);
@@ -187,8 +245,16 @@ int VideoCard::heightForCardWidth(int cardWidth) {
 }
 
 void VideoCard::mousePressEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton)
-        emit playRequested(QUrl(m_result.url), m_result.title);
+    // Click-to-play is limited to the thumbnail and the title, so the rest of the
+    // card (especially the uploader link, which sits just above the buttons) stays
+    // clickable for its own action. The full-card hover highlight is unchanged.
+    if (event->button() == Qt::LeftButton) {
+        const QWidget* hit = childAt(event->position().toPoint());
+        if (hit == m_thumb || hit == m_title) {
+            if (m_result.isChannel) emit channelRequested(m_result.channelUrl, m_result.channel);
+            else                    emit playRequested(QUrl(m_result.url), m_result.title);
+        }
+    }
     QWidget::mousePressEvent(event);
 }
 
@@ -207,12 +273,22 @@ void VideoCard::loadThumbnail(QNetworkAccessManager* nam) {
     connect(reply, &QNetworkReply::finished, this, [this, reply, key]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) return;
+        const QByteArray data = reply->readAll();
         QPixmap pm;
-        if (!pm.loadFromData(reply->readAll())) return;
-        if (pm.width() > kThumbSrcCap) pm = pm.scaledToWidth(kThumbSrcCap, Qt::SmoothTransformation);
-        QPixmapCache::insert(key, pm);
-        m_thumb->setSource(pm);
+        if (pm.loadFromData(data)) { applyThumbnail(pm, key); return; }
+        // QPixmap couldn't decode it — e.g. a WebP channel avatar (this Qt build
+        // ships no qwebp plugin). Round-trip the bytes through ffmpeg to PNG.
+        SgThumbnailer::decodeViaFfmpeg(data, this, [this, key](const QPixmap& decoded) {
+            applyThumbnail(decoded, key);
         });
+        });
+}
+
+void VideoCard::applyThumbnail(QPixmap pm, const QString& cacheKey) {
+    if (pm.isNull()) return; // leave the placeholder / channel glyph in place
+    if (pm.width() > kThumbSrcCap) pm = pm.scaledToWidth(kThumbSrcCap, Qt::SmoothTransformation);
+    if (!cacheKey.isEmpty()) QPixmapCache::insert(cacheKey, pm);
+    m_thumb->setSource(pm);
 }
 
 QString VideoCard::formatDuration(qint64 seconds) {
