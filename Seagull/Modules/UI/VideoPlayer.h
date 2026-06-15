@@ -5,6 +5,7 @@
 #include <QUrl>
 #include <QString>
 #include <QPixmap>
+#include <QImage>
 #include <QPoint>
 #include <QList>
 #include <QElapsedTimer>
@@ -47,6 +48,8 @@ public:
     void seekRelative(qint64 deltaMs); // arrow keys: nudge ±5s, clamped to [0,len]
     void stepFrame(int dir);           // comma/period: one frame back/forward, paused only
     bool hasActiveMedia() const;       // is there media loaded to act on?
+    qint64 mediaPosition() const;      // current play position (ms), for the SMTC timeline
+    qint64 mediaDuration() const;      // media length (ms), for the SMTC timeline
 
     // Shorts-feed behaviour (YouTube style): the short loops at the end instead
     // of dropping into ended mode, and wheel-scrolling over the video emits
@@ -95,6 +98,12 @@ public slots:
 signals:
     void mediaEnded();
     void skipRequested(int delta);
+
+    // Mirror playback out to the Windows media controls (SMTC). State maps to
+    // SgMediaControls::Status: 0 = stopped, 1 = playing, 2 = paused.
+    void smtcStateChanged(int state);
+    void smtcMetadata(const QString& title, const QString& artist, bool isVideo);
+    void smtcArtwork(const QImage& image);
     void shortsScrolled(int step); // shorts mode wheel: +1 = next short, -1 = previous
     void probeQualitiesRequested(const QString& url);
     // freshResolve = true bypasses the worker's metadata cache (stale-URL refetch).

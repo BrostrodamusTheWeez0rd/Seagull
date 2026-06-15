@@ -76,6 +76,8 @@ add_executable(Seagull
     Modules/Backend/SgUpdater.cpp
     Modules/Backend/PlaybackEngine.h
     Modules/Backend/PlaybackEngine.cpp
+    Modules/Backend/SgMediaControls.h
+    Modules/Backend/SgMediaControls.cpp
     resources.qrc
     app.rc
 )
@@ -107,6 +109,8 @@ target_link_libraries(Seagull PRIVATE
     ${LIBVLC_LIB}
     ${LIBVLCCORE_LIB}
     ole32           # CoCreateInstance / COM for SgSpellCheck (Spell Checking API)
+    RuntimeObject   # WinRT activation (combase) for SgMediaControls (SMTC)
+    shell32         # SetCurrentProcessExplicitAppUserModelID (SMTC app identity)
 )
 
 add_custom_command(TARGET Seagull POST_BUILD

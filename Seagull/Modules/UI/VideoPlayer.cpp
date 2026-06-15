@@ -73,9 +73,11 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
         else hidePosterOverlay();
         if (visualizer) { visualizer->setPaused(false); visualizer->reviveGulls(); } // resume + revive
         if (titleBar) titleBar->setLoading(false); // playback started — stop the seagull
+        emit smtcStateChanged(1); // SMTC: Playing
         });
     connect(engine, &PlaybackEngine::paused, this, [this]() {
         if (visualizer) visualizer->setPaused(true); // freeze the sky/sea while paused
+        emit smtcStateChanged(2); // SMTC: Paused
         });
     connect(engine, &PlaybackEngine::errorOccurred, this, &VideoPlayer::onPlaybackError);
 
@@ -320,6 +322,7 @@ void VideoPlayer::onMediaEndReached() {
 
     osdTimer->stop();
     m_stopped = true; // ended = replay-ready, same as a first-stage Stop
+    emit smtcStateChanged(0); // SMTC: Stopped (auto-advance re-sets Playing if a next item runs)
     // Freeze the seeker/timestamp at the end so they don't snap back to 0 while
     // VLC drains the decoder. startPolling() clears this when the next item plays.
     if (playerControls) playerControls->setEndedMode(true);
@@ -379,6 +382,9 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
         titleBar->setTitle(QFileInfo(nativePath).completeBaseName());
         titleBar->setLoading(false);
     }
+    // SMTC: local files have no uploader; flag music vs video for the right widget.
+    emit smtcMetadata(QFileInfo(nativePath).completeBaseName(), QString(),
+                      m_kind == MediaKind::Video);
     // Local file: nothing to share, no online description.
     emit shareAvailableChanged(false);
     emit videoInfoChanged(QString(), QString(), QString(), QString(), QString());
@@ -436,6 +442,9 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     emit shareAvailableChanged(true); // online stream: the page URL is shareable
     // Clear the previous video's description until this one's probe reports in.
     emit videoInfoChanged(QString(), QString(), QString(), QString(), QString());
+    // SMTC: show the title we have now; onVideoInfo fills the uploader once probed.
+    emit smtcMetadata(title.isEmpty() ? QStringLiteral("Seagull") : title, QString(),
+                      m_kind == MediaKind::Video);
 
     if (playerControls) {
         playerControls->setStreamingMode(true);
@@ -473,6 +482,7 @@ void VideoPlayer::handleStopRequest() {
         osdTimer->stop();
         m_fetching = false;
         engine->stop(); // media stays loaded; releaseMedia() is press #2
+        emit smtcStateChanged(0); // SMTC: Stopped (media still loaded, replay-ready)
         if (playerControls) { playerControls->stopPolling(); playerControls->setEndedMode(true); }
         pinOverlayWindow(playerControls, controlsFade);
         pinOverlayWindow(titleBar, titleFade);
@@ -515,6 +525,7 @@ void VideoPlayer::onThumbnailResolved(const QString& thumbUrl) {
 
 void VideoPlayer::applyPosterPixmap(const QPixmap& pm) {
     m_posterPixmap = pm;
+    if (!pm.isNull()) emit smtcArtwork(pm.toImage()); // SMTC widget cover art
     // Audio: the artwork is the surface — show it (replacing the placeholder),
     // unless the visualizer is currently showing instead.
     if (m_kind == MediaKind::Audio) {
@@ -535,6 +546,7 @@ void VideoPlayer::onLocalPosterReady(const QString& filePath, const QPixmap& pix
     if (QString::compare(QDir::toNativeSeparators(m_currentLocalUrl.toLocalFile()),
                          QDir::toNativeSeparators(filePath), Qt::CaseInsensitive) != 0) return;
     m_posterPixmap = pixmap;
+    emit smtcArtwork(pixmap.toImage()); // SMTC widget cover art (local frame grab / cover)
     // Audio: the cover art is the surface — show it (replacing the placeholder),
     // unless the visualizer is currently showing instead.
     if (m_kind == MediaKind::Audio) {
@@ -665,6 +677,9 @@ void VideoPlayer::togglePlayPause() {
 bool VideoPlayer::hasActiveMedia() const {
     return engine && engine->hasMedia();
 }
+
+qint64 VideoPlayer::mediaPosition() const { return engine ? engine->time() : 0; }
+qint64 VideoPlayer::mediaDuration() const { return engine ? engine->length() : 0; }
 
 void VideoPlayer::seekRelative(qint64 deltaMs) {
     if (!engine || !engine->hasMedia()) return;
@@ -1144,6 +1159,8 @@ void VideoPlayer::onVideoInfo(const QString& title, const QString& uploader,
     m_infoDescription = description;
     // The shell opens/closes the Description tab off this.
     emit videoInfoChanged(m_infoTitle, uploader, views, date, description);
+    // SMTC: refresh now that the uploader (artist/subtitle) is known.
+    emit smtcMetadata(m_infoTitle, uploader, m_kind == MediaKind::Video);
 }
 
 void VideoPlayer::shareLink() {

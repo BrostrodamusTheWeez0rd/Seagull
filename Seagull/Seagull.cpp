@@ -45,6 +45,10 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // player's Record button.
     recorder = new SgRecorder(this);
 
+    // Windows media controls (SMTC): the OS now-playing overlay + media keys.
+    // Bound to the main window's HWND in run() (after the window exists).
+    mediaControls = new SgMediaControls(this);
+
     // The tab modules.
     libraryModule = new MediaLibrary(spellChecker);
     explorerModule = new FileExplorer(spellChecker);
@@ -201,24 +205,43 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         else if (activeSource == ActiveSource::Explorer) explorerModule->playNextFile();
         });
 
-    // The skip buttons (single-click = nudge, double-click = jump tracks) land here.
-    connect(videoPlayer, &VideoPlayer::skipRequested, this, [this](int delta) {
-        if (activeSource == ActiveSource::Library) {
-            if (delta > 0) libraryModule->playNextFile();
-            else           libraryModule->playPrevFile();
-        }
-        else if (activeSource == ActiveSource::Explorer) {
-            if (delta > 0) explorerModule->playNextFile();
-            else           explorerModule->playPrevFile();
-        }
-        else if (activeSource == ActiveSource::Queue) {
-            if (delta > 0) queueModule->playNextQueuedItem();
-            else           queueModule->playPrevQueuedItem();
-        }
-        else if (activeSource == ActiveSource::Search) {
-            searchModule->playAdjacentResult(delta > 0 ? 1 : -1);
+    // The skip buttons (single-click = nudge, double-click = jump tracks) land here,
+    // and so do the SMTC next/previous keys (see skipActive).
+    connect(videoPlayer, &VideoPlayer::skipRequested, this, [this](int delta) { skipActive(delta); });
+
+    // --- Windows media controls (SMTC) ---
+    // Player -> OS: mirror state, metadata and artwork into the now-playing widget.
+    connect(videoPlayer, &VideoPlayer::playbackStarted, mediaControls, [this]() {
+        mediaControls->setEnabled(true);
+        // Optimistic Playing so the session is active before metadata lands; the
+        // engine's real playing/paused signal corrects it a beat later.
+        mediaControls->setPlaybackStatus(SgMediaControls::Status::Playing);
+        });
+    connect(videoPlayer, &VideoPlayer::smtcStateChanged, mediaControls, [this](int state) {
+        switch (state) {
+        case 1: mediaControls->setPlaybackStatus(SgMediaControls::Status::Playing); break;
+        case 2: mediaControls->setPlaybackStatus(SgMediaControls::Status::Paused);  break;
+        default: mediaControls->setPlaybackStatus(SgMediaControls::Status::Stopped); break;
         }
         });
+    connect(videoPlayer, &VideoPlayer::smtcMetadata, mediaControls, &SgMediaControls::setMetadata);
+    connect(videoPlayer, &VideoPlayer::smtcArtwork,  mediaControls, &SgMediaControls::setThumbnail);
+    connect(videoPlayer, &VideoPlayer::closed, mediaControls, [this]() { mediaControls->clear(); });
+
+    // OS -> player: media keys / overlay buttons drive playback.
+    connect(mediaControls, &SgMediaControls::playPressed,     videoPlayer, &VideoPlayer::togglePlayPause);
+    connect(mediaControls, &SgMediaControls::pausePressed,    videoPlayer, &VideoPlayer::togglePlayPause);
+    connect(mediaControls, &SgMediaControls::nextPressed,     this, [this]() { skipActive(1); });
+    connect(mediaControls, &SgMediaControls::previousPressed, this, [this]() { skipActive(-1); });
+
+    // Push the timeline (position/duration) to the overlay scrubber while playing.
+    smtcTimelineTimer = new QTimer(this);
+    smtcTimelineTimer->setInterval(1000);
+    connect(smtcTimelineTimer, &QTimer::timeout, this, [this]() {
+        if (videoPlayer->hasActiveMedia())
+            mediaControls->setTimeline(videoPlayer->mediaPosition(), videoPlayer->mediaDuration());
+        });
+    smtcTimelineTimer->start();
 
     // Surface the player worker's logs (stream resolution, yt-dlp errors) in the
     // same dev console as the others, by re-emitting through the downloader.
@@ -348,6 +371,24 @@ void Seagull::flashLibraryTab() {
         });
 }
 
+void Seagull::skipActive(int delta) {
+    if (activeSource == ActiveSource::Library) {
+        if (delta > 0) libraryModule->playNextFile();
+        else           libraryModule->playPrevFile();
+    }
+    else if (activeSource == ActiveSource::Explorer) {
+        if (delta > 0) explorerModule->playNextFile();
+        else           explorerModule->playPrevFile();
+    }
+    else if (activeSource == ActiveSource::Queue) {
+        if (delta > 0) queueModule->playNextQueuedItem();
+        else           queueModule->playPrevQueuedItem();
+    }
+    else if (activeSource == ActiveSource::Search) {
+        searchModule->playAdjacentResult(delta > 0 ? 1 : -1);
+    }
+}
+
 bool Seagull::run() {
     // The shell must be shown BEFORE the first-run dialog runs. Exec'ing an
     // application-modal dialog before any window was shown left the whole app
@@ -355,6 +396,10 @@ bool Seagull::run() {
     // fired inside the dialog's nested event loop, creating the native window
     // hierarchy underneath an active modal block.
     mainWindow->show();
+
+    // Bind the Windows media controls to the now-realized top-level window. winId()
+    // forces native-window creation; SMTC is per-HWND for desktop apps.
+    mediaControls->attachToWindow(reinterpret_cast<void*>(mainWindow->winId()));
 
     // First-run Terms of Use: must be accepted before the app is usable. Shown
     // modally over the freshly shown main window (a modal before any window shows
@@ -425,6 +470,10 @@ bool Seagull::run() {
 }
 
 int main(int argc, char* argv[]) {
+    // Stamp the process with an AppUserModelID before anything else, so Windows can
+    // attribute our SMTC session (otherwise the now-playing card shows no metadata).
+    SgMediaControls::registerAppIdentity();
+
     QApplication app(argc, argv);
 
     // Apply the saved theme before any widgets are built so the whole UI is themed.

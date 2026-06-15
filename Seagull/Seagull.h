@@ -17,9 +17,11 @@
 #include "Modules/Backend/SgUpdater.h"
 #include "Modules/Backend/SgHlsProxy.h"
 #include "Modules/Backend/SgRecorder.h"
+#include "Modules/Backend/SgMediaControls.h"
 
 class QTextBrowser;
 class SgThumbnailer;
+class QTimer;
 
 class Seagull : public QObject {
     Q_OBJECT
@@ -65,6 +67,12 @@ private:
 
     // Records the currently-playing live stream to disk (parallel ffmpeg).
     SgRecorder* recorder;
+
+    // Mirrors playback to the Windows media controls (SMTC) and routes the OS
+    // media-key / overlay buttons back to the player. A timer pushes the timeline.
+    SgMediaControls* mediaControls;
+    QTimer* smtcTimelineTimer;
+    void skipActive(int delta); // shared by the skip buttons + the SMTC next/prev keys
 
     // Answers the player's local-file poster requests (frame grab / cover art).
     // Held with the Library's thumbnailer until the startup update modal is done.
