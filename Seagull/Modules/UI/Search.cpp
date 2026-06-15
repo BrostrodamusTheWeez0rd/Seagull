@@ -443,6 +443,19 @@ void Search::startSearch(const QString& query) {
     QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     m_batchSize = qBound(5, settings.value("Search/ResultLimit", 20).toInt(), 100);
     m_lastRequested = m_batchSize;
+
+    // "channel:" prefix -> search for channels (their own cards) via the internal
+    // API; yt-dlp can't list channels by name. One page, no load-more.
+    const QString trimmed = query.trimmed();
+    if (trimmed.startsWith("channel:", Qt::CaseInsensitive)) {
+        const QString name = trimmed.mid(QStringLiteral("channel:").size()).trimmed();
+        if (name.isEmpty()) { setStatus("Type a channel name after \"channel:\".", false); return; }
+        m_endReached = true; // channel search is a single page
+        setStatus("Searching channels.", true);
+        m_search->searchChannels(name, m_lastRequested);
+        return;
+    }
+
     setStatus("Fetching results.", true);
     m_search->search(SgSearch::Site::YouTube, query, m_lastRequested,
                      m_filterMode == FilterMode::Shorts);
@@ -580,6 +593,7 @@ void Search::onSearchFailed(const QString& message) {
 
 bool Search::passesFilter(const SearchResult& r) const {
     if (m_viewMode == ViewMode::Channel) return true; // a channel page shows all its videos
+    if (r.isChannel) return true; // channel cards aren't videos/shorts; never filtered out
     switch (m_filterMode) {
     case FilterMode::Videos:  return !r.isShort;
     case FilterMode::Shorts:  return r.isShort;

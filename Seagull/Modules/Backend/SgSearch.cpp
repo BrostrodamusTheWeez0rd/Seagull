@@ -91,6 +91,12 @@ void SgSearch::cancel() {
         m_shortsReply->deleteLater();
         m_shortsReply = nullptr;
     }
+    if (m_channelReply) {
+        m_channelReply->disconnect(this);
+        m_channelReply->abort();
+        m_channelReply->deleteLater();
+        m_channelReply = nullptr;
+    }
     m_buffer.clear();
 }
 
@@ -371,6 +377,107 @@ void SgSearch::handleShortsReply() {
         fetchShortsPage();
     else
         emit resultsReady(m_shortsResults);
+}
+
+// ---------------------------------------------------------------------------
+// Channel search ("channel:" prefix) — YouTube internal search API
+// ---------------------------------------------------------------------------
+// yt-dlp can't reliably list channels by name, so (like shorts) go through
+// youtubei/v1/search with the channel filter and parse channelRenderer. One page
+// is plenty for a channel lookup; results are cached per query.
+
+void SgSearch::searchChannels(const QString& query, int limit) {
+    cancel(); // supersede any in-flight video/shorts/channel request
+
+    if (!m_nam) m_nam = new QNetworkAccessManager(this);
+
+    m_channelLimit = limit;
+    if (query != m_channelQuery) {
+        m_channelQuery = query;
+        m_channelResults.clear();
+        m_channelSeenIds.clear();
+    }
+    if (!m_channelResults.isEmpty()) { emit resultsReady(m_channelResults); return; } // cached
+
+    emit logMessage("Searching channels: " + query);
+    fetchChannelSearchPage();
+}
+
+void SgSearch::fetchChannelSearchPage() {
+    QJsonObject client{ {"clientName", "WEB"}, {"clientVersion", "2.20250613.00.00"} };
+    QJsonObject body{ {"context", QJsonObject{ {"client", client} }} };
+    body["query"]  = m_channelQuery;
+    body["params"] = "EgIQAg=="; // YouTube search filter: type = Channel
+
+    QNetworkRequest req(QUrl("https://www.youtube.com/youtubei/v1/search?prettyPrint=false"));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    req.setHeader(QNetworkRequest::UserAgentHeader,
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    m_channelReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(m_channelReply, &QNetworkReply::finished, this, &SgSearch::handleChannelSearchReply);
+}
+
+void SgSearch::handleChannelSearchReply() {
+    QNetworkReply* reply = m_channelReply;
+    m_channelReply = nullptr;
+    reply->deleteLater();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        emit failed("Channel search failed: " + reply->errorString());
+        return;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    if (doc.isNull()) { emit failed("Could not parse channel results."); return; }
+
+    QList<QJsonObject> renderers;
+    collectObjects(doc.object(), "channelRenderer", renderers);
+
+    for (const QJsonObject& c : renderers) {
+        const QString channelId = c["channelId"].toString();
+        // Prefer the handle URL (canonicalBaseUrl, e.g. "/@veritasium"); fall back
+        // to the /channel/<id> form.
+        QString url = c["navigationEndpoint"]["browseEndpoint"]["canonicalBaseUrl"].toString();
+        if (url.startsWith("/")) url = "https://www.youtube.com" + url;
+        if (url.isEmpty() && !channelId.isEmpty())
+            url = "https://www.youtube.com/channel/" + channelId;
+        if (url.isEmpty()) continue;
+
+        const QString key = channelId.isEmpty() ? url : channelId;
+        if (m_channelSeenIds.contains(key)) continue;
+
+        QString name = c["title"]["simpleText"].toString();
+        if (name.isEmpty()) name = c["title"]["runs"][0]["text"].toString();
+        if (name.isEmpty()) continue;
+
+        // Avatar: widest of thumbnail.thumbnails[] (urls are protocol-relative).
+        QString avatar; int bestW = -1;
+        for (const auto& t : c["thumbnail"]["thumbnails"].toArray()) {
+            const QJsonObject to = t.toObject();
+            const int w = to["width"].toInt();
+            if (w > bestW) { bestW = w; avatar = to["url"].toString(); }
+        }
+        if (avatar.startsWith("//")) avatar = "https:" + avatar;
+
+        // Pre-formatted text like "15.5M subscribers".
+        QString subs = c["subscriberCountText"]["simpleText"].toString();
+        if (subs.isEmpty())
+            subs = c["subscriberCountText"]["accessibility"]["accessibilityData"]["label"].toString();
+
+        SearchResult r;
+        r.isChannel      = true;
+        r.title          = name;
+        r.channel        = name;
+        r.url            = url;
+        r.channelUrl     = url;
+        r.thumbnail      = avatar;
+        r.subscriberText = subs;
+        m_channelSeenIds.insert(key);
+        m_channelResults.append(r);
+        if (m_channelResults.size() >= m_channelLimit) break;
+    }
+
+    emit resultsReady(m_channelResults);
 }
 
 // Depth-first collect of every object stored under `key` anywhere in the tree.

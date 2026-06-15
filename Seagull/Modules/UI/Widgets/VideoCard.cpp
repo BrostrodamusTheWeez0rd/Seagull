@@ -154,9 +154,11 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
     meta->setObjectName("metaStats"); // reuse the theme's dimmed stat styling
     meta->setWordWrap(false);         // single line keeps card height deterministic
     if (m_result.isChannel) {
-        meta->setText(m_result.subscriberCount >= 0
-            ? formatViewCount(m_result.subscriberCount) + " subscribers"
-            : QStringLiteral("Channel"));
+        meta->setText(!m_result.subscriberText.isEmpty()
+            ? m_result.subscriberText
+            : (m_result.subscriberCount >= 0
+                ? formatViewCount(m_result.subscriberCount) + " subscribers"
+                : QStringLiteral("Channel")));
     } else if (!m_result.channelUrl.isEmpty() && !m_result.channel.isEmpty()) {
         // Uploader name is a clickable link; the rest of the meta stays plain. The
         // inline style keeps it looking like the dimmed meta, underlined to signal

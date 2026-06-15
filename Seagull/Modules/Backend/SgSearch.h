@@ -28,6 +28,9 @@ struct SearchResult {
     bool    isChannel = false;
     QString channelUrl;
     qint64  subscriberCount = -1;
+    // Ready-made subscriber text ("15.5M subscribers") from the channel-search API,
+    // which gives it pre-formatted; preferred over subscriberCount when set.
+    QString subscriberText;
 };
 
 // Backend search worker — a peer to SgYtDlp, dedicated to discovery rather than
@@ -49,6 +52,12 @@ public:
     ~SgSearch();
 
     void search(Site site, const QString& query, int limit = 20, bool shortsOnly = false);
+
+    // Search for channels by name (the "channel:" prefix). yt-dlp can't reliably
+    // return channel results, so this goes through YouTube's internal search API
+    // (like the shorts path). Answers on the normal resultsReady with channel
+    // SearchResults (isChannel=true). Single page — channel searches don't paginate.
+    void searchChannels(const QString& query, int limit = 20);
 
     // List a channel's uploads (its /videos tab) via yt-dlp, up to `limit`. The
     // root object yields the channel header (name, avatar, subscribers); the
@@ -82,6 +91,8 @@ private:
     void startShortsSearch(const QString& query, int limit);
     void fetchShortsPage();
     void handleShortsReply();
+    void fetchChannelSearchPage();
+    void handleChannelSearchReply();
     static void collectObjects(const QJsonValue& v, const QString& key,
                                QList<QJsonObject>& out);
 
@@ -101,4 +112,11 @@ private:
     QString                m_shortsContinuation;  // next-page token, empty = none yet/exhausted
     bool                   m_shortsExhausted = false;
     int                    m_shortsLimit = 20;
+
+    // Channel search state (YouTube internal API path, single page, cached per query).
+    QNetworkReply*         m_channelReply = nullptr;
+    QString                m_channelQuery;
+    QList<SearchResult>    m_channelResults;
+    QSet<QString>          m_channelSeenIds;
+    int                    m_channelLimit = 20;
 };
