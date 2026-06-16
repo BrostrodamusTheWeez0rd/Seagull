@@ -43,6 +43,7 @@ public:
 
     static QString formatDuration(qint64 seconds);
     static QString formatViewCount(qint64 views);
+    static QString formatAge(qint64 timestamp); // approx upload time -> "3 weeks ago" ("" if unknown)
 
     // Card height for a given width (16:9 thumbnail + the fixed chrome below it).
     static int heightForCardWidth(int cardWidth);

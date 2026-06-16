@@ -1,5 +1,6 @@
 #include "VideoCard.h"
 
+#include <QDateTime>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -171,6 +172,7 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
                     .arg(dim, m_result.channel.toHtmlEscaped());
         if (m_result.duration >= 0)  bits << formatDuration(m_result.duration).toHtmlEscaped();
         if (m_result.viewCount >= 0) bits << (formatViewCount(m_result.viewCount).toHtmlEscaped() + " views");
+        if (const QString age = formatAge(m_result.timestamp); !age.isEmpty()) bits << age.toHtmlEscaped();
         meta->setText(bits.join("   |   "));
         connect(meta, &QLabel::linkActivated, this, [this](const QString&) {
             emit channelRequested(m_result.channelUrl, m_result.channel);
@@ -180,6 +182,7 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
         if (!m_result.channel.isEmpty()) bits << m_result.channel;
         if (m_result.duration >= 0)      bits << formatDuration(m_result.duration);
         if (m_result.viewCount >= 0)     bits << (formatViewCount(m_result.viewCount) + " views");
+        if (const QString age = formatAge(m_result.timestamp); !age.isEmpty()) bits << age;
         meta->setText(bits.join("   |   "));
     }
     lay->addWidget(meta);
@@ -307,4 +310,26 @@ QString VideoCard::formatViewCount(qint64 views) {
     if (views >= 1000000) return QString::number(views / 1000000.0, 'f', 1) + "M";
     if (views >= 1000)    return QString::number(views / 1000.0, 'f', 1) + "K";
     return QString::number(views);
+}
+
+QString VideoCard::formatAge(qint64 timestamp) {
+    if (timestamp < 0) return QString();
+    const qint64 secs = QDateTime::currentSecsSinceEpoch() - timestamp;
+    if (secs < 0) return QString();
+    // yt-dlp's approximate_date is derived from YouTube's relative "X ago" text, so
+    // mirror that wording (an exact date would imply precision it doesn't have).
+    struct Unit { qint64 secs; const char* one; const char* many; };
+    static const Unit units[] = {
+        { 31536000, "year",  "years"  },
+        {  2592000, "month", "months" },
+        {   604800, "week",  "weeks"  },
+        {    86400, "day",   "days"   },
+        {     3600, "hour",  "hours"  },
+        {       60, "minute","minutes"},
+    };
+    for (const auto& u : units) {
+        const qint64 n = secs / u.secs;
+        if (n >= 1) return QString("%1 %2 ago").arg(n).arg(n == 1 ? u.one : u.many);
+    }
+    return QStringLiteral("just now");
 }

@@ -20,6 +20,7 @@ struct SearchResult {
     QString thumbnail;
     qint64  duration  = -1;
     qint64  viewCount = -1;
+    qint64  timestamp = -1;   // approximate upload time (Unix seconds), -1 unknown
     bool    isShort   = false;
     // Channel support. isChannel marks a channel result (the tile becomes a
     // channel card). channelUrl is the channel/uploader page: on a video result it

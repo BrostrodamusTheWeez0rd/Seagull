@@ -40,7 +40,10 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
     const QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
     QStringList args;
-    args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings";
+    args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings"
+        // Parse YouTube's relative "3 weeks ago" text into an approximate upload
+        // timestamp, in the same flat response (no per-video requests).
+        << "--extractor-args" << "youtubetab:approximate_date";
 
     // Per-site search target. New sites slot in here with their own branch.
     switch (site) {
@@ -72,6 +75,7 @@ void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit) {
 
     QStringList args;
     args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings"
+         << "--extractor-args" << "youtubetab:approximate_date" // approx upload dates, same request
          << "--playlist-end" << QString::number(qMax(1, limit))
          << url;
 
@@ -195,6 +199,11 @@ bool SgSearch::parseVideoEntry(const QJsonObject& e, SearchResult& r) const {
         ? static_cast<qint64>(e["duration"].toDouble()) : -1;
     r.viewCount = e.contains("view_count") && !e["view_count"].isNull()
         ? static_cast<qint64>(e["view_count"].toDouble()) : -1;
+    // Approximate upload time, parsed by yt-dlp from YouTube's "3 weeks ago" text
+    // (the youtubetab:approximate_date extractor-arg). Null when YouTube showed no
+    // relative date for that result.
+    r.timestamp = e.contains("timestamp") && !e["timestamp"].isNull()
+        ? static_cast<qint64>(e["timestamp"].toDouble()) : -1;
 
     // Shorts rarely surface in normal yt-dlp search (the shorts shelf is skipped),
     // but tag any that do by their URL so the filter sees them.
