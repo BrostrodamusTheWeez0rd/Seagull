@@ -204,7 +204,7 @@ private:
     QList<NavEntry> m_navHistory;
     int             m_navIndex = -1;
 
-    QStringList  m_historyFor[2]; // per-site search history, indexed by int(SgSearch::Site)
+    QStringList  m_historyFor[3]; // per-site search history, indexed by int(SgSearch::Site)
     SgSearch::Site m_uiSite = SgSearch::Site::YouTube; // site the history/chrome is currently showing
 
     QString m_currentQuery;

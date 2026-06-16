@@ -49,7 +49,7 @@ struct SearchResult {
 class SgSearch : public QObject {
     Q_OBJECT
 public:
-    enum class Site { YouTube, PornHub };
+    enum class Site { YouTube, PornHub, Chaturbate };
 
     explicit SgSearch(QObject* parent = nullptr);
     ~SgSearch();
@@ -109,6 +109,12 @@ private:
     void handlePornHubReply();
     QList<SearchResult> parsePornHubHtml(const QString& html) const;
 
+    // Chaturbate search (live cam rooms via their JSON room-list API; query = tag).
+    void startChaturbateSearch(const QString& query, int limit);
+    void fetchChaturbatePage();
+    void handleChaturbateReply();
+    QList<SearchResult> parseChaturbateJson(const QByteArray& bytes) const;
+
     QProcess*  m_process;
     QByteArray m_buffer;
     Site       m_site = Site::YouTube;
@@ -141,4 +147,12 @@ private:
     int                    m_phPage = 0;            // last results page fetched (1-based)
     int                    m_phLimit = 20;
     bool                   m_phExhausted = false;
+
+    // Chaturbate search state (JSON room-list API; offset paging, per query).
+    QNetworkReply*         m_cbReply = nullptr;
+    QString                m_cbQuery;
+    QList<SearchResult>    m_cbResults;
+    QSet<QString>          m_cbSeen;
+    int                    m_cbLimit = 20;
+    bool                   m_cbExhausted = false;
 };

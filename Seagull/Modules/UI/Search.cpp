@@ -83,7 +83,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     siteBar->setObjectName("searchSiteBar");
     siteBar->setEditable(true);                      // type a site OR pick from the dropdown
     siteBar->setInsertPolicy(QComboBox::NoInsert);   // typing a query never adds junk items
-    siteBar->addItems({ "YouTube", "PornHub" });     // the sites yt-dlp can search for us
+    siteBar->addItems({ "YouTube", "PornHub", "Chaturbate" }); // searchable sites
     siteBar->setCurrentText("YouTube");
     siteBar->lineEdit()->setPlaceholderText("Site \xe2\x80\x94 e.g. youtube");
     siteBar->setToolTip("Type or pick a site to search.");
@@ -551,12 +551,15 @@ void Search::addToHistory(const QString& query) {
 // history carries over; other sites get their own file.
 QString Search::historyFilePath(SgSearch::Site site) {
     const QString base = QCoreApplication::applicationDirPath();
-    return site == SgSearch::Site::PornHub ? base + "/search_history_ph.txt"
-                                           : base + "/search_history.txt";
+    switch (site) {
+    case SgSearch::Site::PornHub:    return base + "/search_history_ph.txt";
+    case SgSearch::Site::Chaturbate: return base + "/search_history_cb.txt";
+    default:                         return base + "/search_history.txt"; // YouTube keeps the original
+    }
 }
 
 void Search::loadHistory() {
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         m_historyFor[i].clear();
         QFile f(historyFilePath(static_cast<SgSearch::Site>(i)));
         if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue; // none yet
@@ -588,7 +591,7 @@ void Search::saveHistory(SgSearch::Site site) {
 }
 
 void Search::clearSearchHistory() {
-    for (int i = 0; i < 2; ++i) { // clear every site's history + file
+    for (int i = 0; i < 3; ++i) { // clear every site's history + file
         m_historyFor[i].clear();
         QFile::remove(historyFilePath(static_cast<SgSearch::Site>(i)));
     }
@@ -1021,13 +1024,17 @@ void Search::loadAvatar(const QString& url) {
 
 SgSearch::Site Search::currentSite() const {
     const QString s = siteBar->currentText().trimmed().toLower();
-    return (s.contains("porn") || s == "ph") ? SgSearch::Site::PornHub
-                                             : SgSearch::Site::YouTube;
+    if (s.contains("chaturbate") || s == "cb") return SgSearch::Site::Chaturbate;
+    if (s.contains("porn") || s == "ph")       return SgSearch::Site::PornHub;
+    return SgSearch::Site::YouTube;
 }
 
 QString Search::siteName() const {
-    return currentSite() == SgSearch::Site::PornHub ? QStringLiteral("PornHub")
-                                                    : QStringLiteral("YouTube");
+    switch (currentSite()) {
+    case SgSearch::Site::PornHub:    return QStringLiteral("PornHub");
+    case SgSearch::Site::Chaturbate: return QStringLiteral("Chaturbate");
+    default:                         return QStringLiteral("YouTube");
+    }
 }
 
 void Search::updateQueryPlaceholder() {

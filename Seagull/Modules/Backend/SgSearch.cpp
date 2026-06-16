@@ -43,6 +43,10 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
         startPornHubSearch(query.trimmed(), limit);
         return;
     }
+    if (site == Site::Chaturbate) { // live cam rooms via their JSON API
+        startChaturbateSearch(query.trimmed(), limit);
+        return;
+    }
 
     const QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
@@ -118,6 +122,12 @@ void SgSearch::cancel() {
         m_phReply->abort();
         m_phReply->deleteLater();
         m_phReply = nullptr;
+    }
+    if (m_cbReply) {
+        m_cbReply->disconnect(this);
+        m_cbReply->abort();
+        m_cbReply->deleteLater();
+        m_cbReply = nullptr;
     }
     m_buffer.clear();
 }
@@ -713,6 +723,106 @@ QList<SearchResult> SgSearch::parsePornHubHtml(const QString& html) const {
         if (const auto mv = viewsRe.match(chunk); mv.hasMatch())
             r.viewCount = phParseCount(mv.captured(1));
 
+        out.append(r);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Chaturbate search — live cam rooms via the JSON room-list API
+// ---------------------------------------------------------------------------
+
+void SgSearch::startChaturbateSearch(const QString& query, int limit) {
+    if (!m_nam) m_nam = new QNetworkAccessManager(this);
+
+    m_cbLimit = limit;
+    if (query != m_cbQuery) { // new query resets the accumulated rooms
+        m_cbQuery = query;
+        m_cbResults.clear();
+        m_cbSeen.clear();
+        m_cbExhausted = false;
+    }
+    if (m_cbResults.size() >= limit || m_cbExhausted) {
+        emit resultsReady(m_cbResults);
+        return;
+    }
+    emit logMessage("Searching Chaturbate: " + (query.isEmpty() ? QStringLiteral("(all rooms)") : query));
+    fetchChaturbatePage();
+}
+
+void SgSearch::fetchChaturbatePage() {
+    QUrl u("https://chaturbate.com/api/ts/roomlist/room-list/");
+    QUrlQuery uq;
+    uq.addQueryItem("limit", QString::number(qMax(20, m_cbLimit)));
+    uq.addQueryItem("offset", QString::number(m_cbResults.size())); // offset paging
+    uq.addQueryItem("genders", "f,m,t,c");                          // all room types
+    if (!m_cbQuery.isEmpty()) uq.addQueryItem("tag", m_cbQuery);    // query = tag filter
+    u.setQuery(uq);
+
+    QNetworkRequest req(u);
+    req.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    req.setRawHeader("X-Requested-With", "XMLHttpRequest"); // the API answers JSON to XHR
+    m_cbReply = m_nam->get(req);
+    connect(m_cbReply, &QNetworkReply::finished, this, &SgSearch::handleChaturbateReply);
+}
+
+void SgSearch::handleChaturbateReply() {
+    QNetworkReply* reply = m_cbReply;
+    m_cbReply = nullptr;
+    reply->deleteLater();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        emit logMessage("Chaturbate search failed: " + reply->errorString());
+        if (!m_cbResults.isEmpty()) emit resultsReady(m_cbResults);
+        else emit failed("Chaturbate search failed: " + reply->errorString());
+        return;
+    }
+
+    const QByteArray bytes = reply->readAll();
+    const QList<SearchResult> page = parseChaturbateJson(bytes);
+    const int totalCount = QJsonDocument::fromJson(bytes).object()["total_count"].toInt();
+    emit logMessage(QString("Chaturbate: %1 room(s) parsed.").arg(page.size()));
+
+    const int before = m_cbResults.size();
+    for (const SearchResult& r : page) {
+        if (r.url.isEmpty() || m_cbSeen.contains(r.url)) continue;
+        m_cbSeen.insert(r.url);
+        m_cbResults.append(r);
+    }
+    // No new rooms, or we've pulled the whole list -> stop paging.
+    if (m_cbResults.size() == before || page.isEmpty()
+        || (totalCount > 0 && m_cbResults.size() >= totalCount))
+        m_cbExhausted = true;
+
+    if (m_cbResults.size() < m_cbLimit && !m_cbExhausted) {
+        fetchChaturbatePage();
+        return;
+    }
+    emit resultsReady(m_cbResults);
+}
+
+QList<SearchResult> SgSearch::parseChaturbateJson(const QByteArray& bytes) const {
+    QList<SearchResult> out;
+    const QJsonArray rooms = QJsonDocument::fromJson(bytes).object()["rooms"].toArray();
+    for (const auto& it : rooms) {
+        const QJsonObject o = it.toObject();
+        const QString user = o["username"].toString();
+        if (user.isEmpty()) continue;
+
+        SearchResult r;
+        r.url = "https://chaturbate.com/" + user + "/"; // the player handles CB live rooms
+        QString subj = o["room_subject"].toString();
+        if (subj.isEmpty()) subj = o["subject"].toString();
+        r.title = subj.isEmpty() ? user : subj;
+        r.channel = user;
+
+        QString img = o["img"].toString();
+        if (img.startsWith("//")) img = "https:" + img;
+        r.thumbnail = img;
+        if (!r.thumbnail.isEmpty()) r.thumbnailReferer = QStringLiteral("https://chaturbate.com/");
+
+        if (o.contains("num_users") && !o["num_users"].isNull())
+            r.viewCount = static_cast<qint64>(o["num_users"].toDouble()); // current viewers
         out.append(r);
     }
     return out;
