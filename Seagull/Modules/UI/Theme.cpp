@@ -287,6 +287,21 @@ void Theme::apply(const QString& name) {
         // edges of the image — same overlay idiom as the chevron, just bigger.
         "QPushButton#photoNavButton { background-color:%7; border:1px solid %6; border-radius:22px; color:%6; font-size:24px; font-weight:bold; }"
         "QPushButton#photoNavButton:hover { background-color:%6; color:%3; border:1px solid %6; }"
+        // EQ tab: Video/Audio pill (same idiom as the Library type pill), preset
+        // dropdown, band captions, and the vertical band + preamp sliders.
+        "QFrame#eqTypePill { background-color:%1; border:1px solid %6; border-radius:17px; }"
+        "QPushButton#eqTypeButton { background:transparent; color:%2; border:none; border-radius:12px; padding:5px 18px; font-weight:bold; }"
+        "QPushButton#eqTypeButton:hover { background-color:%5; }"
+        "QPushButton#eqTypeButton:checked { background-color:%6; color:%3; }"
+        "QComboBox#eqPresetCombo { background-color:%4; color:%2; border:1px solid %6; border-radius:11px; padding:3px 10px; }"
+        "QLabel#eqBandLabel { color:%2; background:transparent; font-size:10px; }"
+        // Bipolar (center-detent) sliders: a plain groove + overlayFg handle, no
+        // fill direction (the handle position conveys the ± gain).
+        "QSlider#eqSlider, QSlider#eqPreampSlider { background:transparent; border:none; }"
+        "QSlider#eqSlider::groove:vertical, QSlider#eqPreampSlider::groove:vertical { border:none; background:%4; width:6px; border-radius:3px; }"
+        "QSlider#eqSlider::add-page:vertical, QSlider#eqPreampSlider::add-page:vertical { border:none; background:%4; border-radius:3px; }"
+        "QSlider#eqSlider::sub-page:vertical, QSlider#eqPreampSlider::sub-page:vertical { border:none; background:%4; border-radius:3px; }"
+        "QSlider#eqSlider::handle:vertical, QSlider#eqPreampSlider::handle:vertical { border:none; background:%6; height:12px; margin:0 -4px; border-radius:6px; }"
     ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line, rgba(c.window, 2));
 
     app->setStyleSheet(ss + cards + overlay);

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 # SemVer single source of truth. PROJECT_VERSION must stay numeric MAJOR.MINOR.PATCH;
 # the pre-release tag (e.g. -beta, or empty for a final release) is appended separately.
-project(Seagull VERSION 0.12.1)
+project(Seagull VERSION 0.13.0)
 set(SEAGULL_VERSION_SUFFIX "-beta")
 
 set(CMAKE_CXX_STANDARD 20)
@@ -41,10 +41,13 @@ add_executable(Seagull
     Modules/UI/Search.cpp
     Modules/UI/Settings.h
     Modules/UI/Settings.cpp
+    Modules/UI/EQ.h
+    Modules/UI/EQ.cpp
     Modules/UI/SetupDialog.h
     Modules/UI/SetupDialog.cpp
     Modules/UI/Widgets/PlayerControls.cpp
     Modules/UI/Widgets/PlayerControls.h
+    Modules/UI/Widgets/ClickSlider.h
     Modules/UI/Widgets/PlayerTitleBar.cpp
     Modules/UI/Widgets/PlayerTitleBar.h
     Modules/UI/Widgets/VideoCard.cpp

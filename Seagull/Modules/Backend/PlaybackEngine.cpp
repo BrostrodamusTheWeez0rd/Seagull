@@ -137,6 +137,59 @@ void PlaybackEngine::createPlayer() {
     m_player->setMouseInput(false);
     m_player->setKeyInput(false);
     hookEvents();
+    applyEqualizerToPlayer(); // a rebuild (e.g. the audio-tap toggle) must not drop the EQ
+}
+
+// --- Equalizer (libVLC graphic EQ; VLC types stay inside this file) ----------
+int PlaybackEngine::equalizerBandCount() {
+    return static_cast<int>(VLC::Equalizer::bandCount());
+}
+
+float PlaybackEngine::equalizerBandFrequency(int band) {
+    return VLC::Equalizer::bandFrequency(static_cast<unsigned>(band));
+}
+
+QStringList PlaybackEngine::equalizerPresetNames() {
+    QStringList names;
+    const unsigned n = VLC::Equalizer::presetCount();
+    for (unsigned i = 0; i < n; ++i)
+        names << QString::fromStdString(VLC::Equalizer::presetName(i));
+    return names;
+}
+
+bool PlaybackEngine::equalizerPresetGains(int presetIndex, QVector<float>& gains, float& preampDb) {
+    if (presetIndex < 0 || static_cast<unsigned>(presetIndex) >= VLC::Equalizer::presetCount())
+        return false;
+    VLC::Equalizer eq(static_cast<unsigned>(presetIndex)); // preset-loading ctor
+    const unsigned bands = VLC::Equalizer::bandCount();
+    gains.resize(static_cast<int>(bands));
+    for (unsigned b = 0; b < bands; ++b)
+        gains[static_cast<int>(b)] = eq.amp(b);
+    preampDb = eq.preamp();
+    return true;
+}
+
+void PlaybackEngine::setEqualizer(const QVector<float>& gains, float preampDb) {
+    if (gains.size() != static_cast<int>(VLC::Equalizer::bandCount())) return; // wrong shape: ignore
+    m_eqGains   = gains;
+    m_eqPreamp  = preampDb;
+    m_eqEnabled = true;
+    applyEqualizerToPlayer();
+}
+
+void PlaybackEngine::disableEqualizer() {
+    m_eqEnabled = false;
+    if (m_player) m_player->unsetEqualizer();
+}
+
+void PlaybackEngine::applyEqualizerToPlayer() {
+    if (!m_player || !m_eqEnabled || m_eqGains.isEmpty()) return;
+    VLC::Equalizer eq;                 // default ctor: all bands zeroed
+    eq.setPreamp(m_eqPreamp);
+    const unsigned bands = VLC::Equalizer::bandCount();
+    for (unsigned b = 0; b < bands && static_cast<int>(b) < m_eqGains.size(); ++b)
+        eq.setAmp(m_eqGains[static_cast<int>(b)], b);
+    m_player->setEqualizer(eq);        // VLC keeps no ref; safe to let eq die after
 }
 
 PlaybackEngine::~PlaybackEngine() {
@@ -189,6 +242,7 @@ void PlaybackEngine::loadLocalFile(const QString& path) {
     // to "any" and keeps hardware decoding.
     m_lastMedia->addOption(":codec=dav1d,any");
     m_player->setMedia(*m_lastMedia);
+    applyEqualizerToPlayer(); // re-assert EQ for the new media (before play())
 }
 
 void PlaybackEngine::loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint64 startMs,
@@ -238,6 +292,7 @@ void PlaybackEngine::loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint
         m_lastMedia->addOption(QString(":start-time=%1").arg(startMs / 1000.0).toUtf8().constData());
 
     m_player->setMedia(*m_lastMedia);
+    applyEqualizerToPlayer(); // re-assert EQ for the new media (before play())
 }
 
 // Writes a minimal HLS master playlist that ties a video-only chunklist to an
@@ -266,6 +321,7 @@ void PlaybackEngine::reloadLastMedia() {
     if (!m_player || !m_lastMedia) return;
     m_player->stop();
     m_player->setMedia(*m_lastMedia);
+    applyEqualizerToPlayer(); // keep EQ across replay / shorts-loop reloads
 }
 
 bool PlaybackEngine::hasMedia() const { return m_lastMedia != nullptr; }

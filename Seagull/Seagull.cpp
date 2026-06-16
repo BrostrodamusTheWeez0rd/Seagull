@@ -119,11 +119,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);
     searchModule = new Search(searchWorker, spellChecker);
     settingsModule = new Settings();
+    eqModule = new EQ();
 
     mainWindow->addTab(libraryModule, "Library");
     mainWindow->addTab(explorerModule, "File Explorer");
     mainWindow->addTab(queueModule, "Queue");
     mainWindow->addTab(searchModule, "Search");
+    mainWindow->addTab(eqModule, "EQ");
     mainWindow->addTab(settingsModule, "Settings");
 
     // --- Description tab + Share button (replaced the banner's Info/Share) ---
@@ -205,6 +207,18 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // per-tab in wireSearchTab (there can be several Search tabs).
     connect(settingsModule, &Settings::cardWidthChanged, libraryModule, &MediaLibrary::setCardWidth);
     connect(settingsModule, &Settings::visualizerSettingsChanged, videoPlayer, &VideoPlayer::applyVisualizerSettings);
+
+    // EQ tab live edits: apply to the player ONLY when the playing media's kind
+    // matches the edited content type. Otherwise the EQ tab has already persisted it
+    // (config Eq/<type>/*) and VideoPlayer auto-applies the saved curve when that kind
+    // next plays — so editing the Audio EQ never disturbs a currently-playing video.
+    connect(eqModule, &EQ::eqChanged, this,
+        [this](EqContentType type, const QVector<float>& gains, float preampDb) {
+            const MediaKind k = videoPlayer->currentMediaKind();
+            const bool matches = (type == EqContentType::Audio && k == MediaKind::Audio)
+                              || (type == EqContentType::Video && k == MediaKind::Video);
+            if (matches) videoPlayer->applyEqualizer(gains, preampDb);
+        });
 
     // Multiple-instance tabs. The primary Search + File Explorer go through the same
     // per-tab wiring the duplicates use; register them as duplicable so the "+" menu

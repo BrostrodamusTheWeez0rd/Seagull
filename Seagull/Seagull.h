@@ -13,6 +13,7 @@
 #include "Modules/UI/MediaLibrary.h"
 #include "Modules/UI/Search.h"
 #include "Modules/UI/Settings.h"
+#include "Modules/UI/EQ.h"
 #include "Modules/Backend/SgYtDlp.h"
 #include "Modules/Backend/SgSearch.h"
 #include "Modules/Backend/SgSpellCheck.h"
@@ -61,6 +62,7 @@ private:
     FileExplorer* explorerModule;  // the file-manager tab (was "Library")
     Search* searchModule;
     Settings* settingsModule;
+    EQ* eqModule;                  // the EQ tab (10-band equalizer, per-kind presets)
     QTextBrowser* descriptionView; // the dynamic "Description" tab's page
     ActiveSource activeSource = ActiveSource::None;
 

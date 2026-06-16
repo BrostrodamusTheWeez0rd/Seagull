@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QPoint>
 #include <QList>
+#include <QVector>
 #include <QElapsedTimer>
 
 class QFrame;
@@ -51,6 +52,15 @@ public:
     void changeVolume(int delta);      // up/down arrows: nudge volume, clamped 0..100
     void toggleMute();                 // M key: toggle mute
     bool hasActiveMedia() const;       // is there media loaded to act on?
+
+    // Equalizer: the EQ tab edits + persists per-kind presets; these apply them.
+    // applyEqualizer/disableEqualizer forward to the engine (used for a live edit
+    // when the playing kind matches the edited type). currentMediaKind() lets the
+    // orchestrator gate those live edits; the saved EQ for the current media is
+    // applied automatically on play (see applyEqualizerForCurrentKind).
+    void applyEqualizer(const QVector<float>& gains, float preampDb);
+    void disableEqualizer();
+    MediaKind currentMediaKind() const { return m_kind; }
     qint64 mediaPosition() const;      // current play position (ms), for the SMTC timeline
     qint64 mediaDuration() const;      // media length (ms), for the SMTC timeline
 
@@ -168,6 +178,7 @@ private:
     void onPlaybackError();
     void showStreamFailed(); // pin the "stream failed — replay" message + ended mode
     void closePlayer();
+    void applyEqualizerForCurrentKind(); // load + apply Eq/<Audio|Video>/* for m_kind on play
 
     // Content kind + its presentation helpers.
     MediaKind m_kind = MediaKind::Video;

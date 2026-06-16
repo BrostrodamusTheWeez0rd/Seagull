@@ -26,12 +26,8 @@ Seagull/Tools/*
 # But keep the .gitkeep file so the folder itself stays in Git
 !Seagull/Tools/.gitkeep
 /CLAUDE.md
-*.48debf1c5d77
-/Seagull/Seagull.cpp.tmp.2520.141dd4716210
-/CLAUDE.md.tmp.2520.42cd7a7ec0df
 
 # Local release packaging tool + its output zips
 /pack-release.bat
 /Seagull-*-win64.zip
 /Seagull.zip
-/amend-msg.txt

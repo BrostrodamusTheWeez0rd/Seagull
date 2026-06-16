@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QUrl>
 #include <QString>
+#include <QStringList>
+#include <QVector>
 #include <QByteArray>
 #include <QElapsedTimer>
 #include <memory>
@@ -63,6 +65,21 @@ public:
     void setAudioTap(bool on);
     bool audioTapActive() const { return m_tapOn; }
 
+    // --- Equalizer (neutral API; no vlcpp type leaks out) ---------------------
+    // gains: one dB value per band (size must equal equalizerBandCount(), else the
+    // call is ignored). gain/preamp clamp to ±20 dB inside VLC. Applies live + to
+    // subsequent media, and is re-applied automatically after the player is rebuilt
+    // (audio-tap toggle) and after each setMedia, so it survives both.
+    void setEqualizer(const QVector<float>& gains, float preampDb);
+    void disableEqualizer();
+    bool equalizerEnabled() const { return m_eqEnabled; }
+
+    // Static descriptors for building the UI (band labels) + VLC's built-in presets.
+    static int          equalizerBandCount();
+    static float        equalizerBandFrequency(int band);   // Hz
+    static QStringList  equalizerPresetNames();
+    static bool         equalizerPresetGains(int presetIndex, QVector<float>& gains, float& preampDb);
+
 signals:
     void endReached();
     void paused();
@@ -113,6 +130,13 @@ private:
     double        m_peakBass    = 0.0;
     double        m_peakMid     = 0.0;
     double        m_peakTreble  = 0.0;
+
+    // Equalizer state, kept here so it can be re-applied after the player is rebuilt
+    // (setAudioTap toggle) and after each setMedia. m_eqGains empty => never set.
+    void           applyEqualizerToPlayer();
+    QVector<float> m_eqGains;
+    float          m_eqPreamp  = 0.0f;
+    bool           m_eqEnabled = false;
 };
 
 #endif // PLAYBACKENGINE_H

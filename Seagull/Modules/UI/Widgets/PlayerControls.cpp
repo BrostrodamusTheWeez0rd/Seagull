@@ -1,5 +1,6 @@
 #include "PlayerControls.h"
 #include "../../Backend/PlaybackEngine.h"
+#include "ClickSlider.h"
 #include <QFrame>
 #include <QStyle>
 #include <QIcon>
@@ -26,26 +27,7 @@
 #include <cmath>
 
 namespace {
-// A slider that jumps to the click position (and lets you keep dragging from
-// there), instead of QSlider's default page-step on groove clicks. Works for the
-// horizontal seeker and the vertical volume bar (top = max via upsideDown).
-class ClickSlider : public QSlider {
-public:
-    using QSlider::QSlider;
-protected:
-    void mousePressEvent(QMouseEvent* e) override {
-        if (e->button() == Qt::LeftButton && maximum() > minimum()) {
-            const bool vertical = orientation() == Qt::Vertical;
-            const int pos  = vertical ? e->pos().y() : e->pos().x();
-            const int span = vertical ? height() : width();
-            const int v = QStyle::sliderValueFromPosition(
-                minimum(), maximum(), pos, span, vertical);
-            setValue(v); // moves the handle under the cursor so the base class
-            // then enters its normal drag, giving click-then-drag scrubbing.
-        }
-        QSlider::mousePressEvent(e);
-    }
-};
+// ClickSlider (jump-to-click) now lives in Widgets/ClickSlider.h, shared with the EQ tab.
 
 constexpr int kBaseWidth = 500; // control bar width with the cycle triangles collapsed
 

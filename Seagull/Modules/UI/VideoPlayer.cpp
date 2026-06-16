@@ -355,6 +355,7 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     m_stopped = false;
     m_shortsMode = false;  // new media — the orchestrator re-enables for a short
     engine->setAudioTap(m_kind == MediaKind::Audio); // tap audio for the visualizer
+    applyEqualizerForCurrentKind(); // this kind's saved EQ, before the media loads
     emit playbackStarted(); // host shows + sizes the video area
 
     engine->setOutputWindow((void*)videoWidget->winId());
@@ -407,6 +408,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     m_kind = rawUrl.host().contains(QStringLiteral("soundcloud.com"), Qt::CaseInsensitive)
                  ? MediaKind::Audio : MediaKind::Video;
     engine->setAudioTap(m_kind == MediaKind::Audio); // tap audio for the visualizer
+    applyEqualizerForCurrentKind(); // this kind's saved EQ, before the media loads
 
     // New media — clear the old poster; the probe/resolve brings a fresh thumbnail.
     m_posterPixmap = QPixmap();
@@ -708,6 +710,34 @@ void VideoPlayer::changeVolume(int delta) {
 void VideoPlayer::toggleMute() {
     if (playerControls) playerControls->toggleMute();
     showOSD();
+}
+
+void VideoPlayer::applyEqualizer(const QVector<float>& gains, float preampDb) {
+    if (engine) engine->setEqualizer(gains, preampDb);
+}
+
+void VideoPlayer::disableEqualizer() {
+    if (engine) engine->disableEqualizer();
+}
+
+void VideoPlayer::applyEqualizerForCurrentKind() {
+    // Apply the saved EQ for whatever's playing. The EQ tab owns the config; we just
+    // read + push it so a freshly started track reflects its kind's curve even if the
+    // EQ tab was never opened. Photo / disabled / a band-count mismatch => no EQ.
+    if (!engine) return;
+    if (m_kind == MediaKind::Photo) { engine->disableEqualizer(); return; }
+    const QString ns = (m_kind == MediaKind::Audio) ? QStringLiteral("Eq/Audio/")
+                                                    : QStringLiteral("Eq/Video/");
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    if (!cfg.value(ns + "Enabled", false).toBool()) { engine->disableEqualizer(); return; }
+    const float preamp = cfg.value(ns + "Preamp", 0.0).toFloat();
+    QVector<float> gains;
+    const QStringList parts = cfg.value(ns + "Gains").toString().split(',', Qt::SkipEmptyParts);
+    for (const QString& p : parts) gains << p.toFloat();
+    if (gains.size() == PlaybackEngine::equalizerBandCount())
+        engine->setEqualizer(gains, preamp);
+    else
+        engine->disableEqualizer();
 }
 
 bool VideoPlayer::eventFilter(QObject* watched, QEvent* event) {
