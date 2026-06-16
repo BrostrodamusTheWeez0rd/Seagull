@@ -11,6 +11,20 @@ Anything `yt-dlp` supports - hundreds of video and live-streaming sites. If a li
 **Does Seagull phone home or track me?**
 No analytics or accounts. It makes network requests only for what you ask it to do (resolving/streaming/downloading the links you give it, search queries you type) and to fetch or update its external tools at startup. That tool check can be turned off (see below).
 
+## Installing & launching
+
+**It won't start - Windows says a DLL is missing (e.g. `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, `MSVCP140.dll`).**
+Seagull is built with the Microsoft Visual C++ runtime, which isn't present on every Windows install. Run the included **`vc_redist.x64.exe`** (it sits next to `Seagull.exe`), then launch Seagull again. It's a one-time, Microsoft-signed install; a reboot may be requested.
+
+**Nothing happens when I double-click it.**
+Usually the missing-runtime case above (a missing runtime can fail silently) - run `vc_redist.x64.exe` first. Otherwise, make sure the whole folder is intact: `Seagull.exe` needs the Qt and VLC DLLs and the `plugins/` folder beside it, so run it in place rather than moving the exe out on its own.
+
+**"Windows protected your PC" / SmartScreen blocks it.**
+Seagull isn't code-signed yet, so SmartScreen warns on first launch. Click **More info → Run anyway**. You can cross-check what you downloaded against the checksums on the releases page.
+
+**My antivirus flagged Seagull or something in `Tools/`.**
+This is a common false positive for media downloaders: `yt-dlp.exe` and `ffmpeg.exe` are legitimate, widely used tools that some scanners flag by heuristics. They're downloaded from their official sources and verified by SHA-256. If your AV quarantines them, restore them and add an exclusion for Seagull's folder, or the tool downloads (and updates) will keep failing.
+
 ## Playback
 
 **The video won't play / shows a black screen.**
