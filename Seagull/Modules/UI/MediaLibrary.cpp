@@ -469,9 +469,11 @@ void MediaLibrary::positionTypePill() {
 
 void MediaLibrary::positionSearch() {
     // Top-right, just inside the always-on vertical scrollbar so it never overlaps.
-    const int sb = cardsArea->verticalScrollBar()->isVisible()
-                       ? cardsArea->verticalScrollBar()->width() : 0;
-    const int rightEdge = width() - kPillTopMargin - sb;
+    // Reserve the scrollbar width even when isVisible() briefly reports false (the
+    // bar is AlwaysOn), and keep a couple px clear so it never kisses the scrollbar.
+    QScrollBar* vsb = cardsArea->verticalScrollBar();
+    const int sb = vsb->isVisible() ? vsb->width() : vsb->sizeHint().width();
+    const int rightEdge = width() - kPillTopMargin - sb - 2;
     constexpr int gap = 6;
 
     // Sort sits at the far right; the magnifier (and its expanding bar) to its left.

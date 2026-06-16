@@ -6,6 +6,7 @@
 #include <QList>
 #include <QSet>
 #include <QStringList>
+#include <QElapsedTimer>
 #include "../Backend/SgSearch.h"  // SearchResult (full definition needed for m_allResults)
 
 class QLineEdit;
@@ -14,6 +15,7 @@ class QPushButton;
 class QScrollArea;
 class QLabel;
 class QFrame;
+class QMenu;
 class QNetworkAccessManager;
 class QMovie;
 class QCompleter;
@@ -23,6 +25,7 @@ class FlowLayout;
 class VideoCard;
 class SgSearch;
 class SgSpellCheck;
+class SpellCheckLineEdit;
 
 // The Search tab. Browser-style chrome: back / forward / refresh, a site bar,
 // a Go button, and the search-query bar underneath. A bottom border on the
@@ -67,9 +70,13 @@ protected:
     void showEvent(QShowEvent*  event) override;
     void hideEvent(QHideEvent*  event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void changeEvent(QEvent* event) override; // re-tint the magnifier/sort icons on theme change
 
 private:
     enum class FilterMode { All, Videos, Shorts };
+    // Grid ordering, mirroring the Library tab's sort. Relevance keeps YouTube's
+    // ranking (the arrival order, via SearchResult::seq).
+    enum class SortMode { Relevance, NameAsc, NameDesc, Newest, Oldest };
     // Search results vs. a single channel's video page. Channel pages are reached
     // and left with the same back/forward buttons (native-browser feel).
     enum class ViewMode { Search, Channel };
@@ -113,6 +120,18 @@ private:
     void positionFilterPill();
     void updateFilterPillVisibility();
 
+    // Top-right magnifier + sort controls (the Library tab's chips, mirrored here
+    // with the same auto-hide as the filter pill).
+    void positionTopControls();     // place the magnifier + sort at the grid's top-right
+    void toggleResultSearch();      // magnifier: reveal / collapse the title-filter bar
+    void tintResultSearchIcon();    // recolour the magnifier glyph to the theme text
+    void tintResultSortIcon();      // recolour the sort glyph to the theme text
+    void showResultSortMenu();      // drop the ordering menu under the sort button
+    void applySortMode(SortMode mode); // remember the choice, then re-sort + rebuild
+    void applySort();               // stable-reorder m_allResults by m_sortMode; keep m_playingIndex
+    bool matchesQuery(const SearchResult& r) const; // title contains the filter text
+    bool shows(const SearchResult& r) const;        // passesFilter AND matchesQuery (card visibility)
+
     static constexpr int kPillTopMargin = 8;
 
     // Chrome row
@@ -130,6 +149,19 @@ private:
     QPushButton* m_filterVideosBtn;
     QPushButton* m_filterShortsBtn;
     QTimer*      pillHoverTimer;
+
+    // Top-right chips over the grid: a magnifier that reveals a title filter, and a
+    // sort button. Children of resultsArea (like the pill) so they stack above the
+    // viewport; same auto-hide rules.
+    QPushButton*        m_resultSearchBtn = nullptr;
+    SpellCheckLineEdit* m_resultSearchBar = nullptr; // revealed on click; filters loaded results by title
+    QPushButton*        m_resultSortBtn   = nullptr;
+    QMenu*              m_resultSortMenu  = nullptr;
+    bool                m_resultSearchOpen = false;
+    QElapsedTimer       m_resultSearchOpenedClock; // grace after the click before auto-collapse
+    QString             m_resultQuery;             // current title filter (lowercased on use)
+    SortMode            m_sortMode  = SortMode::Newest; // loaded from config in the ctor
+    int                 m_seqCounter = 0;          // running arrival index stamped onto each result
 
     // Channel page header (avatar + name + subscribers), shown above the grid in
     // channel view, hidden in search view. Direct child of this widget's layout.

@@ -35,8 +35,18 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QSvgRenderer>
+#include <QMenu>
+#include <QAction>
+#include <QActionGroup>
+#include <QIcon>
+#include <QPixmap>
+#include <QPalette>
+#include <algorithm>
 
-namespace { constexpr int kGridSpacing = 12; }
+namespace {
+constexpr int kGridSpacing = 12;
+constexpr int kSearchGraceMs = 600; // keep the filter bar up briefly after the magnifier click
+}
 
 Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     : QWidget(parent), m_search(searchWorker), m_spell(spell) {
@@ -191,10 +201,68 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     }
     m_filterVideosBtn->setChecked(true); // always launch on Videos
 
-    // Reserve top space in the flow layout so the first card row clears the pill.
-    // Done after sizeHint() is meaningful (pill is fully laid out).
+    // --- Top-right magnifier + sort chips (mirroring the Library tab) ---
+    // Children of resultsArea, like the pill, so raise() keeps them above the
+    // viewport. Reuse the Library object names so the theme styles them identically.
+    m_resultSearchBtn = new QPushButton(resultsArea);
+    m_resultSearchBtn->setObjectName("librarySearchButton");
+    m_resultSearchBtn->setCursor(Qt::PointingHandCursor);
+    m_resultSearchBtn->setFixedSize(34, 34);
+    m_resultSearchBtn->setToolTip("Filter these results");
+    connect(m_resultSearchBtn, &QPushButton::clicked, this, &Search::toggleResultSearch);
+
+    m_resultSearchBar = new SpellCheckLineEdit(m_spell, resultsArea);
+    m_resultSearchBar->setObjectName("librarySearchBar");
+    m_resultSearchBar->setPlaceholderText("Filter\xE2\x80\xA6");
+    m_resultSearchBar->setClearButtonEnabled(true);
+    m_resultSearchBar->setFixedWidth(180);
+    m_resultSearchBar->hide();
+    connect(m_resultSearchBar, &QLineEdit::textChanged, this, [this](const QString& t) {
+        m_resultQuery = t;
+        rebuildCards();
+    });
+
+    m_resultSortBtn = new QPushButton(resultsArea);
+    m_resultSortBtn->setObjectName("librarySearchButton");
+    m_resultSortBtn->setCursor(Qt::PointingHandCursor);
+    m_resultSortBtn->setFixedSize(34, 34);
+    m_resultSortBtn->setToolTip("Sort these results");
+    connect(m_resultSortBtn, &QPushButton::clicked, this, &Search::showResultSortMenu);
+    tintResultSearchIcon();
+    tintResultSortIcon();
+
+    // Persisted ordering (default Newest first), loaded before the menu so the
+    // right item starts checked.
+    {
+        QSettings sortCfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        m_sortMode = static_cast<SortMode>(qBound(0,
+            sortCfg.value("Search/SortMode", static_cast<int>(SortMode::Newest)).toInt(),
+            static_cast<int>(SortMode::Oldest)));
+    }
+
+    m_resultSortMenu = new QMenu(this);
+    auto* sortGroup = new QActionGroup(m_resultSortMenu);
+    sortGroup->setExclusive(true);
+    const struct { const char* label; SortMode mode; } orderings[] = {
+        { "Relevance",              SortMode::Relevance },
+        { "Name (A\xE2\x80\x93" "Z)", SortMode::NameAsc },
+        { "Name (Z\xE2\x80\x93" "A)", SortMode::NameDesc },
+        { "Newest",                 SortMode::Newest },
+        { "Oldest",                 SortMode::Oldest },
+    };
+    for (const auto& o : orderings) {
+        QAction* a = m_resultSortMenu->addAction(QString::fromUtf8(o.label));
+        a->setCheckable(true);
+        a->setChecked(o.mode == m_sortMode);
+        sortGroup->addAction(a);
+        const SortMode mode = o.mode;
+        connect(a, &QAction::triggered, this, [this, mode] { applySortMode(mode); });
+    }
+
+    // Reserve top space in the flow layout so the first card row clears the pill and
+    // the (taller) chips. Done after sizeHint() is meaningful (pill is laid out).
     m_filterPill->adjustSize();
-    const int pillH = m_filterPill->sizeHint().height();
+    const int pillH = qMax(m_filterPill->sizeHint().height(), m_resultSearchBtn->height());
     resultsFlow->setContentsMargins(10, pillH + 2 * kPillTopMargin, 10, 0);
 
     pillHoverTimer = new QTimer(this);
@@ -297,6 +365,7 @@ void Search::hideEvent(QHideEvent* event) {
 void Search::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     m_filterPill->raise(); // keep above the viewport after any layout pass
+    positionTopControls(); // right-anchored chips track the new width
 }
 
 void Search::positionFilterPill() {
@@ -304,15 +373,109 @@ void Search::positionFilterPill() {
     // Coordinates are relative to resultsArea (the pill's parent).
     m_filterPill->move(10, kPillTopMargin);
     m_filterPill->raise();
+    positionTopControls();
+}
+
+void Search::positionTopControls() {
+    if (!m_resultSortBtn) return;
+    // Top-right, just inside the always-on vertical scrollbar (same as Library).
+    QScrollBar* vsb = resultsArea->verticalScrollBar();
+    const int sb = vsb->isVisible() ? vsb->width() : vsb->sizeHint().width();
+    const int rightEdge = resultsArea->width() - kPillTopMargin - sb - 2;
+    constexpr int gap = 6;
+
+    // Sort at the far right; the magnifier (and its expanding bar) to its left.
+    m_resultSortBtn->move(rightEdge - m_resultSortBtn->width(), kPillTopMargin);
+    m_resultSortBtn->raise();
+
+    const int searchRight = rightEdge - m_resultSortBtn->width() - gap;
+    m_resultSearchBtn->move(searchRight - m_resultSearchBtn->width(), kPillTopMargin);
+    m_resultSearchBtn->raise();
+    m_resultSearchBar->move(searchRight - m_resultSearchBar->width(),
+        kPillTopMargin + (m_resultSearchBtn->height() - m_resultSearchBar->height()) / 2);
+    m_resultSearchBar->raise();
 }
 
 void Search::updateFilterPillVisibility() {
-    if (m_viewMode == ViewMode::Channel) { m_filterPill->hide(); return; } // no pill on a channel page
+    if (m_viewMode == ViewMode::Channel) { // no chrome on a channel page
+        m_filterPill->hide();
+        m_resultSearchBtn->hide();
+        m_resultSearchBar->hide();
+        m_resultSortBtn->hide();
+        return;
+    }
     const bool atTop = (resultsArea->verticalScrollBar()->value() <= 0);
-    // Zone is relative to resultsArea (the pill's parent).
-    const QRect zone(0, 0, resultsArea->width(), m_filterPill->height() + 2 * kPillTopMargin);
+    // Zone is relative to resultsArea (the chips' parent); tall enough to cover the
+    // chips (taller than the pill) so hovering them doesn't fall outside and hide them.
+    const int stripH = qMax(m_filterPill->height(), m_resultSortBtn->height());
+    const QRect zone(0, 0, resultsArea->width(), stripH + 2 * kPillTopMargin);
     const bool hovered = zone.contains(resultsArea->mapFromGlobal(QCursor::pos()));
-    m_filterPill->setVisible(atTop || hovered);
+    const bool show = atTop || hovered;
+    m_filterPill->setVisible(show);
+    m_resultSortBtn->setVisible(show);
+
+    // The filter bar takes the magnifier's place while it's in use (focused, holding
+    // a query, or just opened). Otherwise it collapses back to the magnifier.
+    if (m_resultSearchOpen) {
+        const bool inUse = m_resultSearchBar->hasFocus()
+                        || !m_resultQuery.trimmed().isEmpty()
+                        || (m_resultSearchOpenedClock.isValid() && m_resultSearchOpenedClock.elapsed() < kSearchGraceMs);
+        if (inUse) {
+            m_resultSearchBtn->hide();
+            m_resultSearchBar->setVisible(true);
+            m_resultSearchBar->raise();
+            return;
+        }
+        m_resultSearchOpen = false;
+        m_resultSearchBar->clear(); // resets the filter so it reopens blank
+    }
+    m_resultSearchBar->hide();
+    m_resultSearchBtn->setVisible(show);
+}
+
+void Search::toggleResultSearch() {
+    m_resultSearchOpen = !m_resultSearchOpen;
+    if (m_resultSearchOpen) {
+        m_resultSearchOpenedClock.restart();
+        positionTopControls();
+        m_resultSearchBar->show();
+        m_resultSearchBar->raise();
+        m_resultSearchBar->setFocus(Qt::OtherFocusReason);
+    } else {
+        m_resultSearchBar->clear(); // drops the filter
+        m_resultSearchBar->hide();
+    }
+    updateFilterPillVisibility();
+}
+
+void Search::tintResultSearchIcon() {
+    if (!m_resultSearchBtn) return;
+    const QSize sz(18, 18);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/search.svg")).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), palette().color(QPalette::WindowText));
+    p.end();
+    m_resultSearchBtn->setIcon(QIcon(pm));
+    m_resultSearchBtn->setIconSize(sz);
+}
+
+void Search::tintResultSortIcon() {
+    if (!m_resultSortBtn) return;
+    const QSize sz(18, 18);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/sort.svg")).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), palette().color(QPalette::WindowText));
+    p.end();
+    m_resultSortBtn->setIcon(QIcon(pm));
+    m_resultSortBtn->setIconSize(sz);
+}
+
+void Search::showResultSortMenu() {
+    m_resultSortMenu->popup(m_resultSortBtn->mapToGlobal(QPoint(0, m_resultSortBtn->height())));
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +649,7 @@ void Search::playAdjacentResult(int delta) {
 
     const int step = (delta > 0) ? 1 : -1;
     int i = m_playingIndex + step;
-    while (i >= 0 && i < m_allResults.size() && !passesFilter(m_allResults[i]))
+    while (i >= 0 && i < m_allResults.size() && !shows(m_allResults[i]))
         i += step;
 
     if (i < 0) return; // top of the feed — nothing before the first result
@@ -511,7 +674,7 @@ void Search::playResultAt(int index) {
     // among the filtered results.
     int cardPos = 0;
     for (int j = 0; j < index; ++j)
-        if (passesFilter(m_allResults[j])) ++cardPos;
+        if (shows(m_allResults[j])) ++cardPos;
     if (QLayoutItem* it = resultsFlow->itemAt(cardPos))
         if (QWidget* w = it->widget()) resultsArea->ensureWidgetVisible(w);
 }
@@ -543,6 +706,7 @@ void Search::ingestResults(const QList<SearchResult>& results) {
         return;
     }
 
+    const int before = m_allResults.size();
     for (int i = m_shownCount; i < results.size(); ++i) {
         // YouTube search returns the same video in multiple entries (shelves,
         // re-paged results); skip anything whose URL we've already shown.
@@ -551,10 +715,23 @@ void Search::ingestResults(const QList<SearchResult>& results) {
             if (m_seenUrls.contains(url)) continue;
             m_seenUrls.insert(url);
         }
-        m_allResults.append(results[i]);
-        if (passesFilter(results[i])) addCard(results[i]);
+        SearchResult r = results[i];
+        r.seq = m_seqCounter++; // arrival rank (the "Relevance" order)
+        m_allResults.append(r);
     }
     m_shownCount = results.size();
+
+    // Channel pages show their natural order (the sort chips are hidden there).
+    if (m_viewMode == ViewMode::Search && m_sortMode != SortMode::Relevance) {
+        // A non-default sort means the new arrivals have to merge into the order, so
+        // re-sort and rebuild the grid wholesale.
+        applySort();
+        rebuildCards();
+    } else {
+        // Relevance: the new arrivals belong at the end — just append their cards.
+        for (int i = before; i < m_allResults.size(); ++i)
+            if (shows(m_allResults[i])) addCard(m_allResults[i]);
+    }
 
     if (m_shownCount >= kMaxResults) m_endReached = true;
 
@@ -601,6 +778,71 @@ bool Search::passesFilter(const SearchResult& r) const {
     }
 }
 
+bool Search::matchesQuery(const SearchResult& r) const {
+    const QString q = m_resultQuery.trimmed();
+    if (q.isEmpty()) return true;
+    return r.title.contains(q, Qt::CaseInsensitive)
+        || r.channel.contains(q, Qt::CaseInsensitive);
+}
+
+bool Search::shows(const SearchResult& r) const {
+    return passesFilter(r) && matchesQuery(r);
+}
+
+void Search::applySortMode(SortMode mode) {
+    if (mode == m_sortMode) return;
+    m_sortMode = mode;
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    cfg.setValue("Search/SortMode", static_cast<int>(mode));
+    applySort();
+    rebuildCards();
+}
+
+void Search::applySort() {
+    // Keep the playing item under m_playingIndex after the reorder.
+    const QString playingUrl = (m_playingIndex >= 0 && m_playingIndex < m_allResults.size())
+        ? m_allResults[m_playingIndex].url : QString();
+
+    auto& v = m_allResults;
+    switch (m_sortMode) {
+    case SortMode::Relevance:
+        std::stable_sort(v.begin(), v.end(),
+            [](const SearchResult& a, const SearchResult& b) { return a.seq < b.seq; });
+        break;
+    case SortMode::NameAsc:
+        std::stable_sort(v.begin(), v.end(), [](const SearchResult& a, const SearchResult& b) {
+            const int c = a.title.compare(b.title, Qt::CaseInsensitive);
+            return c != 0 ? c < 0 : a.seq < b.seq;
+        });
+        break;
+    case SortMode::NameDesc:
+        std::stable_sort(v.begin(), v.end(), [](const SearchResult& a, const SearchResult& b) {
+            const int c = a.title.compare(b.title, Qt::CaseInsensitive);
+            return c != 0 ? c > 0 : a.seq < b.seq;
+        });
+        break;
+    case SortMode::Newest:
+    case SortMode::Oldest: {
+        const bool newest = (m_sortMode == SortMode::Newest);
+        std::stable_sort(v.begin(), v.end(), [newest](const SearchResult& a, const SearchResult& b) {
+            const bool ka = a.timestamp >= 0, kb = b.timestamp >= 0;
+            if (ka != kb) return ka;                 // dated results sort ahead of undated
+            if (!ka)      return a.seq < b.seq;       // both undated: keep relevance order
+            if (a.timestamp != b.timestamp)
+                return newest ? a.timestamp > b.timestamp : a.timestamp < b.timestamp;
+            return a.seq < b.seq;
+        });
+        break;
+    }
+    }
+
+    if (!playingUrl.isEmpty()) {
+        m_playingIndex = -1;
+        for (int i = 0; i < v.size(); ++i)
+            if (v[i].url == playingUrl) { m_playingIndex = i; break; }
+    }
+}
+
 void Search::setFilterMode(FilterMode mode) {
     if (m_filterMode == mode) return;
     const bool crossesShorts = (m_filterMode == FilterMode::Shorts)
@@ -639,7 +881,7 @@ void Search::rebuildCards() {
         delete item;
     }
     for (const SearchResult& r : m_allResults)
-        if (passesFilter(r)) addCard(r);
+        if (shows(r)) addCard(r);
     applyCardWidth();
 }
 
@@ -758,6 +1000,25 @@ void Search::clearResults() {
     m_seenUrls.clear();
     m_playingIndex = -1;
     m_advancePending = false;
+    m_seqCounter = 0;
+
+    // Drop the title filter for the fresh result set (without firing a rebuild).
+    m_resultQuery.clear();
+    m_resultSearchOpen = false;
+    if (m_resultSearchBar) {
+        m_resultSearchBar->blockSignals(true);
+        m_resultSearchBar->clear();
+        m_resultSearchBar->blockSignals(false);
+        m_resultSearchBar->hide();
+    }
+}
+
+void Search::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
+        tintResultSearchIcon();
+        tintResultSortIcon();
+    }
 }
 
 void Search::setStatus(const QString& text, bool busy) {
@@ -811,7 +1072,9 @@ void Search::setCardWidth(int targetWidth) {
 }
 
 bool Search::eventFilter(QObject* obj, QEvent* event) {
-    if (obj == resultsArea->viewport() && event->type() == QEvent::Resize)
+    if (obj == resultsArea->viewport() && event->type() == QEvent::Resize) {
         applyCardWidth();
+        positionTopControls(); // the scrollbar's presence shifts the right edge
+    }
     return QWidget::eventFilter(obj, event);
 }
