@@ -79,11 +79,14 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     forwardBtn->setEnabled(false);
     refreshBtn->setEnabled(false);
 
-    siteBar = new QLineEdit();
+    siteBar = new QComboBox();
     siteBar->setObjectName("searchSiteBar");
-    siteBar->setPlaceholderText("Site \xe2\x80\x94 e.g. youtube");
-    siteBar->setText("youtube");
-    siteBar->setClearButtonEnabled(true);
+    siteBar->setEditable(true);                      // type a site OR pick from the dropdown
+    siteBar->setInsertPolicy(QComboBox::NoInsert);   // typing a query never adds junk items
+    siteBar->addItems({ "YouTube", "PornHub" });     // the sites yt-dlp can search for us
+    siteBar->setCurrentText("YouTube");
+    siteBar->lineEdit()->setPlaceholderText("Site \xe2\x80\x94 e.g. youtube");
+    siteBar->setToolTip("Type or pick a site to search.");
 
     goBtn = new QPushButton(QStringLiteral("Go"));
     goBtn->setObjectName("searchGoButton");
@@ -304,7 +307,11 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     connect(queryBar->lineEdit(), &QLineEdit::returnPressed, this, &Search::performSearch);
     // Picking a history entry from the arrow dropdown searches it right away.
     connect(queryBar, &QComboBox::textActivated, this, &Search::performSearch);
-    connect(siteBar,  &QLineEdit::returnPressed, this, [this]() { queryBar->setFocus(); });
+    // Switching site updates the query bar's prompt to name the site being searched.
+    connect(siteBar, &QComboBox::currentTextChanged, this, [this](const QString&) { updateQueryPlaceholder(); });
+    // Enter in the site box jumps to the query so you can just type and search.
+    connect(siteBar->lineEdit(), &QLineEdit::returnPressed, this, [this]() { queryBar->setFocus(); });
+    updateQueryPlaceholder(); // initial prompt ("Search YouTube")
 
     connect(backBtn, &QPushButton::clicked, this, [this]() {
         if (m_navIndex > 0) navigateTo(m_navIndex - 1);
@@ -411,7 +418,8 @@ void Search::updateFilterPillVisibility() {
     const QRect zone(0, 0, resultsArea->width(), stripH + 2 * kPillTopMargin);
     const bool hovered = zone.contains(resultsArea->mapFromGlobal(QCursor::pos()));
     const bool show = atTop || hovered;
-    m_filterPill->setVisible(show);
+    // The Videos/Shorts pill is YouTube-only; other sites have no such split.
+    m_filterPill->setVisible(show && m_currentSite == SgSearch::Site::YouTube);
     m_resultSortBtn->setVisible(show);
 
     // The filter bar takes the magnifier's place while it's in use (focused, holding
@@ -495,8 +503,15 @@ void Search::navigateTo(int index) {
     m_navIndex = index;
     const NavEntry& e = m_navHistory[index];
     queryBar->setCurrentText(e.label);
-    if (e.kind == NavEntry::Channel) openChannelUrl(e.target, e.label);
-    else                             startSearch(e.target);
+    if (e.kind == NavEntry::Channel) {
+        openChannelUrl(e.target, e.label);
+    } else {
+        // Restore the site this query ran against so startSearch routes correctly.
+        siteBar->blockSignals(true);
+        siteBar->setCurrentText(e.site == SgSearch::Site::PornHub ? "PornHub" : "YouTube");
+        siteBar->blockSignals(false);
+        startSearch(e.target);
+    }
     updateNavButtons();
 }
 
@@ -576,10 +591,6 @@ void Search::performSearch() {
 
     const QString query = queryBar->currentText().trimmed();
 
-    if (!siteIsYoutube()) {
-        setStatus("Only YouTube is supported for now — try \"youtube\" in the site bar.", false);
-        return;
-    }
     if (query.isEmpty()) {
         setStatus("Enter something to search for.", false);
         return;
@@ -589,7 +600,7 @@ void Search::performSearch() {
         return;
     }
 
-    pushNavEntry({ NavEntry::Query, query, query });
+    pushNavEntry({ NavEntry::Query, query, query, currentSite() });
     addToHistory(query);
     startSearch(query);
 }
@@ -598,6 +609,7 @@ void Search::startSearch(const QString& query) {
     setViewMode(ViewMode::Search);
     clearResults();
     m_currentQuery = query;
+    m_currentSite  = currentSite(); // remember the site for paging (loadMore)
     m_shownCount   = 0;
     m_loadingMore  = false;
     m_endReached   = false;
@@ -608,9 +620,10 @@ void Search::startSearch(const QString& query) {
     m_lastRequested = m_batchSize;
 
     // "channel:" prefix -> search for channels (their own cards) via the internal
-    // API; yt-dlp can't list channels by name. One page, no load-more.
+    // API; yt-dlp can't list channels by name. YouTube only; one page, no load-more.
     const QString trimmed = query.trimmed();
-    if (trimmed.startsWith("channel:", Qt::CaseInsensitive)) {
+    if (m_currentSite == SgSearch::Site::YouTube
+        && trimmed.startsWith("channel:", Qt::CaseInsensitive)) {
         const QString name = trimmed.mid(QStringLiteral("channel:").size()).trimmed();
         if (name.isEmpty()) { setStatus("Type a channel name after \"channel:\".", false); return; }
         m_endReached = true; // channel search is a single page
@@ -620,8 +633,9 @@ void Search::startSearch(const QString& query) {
     }
 
     setStatus("Fetching results.", true);
-    m_search->search(SgSearch::Site::YouTube, query, m_lastRequested,
-                     m_filterMode == FilterMode::Shorts);
+    // Shorts is a YouTube-only mode; other sites always search plain videos.
+    const bool shorts = (m_currentSite == SgSearch::Site::YouTube && m_filterMode == FilterMode::Shorts);
+    m_search->search(m_currentSite, query, m_lastRequested, shorts);
 }
 
 void Search::loadMore() {
@@ -635,8 +649,8 @@ void Search::loadMore() {
         m_search->fetchChannelVideos(m_currentChannelUrl, m_lastRequested);
     } else {
         setStatus("Loading more results", true);
-        m_search->search(SgSearch::Site::YouTube, m_currentQuery, m_lastRequested,
-                         m_filterMode == FilterMode::Shorts);
+        const bool shorts = (m_currentSite == SgSearch::Site::YouTube && m_filterMode == FilterMode::Shorts);
+        m_search->search(m_currentSite, m_currentQuery, m_lastRequested, shorts);
     }
 }
 
@@ -770,6 +784,7 @@ void Search::onSearchFailed(const QString& message) {
 
 bool Search::passesFilter(const SearchResult& r) const {
     if (m_viewMode == ViewMode::Channel) return true; // a channel page shows all its videos
+    if (m_currentSite != SgSearch::Site::YouTube) return true; // no Videos/Shorts split off YouTube
     if (r.isChannel) return true; // channel cards aren't videos/shorts; never filtered out
     switch (m_filterMode) {
     case FilterMode::Videos:  return !r.isShort;
@@ -984,10 +999,16 @@ void Search::loadAvatar(const QString& url) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-bool Search::siteIsYoutube() const {
-    const QString s = siteBar->text().trimmed().toLower();
-    if (s.isEmpty()) return false;
-    return s == "yt" || s.contains("youtube") || s.contains("youtu.be");
+SgSearch::Site Search::currentSite() const {
+    const QString s = siteBar->currentText().trimmed().toLower();
+    return (s.contains("porn") || s == "ph") ? SgSearch::Site::PornHub
+                                             : SgSearch::Site::YouTube;
+}
+
+void Search::updateQueryPlaceholder() {
+    const QString site = (currentSite() == SgSearch::Site::PornHub) ? "PornHub" : "YouTube";
+    if (queryBar->lineEdit())
+        queryBar->lineEdit()->setPlaceholderText("Search " + site);
 }
 
 void Search::clearResults() {

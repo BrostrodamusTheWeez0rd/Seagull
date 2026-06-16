@@ -272,6 +272,10 @@ void VideoCard::loadThumbnail(QNetworkAccessManager* nam) {
 
     QNetworkRequest req((QUrl(m_result.thumbnail)));
     req.setRawHeader("User-Agent", "Seagull-Player");
+    // Some CDNs (PornHub's CDN77) hotlink-protect thumbnails and 403 without a
+    // site Referer; the parser supplies it for those results.
+    if (!m_result.thumbnailReferer.isEmpty())
+        req.setRawHeader("Referer", m_result.thumbnailReferer.toUtf8());
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply = nam->get(req);
     const QString key = m_result.thumbnail;

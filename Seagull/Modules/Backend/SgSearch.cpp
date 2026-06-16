@@ -1,4 +1,5 @@
 #include "SgSearch.h"
+#include "SgOptions.h" // cookieArgs() — browser cookies for age-gated / bot-checked sites
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -8,6 +9,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
+#include <QUrlQuery>
+#include <QRegularExpression>
 
 SgSearch::SgSearch(QObject* parent) : QObject(parent) {
     m_process = new QProcess(this);
@@ -36,6 +39,10 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
         startShortsSearch(query.trimmed(), limit);
         return;
     }
+    if (site == Site::PornHub) { // scraped over HTTP, not yt-dlp (richer cards)
+        startPornHubSearch(query.trimmed(), limit);
+        return;
+    }
 
     const QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
@@ -44,15 +51,20 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
         // Parse YouTube's relative "3 weeks ago" text into an approximate upload
         // timestamp, in the same flat response (no per-video requests).
         << "--extractor-args" << "youtubetab:approximate_date";
+    args += SgOptions::cookieArgs(); // opted-in browser cookies (PH age gates, YT bot checks)
 
     // Per-site search target. New sites slot in here with their own branch.
+    // (PornHub is handled above via the HTML-scrape path, not yt-dlp.)
     switch (site) {
     case Site::YouTube:
         args << QString("ytsearch%1:%2").arg(limit).arg(query.trimmed());
         break;
+    case Site::PornHub:
+        break; // unreachable; handled before the yt-dlp args are built
     }
 
     emit logMessage("Searching: " + query.trimmed());
+    emit logMessage("yt-dlp " + args.join(' ')); // full command, visible in the Bdev console
     m_process->start(exePath, args);
 }
 
@@ -101,6 +113,12 @@ void SgSearch::cancel() {
         m_channelReply->deleteLater();
         m_channelReply = nullptr;
     }
+    if (m_phReply) {
+        m_phReply->disconnect(this);
+        m_phReply->abort();
+        m_phReply->deleteLater();
+        m_phReply = nullptr;
+    }
     m_buffer.clear();
 }
 
@@ -111,16 +129,24 @@ void SgSearch::handleFinished(int exitCode, QProcess::ExitStatus exitStatus) {
 
     if (exitStatus == QProcess::CrashExit || exitCode != 0) {
         const QString err = QString::fromLocal8Bit(m_buffer).trimmed();
+        emit logMessage("Search failed (yt-dlp exit " + QString::number(exitCode) + "): "
+            + (err.isEmpty() ? QStringLiteral("(no output)") : err.right(600)));
         emit failed(err.isEmpty() ? "Search failed." : ("Search failed: " + err.right(400)));
         return;
     }
 
     const int jsonStart = m_buffer.indexOf('{');
-    if (jsonStart == -1) { emit failed("No results."); return; }
+    if (jsonStart == -1) {
+        emit logMessage("Search: no JSON in yt-dlp output. Raw: "
+            + QString::fromLocal8Bit(m_buffer).trimmed().right(400));
+        emit failed("No results.");
+        return;
+    }
 
     QJsonParseError perr;
     QJsonDocument doc = QJsonDocument::fromJson(m_buffer.mid(jsonStart), &perr);
     if (perr.error != QJsonParseError::NoError || doc.isNull()) {
+        emit logMessage("Search: JSON parse error: " + perr.errorString());
         emit failed("Could not parse search results.");
         return;
     }
@@ -133,12 +159,10 @@ void SgSearch::handleFinished(int exitCode, QProcess::ExitStatus exitStatus) {
         return;
     }
 
-    QList<SearchResult> results;
-    switch (m_site) {
-    case Site::YouTube:
-        results = parseYoutube(doc.object());
-        break;
-    }
+    // parseYoutube is site-aware: it branches internally for non-YouTube layouts
+    // (PornHub returns a plain flat list, no channel/shorts shelves).
+    const QList<SearchResult> results = parseYoutube(doc.object());
+    emit logMessage(QString("Search parsed %1 result(s).").arg(results.size()));
     emit resultsReady(results);
 }
 
@@ -183,8 +207,11 @@ bool SgSearch::parseVideoEntry(const QJsonObject& e, SearchResult& r) const {
     // signed sqp/rs variants), which QPixmap can't decode without the WebP plugin.
     // The canonical /vi/<id>/mqdefault.jpg is a real 16:9 JPEG that always exists
     // and loads fine, so build that from the video id instead.
+    // YouTube's thumbnails[] serve WebP that QPixmap can't decode, so build the
+    // canonical /vi/<id>/mqdefault.jpg JPEG from the video id instead. Other sites
+    // (PornHub) hand back real JPEGs in thumbnails[], so use the largest of those.
     const QString id = e["id"].toString();
-    if (!id.isEmpty())
+    if (m_site == Site::YouTube && !id.isEmpty())
         r.thumbnail = QString("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(id);
     else {
         int bestW = -1;
@@ -214,6 +241,16 @@ bool SgSearch::parseVideoEntry(const QJsonObject& e, SearchResult& r) const {
 QList<SearchResult> SgSearch::parseYoutube(const QJsonObject& root) const {
     QList<SearchResult> out;
     const QJsonArray entries = root["entries"].toArray();
+
+    // Non-YouTube sites (PornHub) return a plain flat list of video entries with no
+    // channel/shorts shelves, so parse each straight through.
+    if (m_site != Site::YouTube) {
+        for (const auto& it : entries) {
+            SearchResult r;
+            if (parseVideoEntry(it.toObject(), r)) out.append(r);
+        }
+        return out;
+    }
 
     for (const auto& it : entries) {
         const QJsonObject e = it.toObject();
@@ -505,4 +542,178 @@ void SgSearch::collectObjects(const QJsonValue& v, const QString& key,
         for (const auto& e : v.toArray())
             collectObjects(e, key, out);
     }
+}
+
+// ---------------------------------------------------------------------------
+// PornHub search — HTML scrape of the results page (one request per page)
+// ---------------------------------------------------------------------------
+
+namespace {
+QString phUnescape(QString s) {
+    s.replace("&amp;", "&");  s.replace("&lt;", "<");   s.replace("&gt;", ">");
+    s.replace("&quot;", "\""); s.replace("&#039;", "'"); s.replace("&#39;", "'");
+    s.replace("&apos;", "'");
+    return s;
+}
+// "1.2M" / "12K" / "1,234" -> 1200000 / 12000 / 1234 (-1 if unparseable).
+qint64 phParseCount(QString s) {
+    s = s.trimmed();
+    if (s.isEmpty()) return -1;
+    double mult = 1.0;
+    const QChar last = s.back().toUpper();
+    if      (last == 'K') { mult = 1e3; s.chop(1); }
+    else if (last == 'M') { mult = 1e6; s.chop(1); }
+    else if (last == 'B') { mult = 1e9; s.chop(1); }
+    s.remove(',').remove(' ');
+    bool ok = false;
+    const double v = s.toDouble(&ok);
+    return ok ? static_cast<qint64>(v * mult) : -1;
+}
+// "12:34" / "1:02:03" -> seconds (-1 if unparseable).
+qint64 phParseDuration(const QString& s) {
+    const QStringList parts = s.trimmed().split(':');
+    qint64 secs = 0;
+    for (const QString& p : parts) {
+        bool ok = false;
+        const int n = p.trimmed().toInt(&ok);
+        if (!ok) return -1;
+        secs = secs * 60 + n;
+    }
+    return parts.isEmpty() ? -1 : secs;
+}
+}
+
+void SgSearch::startPornHubSearch(const QString& query, int limit) {
+    if (!m_nam) m_nam = new QNetworkAccessManager(this);
+
+    m_phLimit = limit;
+    if (query != m_phQuery) { // new query resets the accumulated pages
+        m_phQuery = query;
+        m_phResults.clear();
+        m_phSeen.clear();
+        m_phPage = 0;
+        m_phExhausted = false;
+    }
+
+    if (m_phResults.size() >= limit || m_phExhausted) { // enough cached / no more pages
+        emit resultsReady(m_phResults);
+        return;
+    }
+
+    emit logMessage("Searching PornHub: " + query);
+    fetchPornHubPage();
+}
+
+void SgSearch::fetchPornHubPage() {
+    const int page = m_phPage + 1;
+    QUrl u("https://www.pornhub.com/video/search");
+    QUrlQuery uq;
+    uq.addQueryItem("search", m_phQuery);
+    if (page > 1) uq.addQueryItem("page", QString::number(page));
+    u.setQuery(uq);
+
+    QNetworkRequest req(u);
+    req.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    // Static age-gate bypass: a constant flag that means "18+", NOT the user's
+    // browser cookies. Skips the interstitial the same way yt-dlp does.
+    req.setRawHeader("Cookie", "age_verified=1; platform=pc; accessAgeDisclaimerPH=1; accessPH=1");
+    req.setRawHeader("Accept-Language", "en-US,en;q=0.9");
+
+    m_phReply = m_nam->get(req);
+    connect(m_phReply, &QNetworkReply::finished, this, &SgSearch::handlePornHubReply);
+}
+
+void SgSearch::handlePornHubReply() {
+    QNetworkReply* reply = m_phReply;
+    m_phReply = nullptr;
+    reply->deleteLater();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        emit logMessage("PornHub search failed: " + reply->errorString());
+        if (!m_phResults.isEmpty()) emit resultsReady(m_phResults); // keep what we have
+        else emit failed("PornHub search failed: " + reply->errorString());
+        return;
+    }
+
+    ++m_phPage;
+    const QList<SearchResult> page = parsePornHubHtml(QString::fromUtf8(reply->readAll()));
+    emit logMessage(QString("PornHub page %1: %2 tile(s) parsed.").arg(m_phPage).arg(page.size()));
+
+    const int before = m_phResults.size();
+    for (const SearchResult& r : page) {
+        if (r.url.isEmpty() || m_phSeen.contains(r.url)) continue;
+        m_phSeen.insert(r.url);
+        m_phResults.append(r);
+    }
+    if (m_phResults.size() == before || page.isEmpty()) m_phExhausted = true; // page added nothing new
+
+    if (m_phResults.size() < m_phLimit && !m_phExhausted) {
+        fetchPornHubPage(); // keep paging until we have enough for the requested batch
+        return;
+    }
+    emit resultsReady(m_phResults);
+}
+
+QList<SearchResult> SgSearch::parsePornHubHtml(const QString& html) const {
+    QList<SearchResult> out;
+
+    // Each result tile carries data-video-vkey; slice the page into per-tile chunks
+    // bounded by successive vkeys so a missing field in one tile can't bleed into the
+    // next. Within a chunk we pull the first match of each field.
+    static const QRegularExpression vkeyRe (QStringLiteral("data-video-vkey=\"([^\"]+)\""));
+    static const QRegularExpression titAttr(QStringLiteral("class=\"title\"[^>]*>\\s*<a[^>]*?\\stitle=\"([^\"]+)\""));
+    static const QRegularExpression titText(QStringLiteral("class=\"title\"[^>]*>\\s*<a[^>]*?>([^<]+)</a>"));
+    static const QRegularExpression titData(QStringLiteral("data-title=\"([^\"]+)\""));
+    static const QRegularExpression thumbRe(QStringLiteral("data-mediumthumb=\"([^\"]+)\""));
+    static const QRegularExpression thumbAlt(QStringLiteral("data-image=\"([^\"]+)\""));
+    static const QRegularExpression durRe  (QStringLiteral("<var class=\"duration\">([^<]+)</var>"));
+    static const QRegularExpression viewsRe(QStringLiteral("class=\"views\">\\s*<var>([^<]+)</var>"));
+
+    struct Hit { QString vkey; qsizetype pos; };
+    QList<Hit> hits;
+    auto vit = vkeyRe.globalMatch(html);
+    while (vit.hasNext()) { const auto m = vit.next(); hits.append({ m.captured(1), m.capturedStart() }); }
+
+    for (int i = 0; i < hits.size(); ++i) {
+        const qsizetype start = hits[i].pos;
+        const qsizetype end   = (i + 1 < hits.size()) ? hits[i + 1].pos : html.size();
+        const QString chunk = html.mid(start, end - start);
+
+        SearchResult r;
+        r.url = "https://www.pornhub.com/view_video.php?viewkey=" + hits[i].vkey;
+
+        // Title: prefer the title link's title attr, then its text, then data-title.
+        QRegularExpressionMatch m = titAttr.match(chunk);
+        if (!m.hasMatch()) m = titText.match(chunk);
+        if (!m.hasMatch()) m = titData.match(chunk);
+        r.title = phUnescape(m.captured(1)).trimmed();
+        if (r.title.isEmpty()) continue; // not a usable video tile
+
+        // Thumbnail: PornHub gives some tiles a real .jpg and others a dynamic CDN
+        // URL (no extension) that Qt can't decode. Prefer a .jpg from either
+        // attribute; fall back to whatever's present.
+        QString thumbJpg, thumbAny;
+        auto considerThumb = [&](const QRegularExpressionMatch& mm) {
+            if (!mm.hasMatch()) return;
+            const QString u = phUnescape(mm.captured(1));
+            if (thumbAny.isEmpty()) thumbAny = u;
+            if (thumbJpg.isEmpty() && (u.contains(".jpg", Qt::CaseInsensitive)
+                                    || u.contains(".jpeg", Qt::CaseInsensitive)))
+                thumbJpg = u;
+        };
+        considerThumb(thumbRe.match(chunk));
+        considerThumb(thumbAlt.match(chunk));
+        r.thumbnail = !thumbJpg.isEmpty() ? thumbJpg : thumbAny;
+        // PornHub's transform CDN (CDN77) hotlink-protects thumbnails: without a
+        // pornhub.com Referer it 403s. Harmless on the static thumbs that don't need it.
+        if (!r.thumbnail.isEmpty()) r.thumbnailReferer = QStringLiteral("https://www.pornhub.com/");
+
+        if (const auto md = durRe.match(chunk); md.hasMatch())
+            r.duration = phParseDuration(md.captured(1));
+        if (const auto mv = viewsRe.match(chunk); mv.hasMatch())
+            r.viewCount = phParseCount(mv.captured(1));
+
+        out.append(r);
+    }
+    return out;
 }

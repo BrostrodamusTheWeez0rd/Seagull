@@ -87,9 +87,11 @@ private:
         Kind    kind;
         QString target; // the query string, or the channel URL
         QString label;  // what to show in the query bar
+        SgSearch::Site site = SgSearch::Site::YouTube; // site the query ran against (Query entries)
     };
 
-    bool siteIsYoutube() const;
+    SgSearch::Site currentSite() const; // the site picked/typed in the dropdown
+    void updateQueryPlaceholder();      // set the query bar prompt to "Search <site>"
     void clearResults();
     void addCard(const SearchResult& result);
     void rebuildCards();
@@ -138,7 +140,7 @@ private:
     QPushButton* backBtn;
     QPushButton* forwardBtn;
     QPushButton* refreshBtn;
-    QLineEdit*   siteBar;
+    QComboBox*   siteBar; // dropdown of supported search sites (YouTube / PornHub)
     QPushButton* goBtn;
     // Editable combo like the File Explorer address bar: the arrow drops the
     // full search history; typing filters it through the completer.
@@ -187,6 +189,7 @@ private:
     QList<SearchResult> m_allResults;
     QSet<QString>       m_seenUrls; // dedup: YouTube search returns the same video twice
     FilterMode   m_filterMode  = FilterMode::Videos; // Videos is the launch default
+    SgSearch::Site m_currentSite = SgSearch::Site::YouTube; // site of the active search (for paging)
     ViewMode     m_viewMode    = ViewMode::Search;
     QString      m_currentChannelUrl; // the channel being shown in Channel view
 

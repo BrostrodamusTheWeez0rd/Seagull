@@ -1,0 +1,3 @@
+Add upload age display to YT video results
+
+Enhances search and channel video fetching to request and parse approximate upload timestamps using yt-dlp's `approximate_date` extractor arg. Adds a `timestamp` field to `SearchResult` and displays a human-readable "X ago" string in the video card UI alongside duration and view count.

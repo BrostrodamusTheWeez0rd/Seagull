@@ -18,6 +18,7 @@ struct SearchResult {
     QString url;
     QString channel;
     QString thumbnail;
+    QString thumbnailReferer; // Referer header to fetch the thumbnail (hotlink-protected CDNs); empty = none
     qint64  duration  = -1;
     qint64  viewCount = -1;
     qint64  timestamp = -1;   // approximate upload time (Unix seconds), -1 unknown
@@ -48,7 +49,7 @@ struct SearchResult {
 class SgSearch : public QObject {
     Q_OBJECT
 public:
-    enum class Site { YouTube };
+    enum class Site { YouTube, PornHub };
 
     explicit SgSearch(QObject* parent = nullptr);
     ~SgSearch();
@@ -98,6 +99,16 @@ private:
     static void collectObjects(const QJsonValue& v, const QString& key,
                                QList<QJsonObject>& out);
 
+    // PornHub search (HTML scrape of the results page; one request per page). yt-dlp's
+    // flat search returns only title+url for PornHub, so we fetch the results page
+    // ourselves and parse the tiles for thumbnails/duration/views. A static
+    // age-gate cookie (a constant flag, never the user's browser cookies) avoids the
+    // 18+ interstitial.
+    void startPornHubSearch(const QString& query, int limit);
+    void fetchPornHubPage();
+    void handlePornHubReply();
+    QList<SearchResult> parsePornHubHtml(const QString& html) const;
+
     QProcess*  m_process;
     QByteArray m_buffer;
     Site       m_site = Site::YouTube;
@@ -121,4 +132,13 @@ private:
     QList<SearchResult>    m_channelResults;
     QSet<QString>          m_channelSeenIds;
     int                    m_channelLimit = 20;
+
+    // PornHub search state (HTML scrape; results accumulate per query across pages).
+    QNetworkReply*         m_phReply = nullptr;
+    QString                m_phQuery;
+    QList<SearchResult>    m_phResults;
+    QSet<QString>          m_phSeen;
+    int                    m_phPage = 0;            // last results page fetched (1-based)
+    int                    m_phLimit = 20;
+    bool                   m_phExhausted = false;
 };
