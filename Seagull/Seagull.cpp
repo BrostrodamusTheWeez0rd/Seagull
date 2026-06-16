@@ -22,6 +22,7 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QFile>
+#include <QDateTime>
 
 // Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
 #ifndef SEAGULL_VERSION
@@ -259,6 +260,12 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     connect(searchWorker, &SgSearch::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
     connect(downloadWorker, &SgYtDlp::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
 
+    // Any worker that hits a bot-check / throttling block warns the user (debounced).
+    // Queued so the modal opens from the event loop, not re-entrantly inside the
+    // worker's finished-handler while it's mid-emit.
+    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker })
+        connect(w, &SgYtDlp::extractionBlocked, this, &Seagull::onExtractionBlocked, Qt::QueuedConnection);
+
     // Once a queued/streamed video starts, clear the URL bar (the metadata preview
     // stays up, showing the now-playing video). Library playback leaves it alone.
     connect(videoPlayer, &VideoPlayer::playbackStarted, this, [this]() {
@@ -438,6 +445,40 @@ void Seagull::flashLibraryTab() {
         // Don't clear a spinner a still-draining download queue owns.
         if (m_downloadQueue.isEmpty()) mainWindow->setTabBusy(libraryModule, false);
         });
+}
+
+void Seagull::onExtractionBlocked(const QString& kind, const QString& detail) {
+    // Debounce: several workers (resolver, prefetcher, player) can trip on the same
+    // block within moments, and yt-dlp retries recur. Show one modal, then stay quiet
+    // for a cooldown so the user isn't buried in identical dialogs.
+    constexpr qint64 kCooldownMs = 60'000; // one minute between warnings
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_blockWarnActive || (m_lastBlockWarnMs && now - m_lastBlockWarnMs < kCooldownMs))
+        return;
+    m_blockWarnActive = true;
+
+    QString title, body;
+    if (kind == "throttle") {
+        title = "Connection throttled";
+        body  = "The site is rate-limiting requests right now (HTTP 429), so playback "
+                "or downloads may fail or stall.\n\n"
+                "This usually clears up on its own. Wait a few minutes before trying "
+                "again, and avoid starting lots of videos or downloads at once.";
+    } else {
+        title = "Verification required";
+        body  = "The site is asking Seagull to confirm it's not a bot, so it won't "
+                "hand over the video right now.\n\n"
+                "This often passes if you wait a little and try again. If it keeps "
+                "happening, it's coming from the site, not from anything wrong on "
+                "your end.";
+    }
+    if (!detail.trimmed().isEmpty())
+        body += "\n\nDetails:\n" + detail.trimmed();
+
+    QMessageBox::warning(mainWindow, title, body);
+
+    m_lastBlockWarnMs = QDateTime::currentMSecsSinceEpoch();
+    m_blockWarnActive = false;
 }
 
 void Seagull::skipActive(int delta) {

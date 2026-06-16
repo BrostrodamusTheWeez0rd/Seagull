@@ -50,6 +50,11 @@ signals:
         const QString& views, const QString& date, const QString& description);
     void streamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl = QUrl());
     void playlistEntriesReady(const QList<QString>& urls);
+    // A job failed in a way that looks like the source (usually YouTube) is blocking
+    // us: bot-check ("Sign in to confirm you're not a bot") or rate-limiting / throttling
+    // (HTTP 429). kind is "bot" or "throttle"; detail is the trimmed yt-dlp error line.
+    // The orchestrator turns this into a single debounced warning modal.
+    void extractionBlocked(const QString& kind, const QString& detail);
 
 private slots:
     void handleReadyRead();

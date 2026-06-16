@@ -44,6 +44,13 @@ private:
     // Brief seagull on the Library tab once a recording/clip is saved + playable.
     void flashLibraryTab();
 
+    // A worker reported the source is blocking us (bot check / HTTP 429 throttling).
+    // Shows one warning modal, then stays quiet for a cooldown: several workers can
+    // trip at once and retries recur, so we debounce to a single nag.
+    void onExtractionBlocked(const QString& kind, const QString& detail);
+    bool   m_blockWarnActive = false; // a block warning is on screen right now
+    qint64 m_lastBlockWarnMs = 0;     // when the last one was dismissed (cooldown gate)
+
     MainWindow* mainWindow;
     VideoPlayer* videoPlayer;  // the playback feature, hosted by the shell window
     Queue* queueModule;

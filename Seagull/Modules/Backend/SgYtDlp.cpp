@@ -21,6 +21,23 @@ namespace {
     void addImpersonateIfNeeded(QStringList& args, const QString& url) {
         if (!isYoutubeUrl(url)) args << "--impersonate" << "chrome";
     }
+
+    // Classify a yt-dlp failure as the source blocking us. Returns "bot" (a
+    // bot/sign-in challenge), "throttle" (rate-limit / HTTP 429), or "" (neither —
+    // an ordinary failure we don't want to nag the user about).
+    QString classifyBlock(const QString& errText) {
+        const QString e = errText.toLower();
+        // Rate-limiting / throttling first: a 429 sometimes rides alongside other noise.
+        if (e.contains("429") || e.contains("too many requests")
+            || e.contains("throttl") || e.contains("rate-limit") || e.contains("rate limit"))
+            return QStringLiteral("throttle");
+        // Bot / sign-in challenge. Match on "not a bot" / "suspicion of bot" — the
+        // bot message always contains one. (Deliberately NOT "confirm you", which
+        // would also catch the unrelated "Sign in to confirm your age" age gate.)
+        if (e.contains("not a bot") || e.contains("suspicion of bot"))
+            return QStringLiteral("bot");
+        return QString();
+    }
 }
 
 SgYtDlp::SgYtDlp(QObject* parent) : QObject(parent) {
@@ -195,6 +212,10 @@ void SgYtDlp::handleReadyRead() {
             QRegularExpressionMatch match = progressRegex.match(cleanLine);
             if (match.hasMatch()) {
                 emit progressUpdated(match.captured(1).toDouble());
+            } else {
+                // Keep the non-progress lines (errors/warnings) so a failed download
+                // can still be classified as a bot/throttle block at the end.
+                processBuffer.append(cleanLine.toLocal8Bit()).append('\n');
             }
         }
     }
@@ -211,6 +232,11 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         const QString errOut = QString::fromLocal8Bit(processBuffer).trimmed();
         if (!errOut.isEmpty())
             emit logMessage("yt-dlp: " + errOut.right(800));
+        // If the source is blocking us (bot challenge / throttling), let the
+        // orchestrator warn the user — these aren't fixable by a retry.
+        const QString block = classifyBlock(errOut);
+        if (!block.isEmpty())
+            emit extractionBlocked(block, errOut.right(400));
         emit finished(false);
         return;
     }
