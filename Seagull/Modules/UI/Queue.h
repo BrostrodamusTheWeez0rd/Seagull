@@ -18,6 +18,7 @@
 #include <QPair>
 #include <QMap>
 #include <QList>
+#include <QSet>
 #include <QDateTime>
 #include <QPixmap>
 #include <QNetworkAccessManager>
@@ -172,6 +173,7 @@ private:
     // Cache state
     QMap<QString, QPair<QUrl, QUrl>> cdnCache;
     QString m_currentlyPrefetchingUrl;
+    QSet<QString> m_prefetchFailed; // URLs a prefetch failed on (e.g. bot block) — skip, don't storm
 
     // Background title resolution queue
     QList<QPair<int, QString>> m_titleQueue;

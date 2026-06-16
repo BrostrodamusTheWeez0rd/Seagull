@@ -15,6 +15,10 @@
 #include <QFont>
 #include <QFile>
 #include <QRegularExpression>
+#include <QMessageBox>
+#include <QCheckBox>
+#include <QProcess>
+#include <QSettings>
 
 // The build stamps this in (see CMakeLists). Fallback keeps a stray build compiling.
 #ifndef SEAGULL_VERSION
@@ -318,6 +322,25 @@ void Settings::setupUI() {
     clearHistoryOnCloseCheck->setToolTip("Wipes the saved history file automatically on every exit.");
     searchLayout->addRow("", clearHistoryOnCloseCheck);
 
+    // Browser cookies: the most effective fix for YouTube's "confirm you're not a
+    // bot" wall. When set, yt-dlp reuses that browser's logged-in session so the
+    // requests look like a normal viewer. Off by default; turning it on pops a
+    // warning about not using your main account (see onCookiesBrowserChanged).
+    cookiesBrowserCombo = new QComboBox();
+    cookiesBrowserCombo->addItems({ "None", "Firefox", "Chrome", "Edge", "Brave" });
+    cookiesBrowserCombo->setToolTip(
+        "Reuse a browser's YouTube login to cut down on \"confirm you're not a bot\" "
+        "errors. Firefox is the most reliable on Windows. Chrome, Edge, and Brave can "
+        "fail to read cookies while the browser is open or due to their cookie "
+        "encryption. Use a spare account, never your main one.");
+    searchLayout->addRow("Cookies from browser:", cookiesBrowserCombo);
+
+    deleteCookiesBtn = new QPushButton("Delete Cached Cookie Data");
+    deleteCookiesBtn->setMaximumWidth(220);
+    deleteCookiesBtn->setToolTip("Clears yt-dlp's cache, including any login/session tokens it "
+        "derived from your browser cookies. Use this after turning cookies off to leave nothing behind.");
+    searchLayout->addRow("", deleteCookiesBtn);
+
     stackedWidget->addWidget(searchWidget);
 
     // === Info Tab: bundled docs in a tabbed reader ===
@@ -400,6 +423,8 @@ void Settings::setupUI() {
     connect(dlQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(searchResultsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
     connect(streamQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(cookiesBrowserCombo, &QComboBox::currentTextChanged, this, &Settings::onCookiesBrowserChanged);
+    connect(deleteCookiesBtn, &QPushButton::clicked, this, &Settings::deleteCookieData);
     connect(recTypeGroup, &QButtonGroup::buttonClicked, this, [this](QAbstractButton*) {
         onRecordingTypeChanged(); // refresh the recording format list, then save
         });
@@ -562,6 +587,8 @@ void Settings::loadSettings() {
     dlQualityCombo->setCurrentText(iniSettings->value("Download/Quality", "Best Available").toString());
 
     streamQualityCombo->setCurrentText(iniSettings->value("Streaming/Quality", "Best Available").toString());
+    cookiesBrowserCombo->setCurrentText(iniSettings->value("Streaming/CookiesBrowser", "None").toString());
+    m_prevCookiesChoice = cookiesBrowserCombo->currentText(); // baseline for the activation warning
 
     // Recording: type drives the format list; the old Streaming/RecordFormat key
     // (pre recording settings) seeds the video format for existing configs.
@@ -614,6 +641,7 @@ void Settings::saveSettings() {
     iniSettings->setValue("Download/Format", formatCombo->currentText());
     iniSettings->setValue("Download/Quality", dlQualityCombo->currentText());
     iniSettings->setValue("Streaming/Quality", streamQualityCombo->currentText());
+    iniSettings->setValue("Streaming/CookiesBrowser", cookiesBrowserCombo->currentText());
     iniSettings->setValue("Recording/Type", currentRecordingType());
     iniSettings->setValue("Recording/Format", recFormatCombo->currentText());
     iniSettings->setValue("Search/ResultLimit", searchResultsSpin->value());
@@ -650,6 +678,64 @@ void Settings::saveSettings() {
     emit visualizerSettingsChanged();
 }
 
+void Settings::onCookiesBrowserChanged(const QString& text) {
+    if (m_loading) { m_prevCookiesChoice = text; return; } // programmatic load, no prompt
+
+    // Warn only when turning the feature ON (None -> a browser), not when switching
+    // browsers or turning it off. The warning can be permanently dismissed.
+    const bool turningOn = (m_prevCookiesChoice == "None" && text != "None");
+    if (turningOn && !iniSettings->value("Search/CookiesWarningAck", false).toBool()) {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle("Use a spare account");
+        box.setText("Do not use your main Google or YouTube account for this.");
+        box.setInformativeText(
+            "Seagull will send that browser's YouTube login with its requests. Google "
+            "treats automated access (which is what a downloader looks like) as a Terms "
+            "of Service violation, so the account you are signed into can be rate-limited, "
+            "temporarily locked, or in rare cases suspended.\n\n"
+            "Sign that browser into a spare or throwaway Google account first, then enable "
+            "this. Anyone with the exported cookies can also access that session, so clear "
+            "them with \"Delete Cached Cookie Data\" when you are done.");
+        QCheckBox* dontShow = new QCheckBox("Don't show this again", &box);
+        box.setCheckBox(dontShow);
+        box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+        box.button(QMessageBox::Ok)->setText("I understand, use cookies");
+        box.setDefaultButton(QMessageBox::Cancel);
+
+        if (box.exec() != QMessageBox::Ok) {
+            // Declined: revert to Off without re-triggering this handler.
+            cookiesBrowserCombo->blockSignals(true);
+            cookiesBrowserCombo->setCurrentText("None");
+            cookiesBrowserCombo->blockSignals(false);
+            m_prevCookiesChoice = "None";
+            saveSettings();
+            return;
+        }
+        if (dontShow->isChecked())
+            iniSettings->setValue("Search/CookiesWarningAck", true);
+    }
+
+    m_prevCookiesChoice = text;
+    saveSettings();
+}
+
+void Settings::deleteCookieData() {
+    if (QMessageBox::question(this, "Delete cached cookie data",
+            "This clears yt-dlp's cache, including any login or session tokens it derived "
+            "from your browser cookies.\n\nContinue?",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    // yt-dlp --rm-cache-dir wipes its cache directory (signature/token/PO caches).
+    // Fire-and-forget; the tool path is the same one the workers use.
+    const QString exe = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
+    const bool ok = QProcess::startDetached(exe, { "--rm-cache-dir" });
+    QMessageBox::information(this, "Delete cached cookie data",
+        ok ? "Cleared yt-dlp's cached login and session data."
+           : "Could not run yt-dlp to clear its cache.");
+}
+
 void Settings::resetDefaults() {
     // Set everything quietly, then write + apply once.
     m_loading = true;
@@ -672,6 +758,7 @@ void Settings::resetDefaults() {
     updateDownloadQualityOptions();
     dlQualityCombo->setCurrentText("Best Available");
     streamQualityCombo->setCurrentText("Best Available");
+    cookiesBrowserCombo->setCurrentText("None");
     recTypeVideoBtn->setChecked(true);
     updateRecordingFormatOptions();
     recFormatCombo->setCurrentText("MP4");

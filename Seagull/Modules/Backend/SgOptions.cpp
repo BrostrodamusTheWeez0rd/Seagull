@@ -46,8 +46,18 @@ QStringList SgOptions::buildDownloadArgs(const QString& url) {
             args << "--merge-output-format" << format;
     }
 
+    args += cookieArgs(); // browser cookies before the URL, if the user opted in
     args << url;
     return args;
+}
+
+QStringList SgOptions::cookieArgs() {
+    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    const QString choice = settings.value("Streaming/CookiesBrowser", "None").toString();
+    if (choice.isEmpty() || choice == "None") return {};
+    // The combo labels map straight to yt-dlp's browser keywords once lowercased
+    // (Firefox -> firefox, Chrome -> chrome, Edge -> edge, Brave -> brave).
+    return { "--cookies-from-browser", choice.toLower() };
 }
 
 int SgOptions::defaultStreamHeight() {

@@ -10,6 +10,7 @@
 #include "SgFormat.h" // StreamOption + format-selection policy
 
 class SgHlsProxy;
+class SgMetaCache;
 
 // Thin wrapper around the yt-dlp.exe process. Runs one job at a time (download /
 // metadata+streamURL / quality probe / playlist), buffers the output, parses the
@@ -33,6 +34,12 @@ public:
     // Optional shared ad-stripping HLS proxy. When set, a resolved Twitch *live*
     // stream URL is routed through it so VLC never sees the stitched ad segments.
     void setHlsProxy(SgHlsProxy* proxy) { m_hlsProxy = proxy; }
+
+    // Optional shared -J cache. When set, every worker reads/writes the same cache
+    // so the same video isn't re-extracted by the resolver, prefetcher, and player
+    // independently (a request burst YouTube flags as bot traffic). Unset = the
+    // local per-instance cache below is used.
+    void setMetaCache(SgMetaCache* cache) { m_metaCacheShared = cache; }
 
 signals:
     void logMessage(const QString& message);
@@ -85,7 +92,8 @@ private:
     QString m_pendingMetaUrl;
 
     struct MetaCacheEntry { QJsonObject obj; qint64 atMs; };
-    QHash<QString, MetaCacheEntry> m_metaCache;
+    QHash<QString, MetaCacheEntry> m_metaCache; // per-instance fallback when no shared cache is set
 
-    SgHlsProxy* m_hlsProxy = nullptr; // shared, owned by the orchestrator (may be null)
+    SgHlsProxy* m_hlsProxy = nullptr;       // shared, owned by the orchestrator (may be null)
+    SgMetaCache* m_metaCacheShared = nullptr; // shared -J cache (may be null -> use m_metaCache)
 };

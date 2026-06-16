@@ -182,7 +182,9 @@ void Theme::apply(const QString& name) {
         "QToolButton#tabCloseButton:hover { background:%5; color:%1; border:1px solid %5; }"
         "QToolButton#tabPlusButton, QToolButton#tabShareButton { background:transparent; color:%2; border:1px solid %3; border-radius:9px; font-size:13px; font-weight:bold; padding:0; }"
         "QToolButton#tabPlusButton:hover, QToolButton#tabShareButton:hover { background:%4; }"
-        "QToolButton#tabPlusButton::menu-indicator { image:none; }"
+        // Hide the popup arrow; the glyph itself is centred by CircleGlyphButton's
+        // own paint (by ink box), so no padding tricks are needed here.
+        "QToolButton#tabPlusButton::menu-indicator { image:none; width:0; }"
     ).arg(c.base.name(), c.text.name(), c.border.name(), c.alt.name(), c.accent.name(), c.subtext.name());
 
     // Search tab: the result cards and the status/"loading more" pill. Cards are

@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include "VideoPlayer.h"
+#include "Theme.h"
+#include "Widgets/CircleGlyphButton.h"
 #include <QApplication>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -81,9 +83,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // one to reopen. Child of the tab widget, not the tab bar (the bar is only
     // as wide as its tabs and would clip it) — positionPlusButton() keeps it
     // snug to the last tab's right edge.
-    m_plusBtn = new QToolButton(tabs);
+    auto* plusBtn = new CircleGlyphButton(tabs);
+    m_plusBtn = plusBtn;
     m_plusBtn->setObjectName("tabPlusButton"); // round look comes from the theme sheet
-    m_plusBtn->setText("+");
+    plusBtn->setSymbol(CircleGlyphButton::Shape::Plus, CircleGlyphButton::Tone::Dim); // stroked, dead-centre, dim like the ×
     m_plusBtn->setFixedSize(18, 18);
     m_plusBtn->setCursor(Qt::PointingHandCursor);
     m_plusBtn->setToolTip("Open a closed tab");
@@ -228,21 +231,31 @@ void MainWindow::closeDynamicTab(QWidget* tab) {
     schedulePlusReposition();
 }
 
+void MainWindow::tintShareButton() {
+    // A stylesheet can't recolour an icon, so flat-tint the share glyph to the
+    // theme's dimmed-text colour — the same colour the "+" and "×" chips use — and
+    // re-run it on theme change (see changeEvent).
+    QPixmap pm = QIcon(":/Assets/icons/share.svg").pixmap(QSize(12, 12));
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), Theme::colorsFor(Theme::currentName()).subtext);
+    p.end();
+    m_shareBtn->setIcon(QIcon(pm));
+}
+
 void MainWindow::setShareAvailable(bool on) {
     m_shareAvailable = on;
-    if (on) {
-        // Tint the glyph to the theme's text colour at show time (a stylesheet
-        // can't recolour an icon; re-shown per video, so theme switches catch up).
-        QPixmap pm = QIcon(":/Assets/icons/share.svg").pixmap(QSize(12, 12));
-        if (!pm.isNull()) {
-            QPainter p(&pm);
-            p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-            p.fillRect(pm.rect(), palette().color(QPalette::Text));
-            p.end();
-            m_shareBtn->setIcon(QIcon(pm));
-        }
-    }
+    if (on) tintShareButton();
     schedulePlusReposition();
+}
+
+void MainWindow::changeEvent(QEvent* event) {
+    QMainWindow::changeEvent(event);
+    // Keep the share glyph in step with theme switches, like the stroked +/× chips.
+    if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        && m_shareAvailable)
+        tintShareButton();
 }
 
 void MainWindow::addCloseButton(QWidget* wrapper) {
@@ -250,9 +263,9 @@ void MainWindow::addCloseButton(QWidget* wrapper) {
     // A free child of the tab bar (not the RightSide slot): positionCloseButtons
     // tucks it tight to the tab's edge. Keyed by the wrapper, not an index —
     // indexes shift under drags. We own its lifetime now (removeCloseButton).
-    auto* b = new QToolButton(tabs->tabBar());
+    auto* b = new CircleGlyphButton(tabs->tabBar());
     b->setObjectName("tabCloseButton"); // round themed chip from the theme sheet
-    b->setText(QString(QChar(0x00D7))); // multiplication x — cleaner than "x"
+    b->setSymbol(CircleGlyphButton::Shape::Cross, CircleGlyphButton::Tone::DimInvert); // stroked ×, dead-centre
     b->setFixedSize(14, 14);
     b->setCursor(Qt::PointingHandCursor);
     b->setToolTip("Close tab");

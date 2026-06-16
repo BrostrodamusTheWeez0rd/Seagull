@@ -1,6 +1,7 @@
 #include "SgYtDlp.h"
 #include "SgOptions.h"
 #include "SgHlsProxy.h"
+#include "SgMetaCache.h"
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -80,7 +81,10 @@ void SgYtDlp::download(const QString& url) {
 }
 
 void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& formatId, bool freshResolve) {
-    if (freshResolve) m_metaCache.remove(url); // the cached stream URL went stale
+    if (freshResolve) { // the cached stream URL went stale
+        if (m_metaCacheShared) m_metaCacheShared->evict(url);
+        else                   m_metaCache.remove(url);
+    }
 
     // A fresh-enough earlier resolve answers instantly: quality switches re-pair
     // from the cached format list and replays skip the whole yt-dlp launch.
@@ -110,6 +114,7 @@ void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& forma
     // the whole playlist before this video can start (can take minutes).
     args << "-J" << "--quiet" << "--no-warnings" << "--no-playlist";
     addImpersonateIfNeeded(args, url);
+    args += SgOptions::cookieArgs();
     args << url;
 
     emit logMessage("Fetching metadata for: " + url
@@ -136,6 +141,7 @@ void SgYtDlp::probeAvailableQualities(const QString& url) {
     QStringList args;
     args << "-J" << "--quiet" << "--no-warnings" << "--no-playlist";
     addImpersonateIfNeeded(args, url);
+    args += SgOptions::cookieArgs();
     args << url;
 
     emit logMessage("Probing qualities for: " + url);
@@ -143,6 +149,8 @@ void SgYtDlp::probeAvailableQualities(const QString& url) {
 }
 
 QJsonObject SgYtDlp::cachedMetadata(const QString& url) {
+    if (m_metaCacheShared) return m_metaCacheShared->get(url); // shared across all workers
+    // Fallback: per-instance cache (only when no shared cache was injected).
     constexpr qint64 kTtlMs = 30 * 60 * 1000; // CDN URLs comfortably outlive this
     const auto it = m_metaCache.constFind(url);
     if (it == m_metaCache.constEnd()) return {};
@@ -154,6 +162,8 @@ QJsonObject SgYtDlp::cachedMetadata(const QString& url) {
 }
 
 void SgYtDlp::storeMetadata(const QString& url, const QJsonObject& obj) {
+    if (m_metaCacheShared) { m_metaCacheShared->put(url, obj); return; }
+    // Fallback: per-instance cache (only when no shared cache was injected).
     if (url.isEmpty() || obj["is_live"].toBool()) return; // live URLs rotate — never cache
     if (m_metaCache.size() > 16) m_metaCache.clear();     // tiny working set; keep it bounded
     m_metaCache.insert(url, { obj, QDateTime::currentMSecsSinceEpoch() });
@@ -170,6 +180,7 @@ void SgYtDlp::fetchPlaylistEntries(const QString& playlistUrl) {
     QStringList args;
     args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings";
     addImpersonateIfNeeded(args, playlistUrl);
+    args += SgOptions::cookieArgs();
     args << playlistUrl;
 
     emit logMessage("Fetching playlist entries...");

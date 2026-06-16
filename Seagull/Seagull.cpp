@@ -57,6 +57,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     prefetcherWorker->setHlsProxy(hlsProxy);
     playerWorker->setHlsProxy(hlsProxy);
 
+    // One -J cache shared by every worker: a video the queue title-resolver already
+    // extracted is answered from cache when the prefetcher and player ask for it,
+    // instead of three separate yt-dlp launches against YouTube.
+    metaCache = new SgMetaCache(this);
+    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker })
+        w->setMetaCache(metaCache);
+
     // Records the currently-playing live stream (parallel ffmpeg), driven by the
     // player's Record button.
     recorder = new SgRecorder(this);

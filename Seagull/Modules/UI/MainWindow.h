@@ -108,6 +108,7 @@ protected:
     void moveEvent(QMoveEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void closeEvent(QCloseEvent* event) override; // docks all floating tabs first
+    void changeEvent(QEvent* event) override;     // re-tint the share glyph on theme change
 
 private:
     // Closable tabs: every page registered via addTab stays alive for the whole
@@ -131,6 +132,7 @@ private:
     QWidget* wrapPage(QWidget* tab);               // QScrollArea shell every page gets
     void positionPlusButton();      // snug the "+" (and Share) against the last tab
     void schedulePlusReposition();  // ...after the pending layout pass settles
+    void tintShareButton();         // recolour the share glyph to the theme's dim text
 
     // Player pop-out: detach the VideoPlayer into its own window and back.
     friend class PlayerWindow;

@@ -16,6 +16,7 @@
 #include "Modules/Backend/SgSpellCheck.h"
 #include "Modules/Backend/SgUpdater.h"
 #include "Modules/Backend/SgHlsProxy.h"
+#include "Modules/Backend/SgMetaCache.h"
 #include "Modules/Backend/SgRecorder.h"
 #include "Modules/Backend/SgMediaControls.h"
 #include "Modules/Backend/SgAppUpdate.h"
@@ -73,6 +74,11 @@ private:
     // One shared localhost proxy that strips Twitch's stitched ad segments from the
     // live HLS manifest before VLC sees them. Handed to every resolve worker.
     SgHlsProxy* hlsProxy;
+
+    // One shared yt-dlp -J cache across all workers, so the queue title-resolver,
+    // the prefetcher, and the player don't each re-extract the same video (the
+    // duplicate request burst is a bot-detection trigger).
+    SgMetaCache* metaCache;
 
     // Records the currently-playing live stream to disk (parallel ffmpeg).
     SgRecorder* recorder;

@@ -46,6 +46,8 @@ private:
     int  currentCardWidth() const;       // px from the combo preset, or the slider if Custom
     void browseInto(QLineEdit* edit, const QString& title); // folder picker -> edit
     void applyUnifyState(); // unify toggle -> enable the one row / grey the typed rows
+    void onCookiesBrowserChanged(const QString& text); // warn on enable, then save
+    void deleteCookieData(); // clear yt-dlp's cached login/session data
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
@@ -81,6 +83,9 @@ private:
     QComboBox* formatCombo;
     QComboBox* dlQualityCombo;
     QComboBox* streamQualityCombo;
+    QComboBox* cookiesBrowserCombo; // browser to pull YouTube cookies from (anti-bot)
+    QPushButton* deleteCookiesBtn;  // wipes yt-dlp's cached cookie-derived data
+    QString m_prevCookiesChoice = "None"; // last cookies value, to detect None -> browser (warn)
     QButtonGroup* recTypeGroup;  // Recording: Video | Audio toggle
     QPushButton* recTypeVideoBtn;
     QPushButton* recTypeAudioBtn;

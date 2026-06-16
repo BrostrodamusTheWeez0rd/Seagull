@@ -57,8 +57,12 @@ add_executable(Seagull
     Modules/UI/Widgets/SpellCheckLineEdit.h
     Modules/UI/Widgets/Visualizer.cpp
     Modules/UI/Widgets/Visualizer.h
+    Modules/UI/Widgets/CircleGlyphButton.cpp
+    Modules/UI/Widgets/CircleGlyphButton.h
     Modules/Backend/SgYtDlp.h
     Modules/Backend/SgYtDlp.cpp
+    Modules/Backend/SgMetaCache.h
+    Modules/Backend/SgMetaCache.cpp
     Modules/Backend/SgHlsProxy.h
     Modules/Backend/SgHlsProxy.cpp
     Modules/Backend/SgRecorder.h

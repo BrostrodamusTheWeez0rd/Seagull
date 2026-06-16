@@ -19,8 +19,18 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QRegularExpression>
+#include <QRandomGenerator>
 #include <QDebug>
 #include <algorithm>
+
+namespace {
+    // Speculative yt-dlp work (title resolution, CDN prefetch) is paced with a
+    // little randomized jitter on top of a base delay so the background requests
+    // don't march at YouTube on a fixed metronome (an easy bot tell).
+    int jittered(int baseMs) {
+        return baseMs + int(QRandomGenerator::global()->bounded(600));
+    }
+}
 
 // The workers are owned by the orchestrator and handed in here — we just hold
 // the pointers, we don't create or destroy them.
@@ -191,6 +201,27 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
         });
 
     connect(cdnPrefetcher, &SgYtDlp::streamUrlReady, this, &Queue::handlePrefetchedStreamUrlReady);
+
+    // Failure handlers for the speculative workers. For a metadata job SgYtDlp emits
+    // `finished` only on failure (success arrives via metadataReady/streamUrlReady),
+    // so these fire exactly when a resolve fell over — e.g. a bot block. Without
+    // them the in-flight markers (m_currentResolvingRow / m_currentlyPrefetchingUrl)
+    // would stay latched and silently stall all further titles/prefetches for the
+    // session.
+    connect(titleResolver, &SgYtDlp::finished, this, [this](bool ok) {
+        if (ok || m_currentResolvingRow == -1) return; // success already cleared it
+        m_currentResolvingRow = -1;
+        if (!m_titleQueue.isEmpty()) resolverTimer->start(jittered(1500));
+    });
+    connect(cdnPrefetcher, &SgYtDlp::finished, this, [this](bool ok) {
+        if (ok || m_currentlyPrefetchingUrl.isEmpty()) return;
+        // Remember the failure so the next pass skips this item instead of retrying
+        // it on a loop (it resolves on demand if the user actually plays it).
+        m_prefetchFailed.insert(m_currentlyPrefetchingUrl);
+        m_currentlyPrefetchingUrl.clear();
+        QTimer::singleShot(jittered(2000), this, &Queue::prefetchNextInQueue);
+    });
+
     connect(debounceTimer, &QTimer::timeout, this, &Queue::triggerMetadataFetch);
     connect(resolverTimer, &QTimer::timeout, this, &Queue::resolveNextTitle);
     connect(urlInput, &QLineEdit::textChanged, this, &Queue::onUrlTextChanged);
@@ -312,6 +343,7 @@ void Queue::onClearQueueClicked() {
 
     queueTable->setRowCount(0);
     cdnCache.clear();
+    m_prefetchFailed.clear(); // fresh queue gets a fresh chance at every item
     m_streamQueue.clear();
 
     processQueueBtn->setEnabled(true);
@@ -565,11 +597,14 @@ void Queue::resolveNextTitle() {
     }
     auto [row, url] = m_titleQueue.takeFirst();
     if (row >= queueTable->rowCount()) {
-        resolverTimer->start(1500);
+        resolverTimer->start(jittered(1500));
         return;
     }
     m_currentResolvingRow = row;
-    titleResolver->fetchMetadataAndStreamUrl(url);
+    // Resolve the stripped video URL — the same key the prefetcher and player use —
+    // so this -J warms the shared cache for them instead of being a third, separate
+    // extraction of the same video.
+    titleResolver->fetchMetadataAndStreamUrl(stripToVideoUrl(url));
 }
 
 void Queue::handleResolverMetadataReady(const QString& title, const QString&, const QString&,
@@ -585,16 +620,25 @@ void Queue::handleResolverMetadataReady(const QString& title, const QString&, co
         }
     }
     m_currentResolvingRow = -1;
-    if (!m_titleQueue.isEmpty()) resolverTimer->start(1500);
+    if (!m_titleQueue.isEmpty()) resolverTimer->start(jittered(1500));
 }
 
 void Queue::prefetchNextInQueue() {
     if (m_queueKind == QueueKind::Local) return; // nothing to resolve for files on disk
     if (!m_currentlyPrefetchingUrl.isEmpty()) return;
+    // Don't run a prefetch extraction while the title-resolver is mid-flight: that
+    // would put two speculative yt-dlp processes at YouTube at once. Let titles
+    // resolve first (they warm the shared cache), so most prefetches then come back
+    // as instant cache hits anyway. Re-check shortly.
+    if (m_currentResolvingRow != -1) {
+        QTimer::singleShot(jittered(500), this, &Queue::prefetchNextInQueue);
+        return;
+    }
     for (int i = 0; i < queueTable->rowCount(); ++i) {
         QString url = queueTable->item(i, 0)->data(Qt::UserRole).toString();
         if (url.isEmpty()) url = queueTable->item(i, 0)->text();
         QString cleanUrl = stripToVideoUrl(url);
+        if (m_prefetchFailed.contains(cleanUrl)) continue; // failed once — don't storm it
         if (!cdnCache.contains(cleanUrl) || !isStreamUrlValid(cdnCache[cleanUrl].first)) {
             m_currentlyPrefetchingUrl = cleanUrl;
             logConsole->append(QString("Prefetching CDN link for item %1...").arg(i));
@@ -629,7 +673,7 @@ void Queue::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl& aud
         }
     }
 
-    QTimer::singleShot(2000, this, &Queue::prefetchNextInQueue);
+    QTimer::singleShot(jittered(2000), this, &Queue::prefetchNextInQueue);
 }
 
 void Queue::onUrlTextChanged(const QString& text) {
