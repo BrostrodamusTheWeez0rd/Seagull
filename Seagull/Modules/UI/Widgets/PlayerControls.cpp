@@ -670,6 +670,13 @@ void PlayerControls::setVolume(int volume) {
     m_settings.setValue("Audio/Volume", volume);
 }
 
+void PlayerControls::nudgeVolume(int delta) {
+    if (!volumeSlider) return;
+    // Setting the slider's value fires valueChanged -> setVolume (engine + UI + save),
+    // exactly like the volume-popup wheel handler.
+    volumeSlider->setValue(qBound(0, volumeSlider->value() + delta, 100));
+}
+
 void PlayerControls::togglePlayback() {
     // After EOF the play button is a replay button — restart from the top.
     if (m_endedMode) { emit replayRequested(); return; }

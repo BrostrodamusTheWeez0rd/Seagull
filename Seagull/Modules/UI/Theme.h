@@ -8,7 +8,8 @@
 // Central app theming. Each theme is a small set of colors; apply() turns those
 // into a Fusion QPalette + a small global stylesheet on qApp, so every standard
 // widget (buttons, inputs, tables, trees, tabs, menus) follows the theme without
-// per-widget code. The player overlays (pills over video) stay dark on purpose.
+// per-widget code. The player overlays (pills over video) are themed too, via the
+// dedicated overlayFg colour below (object-name QSS + a code icon tint).
 namespace Theme {
 
     struct Colors {

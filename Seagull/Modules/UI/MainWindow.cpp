@@ -79,6 +79,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Mouse watch for the tear-off gesture (drag a tab off the bar to float it).
     tabs->tabBar()->installEventFilter(this);
 
+    // Application-wide filter so the player's transport keys work whenever media is
+    // playing and our app is the active window — WITHOUT the user first clicking the
+    // video. Key presses are delivered to whatever widget has focus (a card, a list,
+    // a tab), which used to swallow them; an app-level filter sees every key first and
+    // routes the transport keys to the player (see handleMediaKey, which still bows out
+    // for text fields). The OS media keys (SMTC) are separate and always work.
+    qApp->installEventFilter(this);
+
     // Floating "+" that trails the last tab: a menu of the closed tabs, click
     // one to reopen. Child of the tab widget, not the tab bar (the bar is only
     // as wide as its tabs and would clip it) — positionPlusButton() keeps it
@@ -832,34 +840,60 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 bool MainWindow::handleMediaKey(QKeyEvent* event) {
-    if (!videoPlayer || !videoPlayer->hasActiveMedia()) return false;
-    // These widgets legitimately own the arrow keys (and text entry), so let them
-    // through rather than hijacking navigation/scrubbing for the player.
+    // A modal dialog or popup (a message box, an exec'd dialog, a combo/menu popup)
+    // owns the keyboard while it's up — never hijack its keys for the player.
+    if (QApplication::activeModalWidget() || QApplication::activePopupWidget()) return false;
+    // Our app must be the active window. Qt returns null here when another application
+    // is focused, so the player's keys never fire while Seagull is in the background.
+    if (!QApplication::activeWindow()) return false;
+
+    // Typing always wins: never hijack a key while a text field / editable combo /
+    // spin box has the keyboard (the Search query bar, the File Explorer address /
+    // search box, etc.). Identified by the FOCUS widget, since the press arrives via
+    // the app-wide filter no matter which widget it's delivered to.
     QWidget* fw = QApplication::focusWidget();
-    if (qobject_cast<QAbstractItemView*>(fw) || qobject_cast<QAbstractSlider*>(fw)
-        || qobject_cast<QLineEdit*>(fw)      || qobject_cast<QTextEdit*>(fw)
-        || qobject_cast<QAbstractSpinBox*>(fw) || qobject_cast<QComboBox*>(fw))
+    const bool typing = qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw)
+                     || qobject_cast<QAbstractSpinBox*>(fw) || qobject_cast<QComboBox*>(fw);
+
+    // Escape leaves fullscreen — but the popped-out player owns its own fullscreen
+    // (PlayerWindow::keyPressEvent calls showNormal on itself), so defer to it there.
+    if (event->key() == Qt::Key_Escape) {
+        if (typing) return false;
+        if (m_playerPopout && m_playerPopout->isFullScreen()) return false;
+        if (isFullScreen()) { exitFullScreen(); return true; }
         return false;
+    }
+
+    // Transport keys go to the player FIRST whenever it has media loaded. This is what
+    // makes them work without clicking the video. (The user asked for player-first
+    // routing, so we no longer bow out for focused item views / sliders while media
+    // plays — only for genuine text entry above.)
+    if (!videoPlayer || !videoPlayer->hasActiveMedia()) return false;
+    if (typing) return false;
+    // Only bare keypresses drive transport — let Ctrl/Alt/Meta combos through as app
+    // shortcuts (Ctrl+F find, Alt+F menu mnemonics, etc.).
+    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return false;
+
     switch (event->key()) {
+    case Qt::Key_Space:  videoPlayer->togglePlayPause();   return true;
     case Qt::Key_Left:   videoPlayer->seekRelative(-5000); return true;
     case Qt::Key_Right:  videoPlayer->seekRelative(+5000); return true;
+    case Qt::Key_Up:     videoPlayer->changeVolume(+5);    return true;
+    case Qt::Key_Down:   videoPlayer->changeVolume(-5);    return true;
     case Qt::Key_Comma:  videoPlayer->stepFrame(-1);       return true; // ,
     case Qt::Key_Period: videoPlayer->stepFrame(+1);       return true; // .
+    case Qt::Key_M:      videoPlayer->toggleMute();        return true;
+    case Qt::Key_F:      toggleFullScreen();               return true;
     default: return false;
     }
 }
 
 void MainWindow::keyPressEvent(QKeyEvent* event) {
+    // The app-wide filter normally handles these before they reach here; this is the
+    // fallback for keys delivered straight to the window.
     if (handleMediaKey(event)) return;
-    switch (event->key()) {
-    case Qt::Key_Escape:
-        if (isFullScreen()) exitFullScreen();
-        break;
-    case Qt::Key_Space:
-        if (videoPlayer) videoPlayer->togglePlayPause();
-        break;
-    default: QMainWindow::keyPressEvent(event);
-    }
+    QMainWindow::keyPressEvent(event);
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -964,22 +998,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     }
 
     if (event->type() == QEvent::KeyPress) {
-        QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
-        // Don't steal typing in text inputs (except Escape, which leaves
-        // fullscreen). Check the actual FOCUS widget, not just `watched`: the
-        // press can arrive via any filtered widget while an editable combo's
-        // line edit, a spin box, or a text field owns the keyboard.
-        QWidget* fw = QApplication::focusWidget();
-        const bool typing = qobject_cast<QLineEdit*>(watched) || qobject_cast<QTextEdit*>(watched)
-                         || qobject_cast<QLineEdit*>(fw)      || qobject_cast<QTextEdit*>(fw)
-                         || qobject_cast<QAbstractSpinBox*>(fw)
-                         || qobject_cast<QComboBox*>(fw);
-        if (typing && keyEvent->key() != Qt::Key_Escape) return false;
-        // Player transport keys (arrows / , / .) — handleMediaKey self-guards
-        // against item views and sliders that need the arrows.
-        if (handleMediaKey(keyEvent)) return true;
-        keyPressEvent(keyEvent);
-        if (keyEvent->key() == Qt::Key_Space || keyEvent->key() == Qt::Key_Escape) return true;
+        // Installed app-wide (qApp), so this runs for every key press first, whatever
+        // widget has focus. handleMediaKey self-guards (text fields, media-active, app
+        // active) and consumes only the keys it routes to the player; everything else
+        // falls through to the focused widget untouched.
+        if (handleMediaKey(static_cast<QKeyEvent*>(event))) return true;
         return false;
     }
     return QMainWindow::eventFilter(watched, event);

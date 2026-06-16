@@ -700,6 +700,16 @@ void VideoPlayer::stepFrame(int dir) {
     showOSD();
 }
 
+void VideoPlayer::changeVolume(int delta) {
+    if (playerControls) playerControls->nudgeVolume(delta);
+    showOSD(); // surface the controls so the volume readout is visible
+}
+
+void VideoPlayer::toggleMute() {
+    if (playerControls) playerControls->toggleMute();
+    showOSD();
+}
+
 bool VideoPlayer::eventFilter(QObject* watched, QEvent* event) {
     if (watched == videoWidget) {
         if (event->type() == QEvent::MouseButtonPress) clickTimer->start(250);

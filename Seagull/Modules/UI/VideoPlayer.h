@@ -48,6 +48,8 @@ public:
     // Keyboard transport (driven by the host's key handling):
     void seekRelative(qint64 deltaMs); // arrow keys: nudge ±5s, clamped to [0,len]
     void stepFrame(int dir);           // comma/period: one frame back/forward, paused only
+    void changeVolume(int delta);      // up/down arrows: nudge volume, clamped 0..100
+    void toggleMute();                 // M key: toggle mute
     bool hasActiveMedia() const;       // is there media loaded to act on?
     qint64 mediaPosition() const;      // current play position (ms), for the SMTC timeline
     qint64 mediaDuration() const;      // media length (ms), for the SMTC timeline

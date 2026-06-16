@@ -101,8 +101,11 @@ protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
-    // Player transport keys: arrows seek ±5s, comma/period frame-step (paused).
-    // Returns true if it consumed the key (so item views / sliders keep arrows).
+    // Player transport keys: space play/pause, left/right seek ±5s, up/down volume,
+    // comma/period frame-step, M mute, F + escape fullscreen. Routed player-first
+    // whenever media is active and our app is focused (bows out only for text-entry
+    // widgets, modal dialogs, and popups). Returns true if it consumed the key.
+    // Called from the app-wide event filter.
     bool handleMediaKey(QKeyEvent* event);
     void resizeEvent(QResizeEvent* event) override;
     void moveEvent(QMoveEvent* event) override;

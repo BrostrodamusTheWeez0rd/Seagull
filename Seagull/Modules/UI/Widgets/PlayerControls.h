@@ -51,8 +51,14 @@ public:
     void setVisualizerMode(bool on);     // audio: show the visualizer toggle button
     void setVisualizerActive(bool on);   // visualizer on/off — gates the hover-reveal triangles
 
+    // Keyboard volume control: nudge the slider by delta (clamped 0..100), which
+    // cascades through setVolume to the engine + the saved setting (same path the
+    // volume-popup wheel uses).
+    void nudgeVolume(int delta);
+
 public slots:
     void setAvailableQualities(const QList<StreamOption>& options);
+    void toggleMute(); // M key + the mute button
 
 signals:
     void fullscreenRequested();
@@ -77,7 +83,6 @@ private slots:
     void pollVlcState();
     void seek(int position);
     void togglePlayback();
-    void toggleMute();
     void setVolume(int volume);
     void hideVolumeFrame();
     void hideQualityFrame();
