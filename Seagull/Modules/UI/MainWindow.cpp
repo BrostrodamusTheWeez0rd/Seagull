@@ -239,6 +239,22 @@ void MainWindow::closeDynamicTab(QWidget* tab) {
     schedulePlusReposition();
 }
 
+void MainWindow::registerDuplicableTab(const QString& kind, const QString& menuLabel) {
+    m_duplicableKinds.append({ kind, menuLabel });
+}
+
+void MainWindow::addDuplicateTab(QWidget* page, const QString& label) {
+    // A runtime extra instance: it gets a close x and tear-off like any tab, but it
+    // is NOT added to m_tabOrder (so it's never persisted or offered by "+"), and
+    // closing it disposes the page (see closeTabAt). Opened at the end of the bar.
+    QWidget* wrapper = wrapPage(page);
+    m_duplicateTabs.insert(wrapper, page);
+    tabs->addTab(wrapper, label);
+    addCloseButton(wrapper);
+    tabs->setCurrentIndex(tabs->indexOf(wrapper)); // they asked for it — show it
+    schedulePlusReposition();
+}
+
 void MainWindow::tintShareButton() {
     // A stylesheet can't recolour an icon, so flat-tint the share glyph to the
     // theme's dimmed-text colour — the same colour the "+" and "×" chips use — and
@@ -552,10 +568,25 @@ void MainWindow::closeTabAt(int index) {
     if (tabs->count() <= 1) return; // the last tab stays — never an empty tab bar
 
     QWidget* wrapper = tabs->widget(index);
-    // Removing the tab deletes a slot-managed spinner; our close x is a free
-    // child of the bar, so we drop it ourselves.
     if (m_busyTab && m_tabPages.value(m_busyTab) == wrapper) m_busyTab = nullptr;
 
+    // A duplicate (extra) instance is disposed on close, not kept alive: drop the
+    // tab + its x, detach the page so deleting the wrapper won't take it, then let
+    // the orchestrator delete the instance (and its worker) via duplicateTabClosed.
+    if (m_duplicateTabs.contains(wrapper)) {
+        QWidget* page = m_duplicateTabs.take(wrapper);
+        tabs->removeTab(index);
+        removeCloseButton(wrapper);
+        m_tabPages.remove(page);
+        if (page) page->setParent(nullptr);
+        wrapper->deleteLater();
+        emit duplicateTabClosed(page);
+        schedulePlusReposition();
+        return;
+    }
+
+    // Removing the tab deletes a slot-managed spinner; our close x is a free
+    // child of the bar, so we drop it ourselves.
     tabs->removeTab(index); // doesn't delete the page...
     removeCloseButton(wrapper);
     wrapper->hide();
@@ -584,10 +615,21 @@ void MainWindow::reopenTab(int orderIdx) {
 
 void MainWindow::rebuildPlusMenu() {
     m_plusMenu->clear();
+    bool anyClosed = false;
     for (int i = 0; i < m_tabOrder.size(); ++i) {
         if (tabs->indexOf(m_tabOrder[i].wrapper) >= 0) continue;       // open already
         if (m_tabOrder[i].wrapper->window() != this) continue;         // floating — open elsewhere
         m_plusMenu->addAction(m_tabOrder[i].label, this, [this, i]() { reopenTab(i); });
+        anyClosed = true;
+    }
+    // "New <kind> tab" entries for the duplicable kinds (Search, File Explorer): a
+    // fresh extra instance rather than reopening a closed one.
+    if (!m_duplicableKinds.isEmpty()) {
+        if (anyClosed) m_plusMenu->addSeparator();
+        for (const auto& k : m_duplicableKinds) {
+            const QString kind = k.first;
+            m_plusMenu->addAction(k.second, this, [this, kind]() { emit newTabRequested(kind); });
+        }
     }
     if (m_plusMenu->isEmpty())
         m_plusMenu->addAction("All tabs open")->setEnabled(false);

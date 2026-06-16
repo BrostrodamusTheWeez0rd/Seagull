@@ -162,11 +162,6 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         videoPlayer->playLocalFile(url);
         });
 
-    connect(explorerModule, &FileExplorer::playMediaRequested, videoPlayer, [this](const QUrl& url) {
-        activeSource = ActiveSource::Explorer;
-        videoPlayer->playLocalFile(url);
-        });
-
     connect(queueModule, &Queue::playMediaRequested, videoPlayer,
         [this](const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
             activeSource = ActiveSource::Queue;
@@ -188,7 +183,6 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Local files queued from Library cards / the File Explorer context menu.
     // The queue itself enforces the local/online split (clear-first modal).
     connect(libraryModule, &MediaLibrary::enqueueLocalRequested, queueModule, &Queue::addLocalFilesToQueue);
-    connect(explorerModule, &FileExplorer::enqueueRequested, queueModule, &Queue::addLocalFilesToQueue);
 
     // While the Library builds its card grid (tab/category switch), pause the audio
     // visualizer's render timer so the two don't fight over the GUI thread (the hitch
@@ -199,48 +193,28 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // A fresh playlist file landed in the playlist folder — flash the Library tab.
     connect(queueModule, &Queue::playlistSaved, this, [this](const QString&) { flashLibraryTab(); });
 
-    // A search result card plays through the same path as the queue. A short
-    // additionally gets the YouTube feed behaviour: it loops at the end, and
-    // wheel-scrolling over the video walks the search results.
-    connect(searchModule, &Search::playMediaRequested, videoPlayer,
-        [this](const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
-            activeSource = ActiveSource::Search;
-            const bool wasShorts = videoPlayer->shortsMode();
-            const bool isShort   = rawUrl.toString().contains("/shorts/", Qt::CaseInsensitive);
-            videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
-            // After playVideo: starting media clears the mode, this re-arms it.
-            videoPlayer->setShortsMode(isShort);
-            // Entering shorts viewing drops the tab pane like YouTube's
-            // immersive feed; advancing within the feed leaves the user's
-            // split alone (a handle click brings the tabs back any time).
-            if (isShort && !wasShorts) mainWindow->collapseTabs();
-        });
-
-    // Shorts-feed scroll: wheel over the playing short = next/previous result.
+    // Shorts-feed scroll: wheel over the playing short = next/previous result of
+    // whichever search tab is the active feed. (Search card play wiring lives in
+    // wireSearchTab so every search tab — primary or duplicate — behaves the same.)
     connect(videoPlayer, &VideoPlayer::shortsScrolled, this, [this](int step) {
-        if (activeSource == ActiveSource::Search) searchModule->playAdjacentResult(step);
+        if (activeSource == ActiveSource::Search && m_activeSearch)
+            m_activeSearch->playAdjacentResult(step);
         });
 
-    // Search card "Queue" adds to the Queue tab; "Download" goes to the dedicated
-    // download worker's FIFO (files land in the library).
-    connect(searchModule, &Search::enqueueRequested, queueModule,
-        [this](const QUrl& url, const QString& title) {
-            queueModule->addUrlToQueue(url.toString(), title);
-        });
-    connect(searchModule, &Search::downloadRequested, this,
-        [this](const QUrl& url, const QString& /*title*/) {
-            m_downloadQueue.append(url.toString());
-            pumpDownloads();
-        });
-
-    // Display "Card size" resizes the Search and Library cards live.
-    connect(settingsModule, &Settings::cardWidthChanged, searchModule, &Search::setCardWidth);
+    // Display "Card size" resizes the Library cards live. Search cards are handled
+    // per-tab in wireSearchTab (there can be several Search tabs).
     connect(settingsModule, &Settings::cardWidthChanged, libraryModule, &MediaLibrary::setCardWidth);
-
-    // Search history wipes: the Search settings' "Clear History Now" button,
-    // and the on-close auto-clear when Search/ClearHistoryOnExit is ticked.
-    connect(settingsModule, &Settings::clearHistoryRequested, searchModule, &Search::clearSearchHistory);
     connect(settingsModule, &Settings::visualizerSettingsChanged, videoPlayer, &VideoPlayer::applyVisualizerSettings);
+
+    // Multiple-instance tabs. The primary Search + File Explorer go through the same
+    // per-tab wiring the duplicates use; register them as duplicable so the "+" menu
+    // offers "New Search tab" / "New File Explorer tab", and wire the open/close hooks.
+    m_searchTabs.append(searchModule);     m_activeSearch   = searchModule;   wireSearchTab(searchModule);
+    m_explorerTabs.append(explorerModule); m_activeExplorer = explorerModule; wireExplorerTab(explorerModule);
+    mainWindow->registerDuplicableTab("Search", "New Search tab");
+    mainWindow->registerDuplicableTab("File Explorer", "New File Explorer tab");
+    connect(mainWindow, &MainWindow::newTabRequested,   this, &Seagull::openDuplicateTab);
+    connect(mainWindow, &MainWindow::duplicateTabClosed, this, &Seagull::disposeDuplicateTab);
 
     // General "Check for Updates" button -> manual app-version check (shows an
     // "up to date" message too, unlike the silent startup check).
@@ -285,7 +259,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     connect(videoPlayer, &VideoPlayer::mediaEnded, this, [this]() {
         if (queueModule->playNextOrStart()) return;
         if (activeSource == ActiveSource::Library)       libraryModule->playNextFile();
-        else if (activeSource == ActiveSource::Explorer) explorerModule->playNextFile();
+        else if (activeSource == ActiveSource::Explorer && m_activeExplorer) m_activeExplorer->playNextFile();
         });
 
     // The skip buttons (single-click = nudge, double-click = jump tracks) land here,
@@ -411,6 +385,77 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // it owns checkFinished/applyProgress/applyFinished for the whole flow.
 }
 
+void Seagull::wireSearchTab(Search* s) {
+    // A search card plays through the same path as the queue; a short additionally
+    // loops at the end and the wheel walks the feed. Capturing `s` lets the active
+    // feed (skip / shorts-scroll) follow whichever search tab started playback.
+    connect(s, &Search::playMediaRequested, videoPlayer,
+        [this, s](const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
+            activeSource   = ActiveSource::Search;
+            m_activeSearch = s;
+            const bool wasShorts = videoPlayer->shortsMode();
+            const bool isShort   = rawUrl.toString().contains("/shorts/", Qt::CaseInsensitive);
+            videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
+            videoPlayer->setShortsMode(isShort); // playVideo cleared it — re-arm
+            if (isShort && !wasShorts) mainWindow->collapseTabs();
+        });
+    // Card "Queue" adds to the Queue tab; "Download" goes to the dedicated download
+    // worker's FIFO (files land in the library).
+    connect(s, &Search::enqueueRequested, queueModule,
+        [this](const QUrl& url, const QString& title) { queueModule->addUrlToQueue(url.toString(), title); });
+    connect(s, &Search::downloadRequested, this,
+        [this](const QUrl& url, const QString& /*title*/) { m_downloadQueue.append(url.toString()); pumpDownloads(); });
+    // Live "Card size" + the Search settings' "Clear History Now" reach every tab.
+    connect(settingsModule, &Settings::cardWidthChanged,      s, &Search::setCardWidth);
+    connect(settingsModule, &Settings::clearHistoryRequested, s, &Search::clearSearchHistory);
+}
+
+void Seagull::wireExplorerTab(FileExplorer* e) {
+    connect(e, &FileExplorer::playMediaRequested, videoPlayer, [this, e](const QUrl& url) {
+        activeSource     = ActiveSource::Explorer;
+        m_activeExplorer = e; // this tab's file list is what skip walks
+        videoPlayer->playLocalFile(url);
+        });
+    connect(e, &FileExplorer::enqueueRequested, queueModule, &Queue::addLocalFilesToQueue);
+}
+
+void Seagull::openDuplicateTab(const QString& kind) {
+    // "+" menu -> a fresh extra instance. Each Search duplicate gets its OWN SgSearch
+    // worker (true concurrent searching — which is exactly why Search warns about the
+    // bot risk of two tabs on one site). File Explorer has no worker.
+    if (kind == QStringLiteral("Search")) {
+        auto* worker = new SgSearch(this);
+        connect(worker, &SgSearch::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+        auto* s = new Search(worker, spellChecker);
+        m_searchWorkers.insert(s, worker);
+        m_searchTabs.append(s);
+        wireSearchTab(s);
+        mainWindow->addDuplicateTab(s, "Search");
+    }
+    else if (kind == QStringLiteral("File Explorer")) {
+        auto* e = new FileExplorer(spellChecker);
+        m_explorerTabs.append(e);
+        wireExplorerTab(e);
+        mainWindow->addDuplicateTab(e, "File Explorer");
+    }
+}
+
+void Seagull::disposeDuplicateTab(QWidget* page) {
+    // A duplicate tab closed: delete the instance (and its worker). The active-feed
+    // pointer falls back to the primary so skip/scroll still have a valid target.
+    if (auto* s = qobject_cast<Search*>(page)) {
+        m_searchTabs.removeOne(s);
+        if (m_activeSearch == s) m_activeSearch = searchModule;
+        if (SgSearch* w = m_searchWorkers.take(s)) w->deleteLater();
+        s->deleteLater();
+    }
+    else if (auto* e = qobject_cast<FileExplorer*>(page)) {
+        m_explorerTabs.removeOne(e);
+        if (m_activeExplorer == e) m_activeExplorer = explorerModule;
+        e->deleteLater();
+    }
+}
+
 void Seagull::releaseThumbnailHolds() {
     libraryModule->setThumbnailsHeld(false);
     playerThumbnailer->setHeld(false);
@@ -494,15 +539,17 @@ void Seagull::skipActive(int delta) {
         else           libraryModule->playPrevFile();
     }
     else if (activeSource == ActiveSource::Explorer) {
-        if (delta > 0) explorerModule->playNextFile();
-        else           explorerModule->playPrevFile();
+        if (m_activeExplorer) {
+            if (delta > 0) m_activeExplorer->playNextFile();
+            else           m_activeExplorer->playPrevFile();
+        }
     }
     else if (activeSource == ActiveSource::Queue) {
         if (delta > 0) queueModule->playNextQueuedItem();
         else           queueModule->playPrevQueuedItem();
     }
     else if (activeSource == ActiveSource::Search) {
-        searchModule->playAdjacentResult(delta > 0 ? 1 : -1);
+        if (m_activeSearch) m_activeSearch->playAdjacentResult(delta > 0 ? 1 : -1);
     }
 }
 

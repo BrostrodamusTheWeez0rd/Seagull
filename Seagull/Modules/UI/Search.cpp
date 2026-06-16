@@ -21,6 +21,7 @@
 #include <QMovie>
 #include <QSettings>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QEvent>
 #include <QShowEvent>
 #include <QHideEvent>
@@ -41,6 +42,8 @@
 #include <QIcon>
 #include <QPixmap>
 #include <QPalette>
+#include <QMessageBox>
+#include <QCheckBox>
 #include <algorithm>
 
 namespace {
@@ -48,8 +51,11 @@ constexpr int kGridSpacing = 12;
 constexpr int kSearchGraceMs = 600; // keep the filter bar up briefly after the magnifier click
 }
 
+QList<Search*> Search::s_instances; // every live Search tab (GUI thread only)
+
 Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     : QWidget(parent), m_search(searchWorker), m_spell(spell) {
+    s_instances.append(this);
     m_nam = new QNetworkAccessManager(this);
 
     // Root layout: 0 margins so the separator and results area span full width.
@@ -606,11 +612,13 @@ void Search::clearSearchHistory() {
 // ---------------------------------------------------------------------------
 
 void Search::performSearch() {
-    // Enter on a query that matches a history item fires returnPressed AND
-    // textActivated back-to-back; collapse the pair into one search.
-    if (m_searchFiring) return;
-    m_searchFiring = true;
-    QTimer::singleShot(0, this, [this]() { m_searchFiring = false; });
+    // One Enter fires returnPressed AND textActivated; the twin runs right after this
+    // call returns (after the duplicate-site modal closes, if shown). Collapse the pair
+    // with a timestamp re-stamped at the END — robust across the modal's nested event
+    // loop, unlike the old singleShot flag whose reset fired mid-prompt.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_lastSearchFireMs && now - m_lastSearchFireMs < 400) return;
+    m_lastSearchFireMs = now;
 
     const QString query = queryBar->currentText().trimmed();
 
@@ -623,9 +631,16 @@ void Search::performSearch() {
         return;
     }
 
+    // Another search tab already on this site? Warn once before adding load (bot risk).
+    if (!confirmSharedSiteSearch()) {
+        m_lastSearchFireMs = QDateTime::currentMSecsSinceEpoch(); // swallow the twin after the modal
+        return;
+    }
+
     pushNavEntry({ NavEntry::Query, query, query, currentSite() });
     addToHistory(query);
     startSearch(query);
+    m_lastSearchFireMs = QDateTime::currentMSecsSinceEpoch(); // re-stamp after the (possibly long) modal
 }
 
 void Search::startSearch(const QString& query) {
@@ -1035,6 +1050,46 @@ QString Search::siteName() const {
     case SgSearch::Site::Chaturbate: return QStringLiteral("Chaturbate");
     default:                         return QStringLiteral("YouTube");
     }
+}
+
+Search::~Search() {
+    s_instances.removeOne(this);
+}
+
+bool Search::anotherTabOnSite(SgSearch::Site site) const {
+    for (Search* s : s_instances)
+        if (s != this && s->currentSite() == site) return true;
+    return false;
+}
+
+bool Search::confirmSharedSiteSearch() {
+    if (m_dupeSiteAcknowledged) return true; // already warned + continued in this tab
+    if (m_dupePromptOpen) return false;      // a prompt is already up — don't stack a twin
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    if (!cfg.value("Search/WarnDuplicateSite", true).toBool()) return true; // opted out app-wide
+    if (!anotherTabOnSite(currentSite())) return true;                      // no conflict
+
+    m_dupePromptOpen = true;
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle("Multiple searches, same site");
+    box.setText("Another search tab is already set to " + siteName() + ".");
+    box.setInformativeText(
+        "Running more than one search against the same site at once raises the chance "
+        "of being flagged as a bot. Seagull recommends one search tab per site.");
+    QPushButton* cont = box.addButton("Continue Search", QMessageBox::AcceptRole);
+    box.addButton("Cancel", QMessageBox::RejectRole);
+    box.setDefaultButton(cont);
+    QCheckBox* dontShow = new QCheckBox("Don't show this again", &box);
+    box.setCheckBox(dontShow);
+    box.exec();
+    m_dupePromptOpen = false;
+
+    if (dontShow->isChecked())
+        cfg.setValue("Search/WarnDuplicateSite", false); // never warn again, anywhere
+    const bool proceed = (box.clickedButton() == cont);
+    if (proceed) m_dupeSiteAcknowledged = true; // don't nag this tab again this session
+    return proceed;
 }
 
 void Search::updateQueryPlaceholder() {

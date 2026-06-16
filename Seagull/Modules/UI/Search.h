@@ -42,6 +42,7 @@ class Search : public QWidget {
     Q_OBJECT
 public:
     explicit Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent = nullptr);
+    ~Search() override; // unregister from the shared instance list
 
 public slots:
     void setCardWidth(int targetWidth);
@@ -91,6 +92,11 @@ private:
     };
 
     SgSearch::Site currentSite() const; // the site picked/typed in the dropdown
+    // Multiple search tabs hammering one site looks like bot traffic. Before a
+    // user-initiated search, if another open search tab is already pointed at this
+    // site, warn once (with a "don't show again" opt-out, config Search/WarnDuplicateSite).
+    bool anotherTabOnSite(SgSearch::Site site) const; // a sibling tab is on `site`
+    bool confirmSharedSiteSearch();                   // true = proceed; false = user cancelled
     void updateQueryPlaceholder();      // set the query bar prompt to "Search <site>"
     void clearResults();
     void addCard(const SearchResult& result);
@@ -182,6 +188,10 @@ private:
     QLabel*      statusSpinner;
     QMovie*      statusMovie;
 
+    // Every live Search tab, so a tab can tell if a sibling targets the same site
+    // (GUI-thread only; registered in the ctor, removed in the dtor).
+    static QList<Search*> s_instances;
+
     SgSearch*              m_search;
     SgSpellCheck*          m_spell;
     QNetworkAccessManager* m_nam;
@@ -208,9 +218,16 @@ private:
     SgSearch::Site m_uiSite = SgSearch::Site::YouTube; // site the history/chrome is currently showing
 
     QString m_currentQuery;
-    // Enter on a query matching a history item fires both returnPressed and
-    // textActivated; this collapses the pair into one search.
-    bool    m_searchFiring = false;
+    // One Enter fires returnPressed AND textActivated; the twin arrives right after
+    // performSearch returns (after the duplicate-site modal closes, if shown). An
+    // end-stamped timestamp collapses the pair into one search — robust across the
+    // modal's nested event loop (a singleShot reset fired mid-prompt and let it through).
+    qint64  m_lastSearchFireMs = 0;
+    // Duplicate-site warning state: a prompt is open right now (block a stacked twin),
+    // and the user already hit Continue in THIS tab — nag at most once per tab/session
+    // (the "don't show again" checkbox is the permanent, app-wide opt-out via config).
+    bool    m_dupePromptOpen = false;
+    bool    m_dupeSiteAcknowledged = false;
     int     m_batchSize    = 20;
     int     m_shownCount   = 0;
     int     m_lastRequested = 0;

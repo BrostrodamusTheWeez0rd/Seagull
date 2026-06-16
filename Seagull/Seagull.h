@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QThread>
 #include <QStringList>
+#include <QList>
+#include <QHash>
 #include "Modules/UI/MainWindow.h"
 #include "Modules/UI/VideoPlayer.h"
 #include "Modules/UI/Queue.h"
@@ -61,6 +63,22 @@ private:
     Settings* settingsModule;
     QTextBrowser* descriptionView; // the dynamic "Description" tab's page
     ActiveSource activeSource = ActiveSource::None;
+
+    // Multiple-instance tabs (Search, File Explorer). The primary instances above
+    // are the first entry in each list; the rest are runtime duplicates opened from
+    // the "+" menu. m_active* is whichever instance last drove playback, so skip /
+    // shorts-scroll walk the right tab's feed. Each duplicate Search owns its own
+    // SgSearch worker (tracked here so it's deleted with the tab).
+    QList<Search*>       m_searchTabs;
+    Search*              m_activeSearch = nullptr;
+    QHash<Search*, SgSearch*> m_searchWorkers; // duplicate Search -> its worker
+    QList<FileExplorer*> m_explorerTabs;
+    FileExplorer*        m_activeExplorer = nullptr;
+
+    void wireSearchTab(Search* s);          // connect a Search instance's signals
+    void wireExplorerTab(FileExplorer* e);  // connect a FileExplorer instance's signals
+    void openDuplicateTab(const QString& kind);    // "+" -> build + wire + add a new instance
+    void disposeDuplicateTab(QWidget* page);       // tab closed -> delete the instance (+ worker)
 
     // The orchestrator owns every backend worker and hands them out to modules.
     SgYtDlp* downloaderWorker;

@@ -94,8 +94,18 @@ public:
     void collapseTabs();
     void toggleTabsCollapsed();
 
+    // Multiple-instance tabs. A "duplicable" kind (e.g. Search, File Explorer) gets
+    // a "New <kind> tab" entry in the "+" menu; choosing it emits newTabRequested so
+    // the orchestrator can build a fresh instance and hand it back via addDuplicateTab.
+    // Unlike canonical tabs, a duplicate isn't persisted or reopenable, and closing it
+    // disposes the page (the orchestrator deletes the instance via duplicateTabClosed).
+    void registerDuplicableTab(const QString& kind, const QString& menuLabel);
+    void addDuplicateTab(QWidget* page, const QString& label);
+
 signals:
-    void shareRequested(); // the floating Share button was clicked
+    void shareRequested();                      // the floating Share button was clicked
+    void newTabRequested(const QString& kind);  // "+" menu -> open a new instance of `kind`
+    void duplicateTabClosed(QWidget* page);     // a duplicate tab closed -> dispose its page
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -162,7 +172,9 @@ private:
     QSplitter* mainSplitter;
     QTabWidget* tabs;
     QHash<QWidget*, QWidget*> m_tabPages; // inner page widget -> its QScrollArea wrapper
-    QList<TabInfo> m_tabOrder;            // every registered tab, in addTab order
+    QList<TabInfo> m_tabOrder;            // every registered (canonical) tab, in addTab order
+    QHash<QWidget*, QWidget*> m_duplicateTabs;       // duplicate tab wrapper -> its page (disposed on close)
+    QList<QPair<QString, QString>> m_duplicableKinds; // (kind, "New <kind> tab" menu label)
     QHash<QWidget*, QToolButton*> m_closeButtons; // open tab wrapper -> its manual close x
     QLabel* m_tabSpinner = nullptr;       // busy spinner shown in place of the busy tab's x
     QMovie* m_tabSpinnerMovie = nullptr;  // the seagull animation driving m_tabSpinner
