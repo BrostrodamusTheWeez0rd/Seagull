@@ -114,9 +114,11 @@ private:
     void updateChannelHeader(const SearchResult& info);
     void loadAvatar(const QString& url); // channel header avatar, WebP-tolerant via ffmpeg
     void addToHistory(const QString& query);
-    void loadHistory();  // read the persisted history file into the completer
-    void saveHistory();  // rewrite the file (plain text, one query per line)
-    static QString historyFilePath();
+    void loadHistory();  // read both sites' persisted history files
+    void saveHistory(SgSearch::Site site); // rewrite one site's file (one query per line)
+    void applyHistoryToUi(); // load the active site's history into the completer + combo
+    QString siteName() const; // "YouTube" / "PornHub" for the active site
+    static QString historyFilePath(SgSearch::Site site); // per-site history file
     void setFilterMode(FilterMode mode);
     bool passesFilter(const SearchResult& r) const;
     void positionFilterPill();
@@ -202,7 +204,8 @@ private:
     QList<NavEntry> m_navHistory;
     int             m_navIndex = -1;
 
-    QStringList  m_searchHistory;
+    QStringList  m_historyFor[2]; // per-site search history, indexed by int(SgSearch::Site)
+    SgSearch::Site m_uiSite = SgSearch::Site::YouTube; // site the history/chrome is currently showing
 
     QString m_currentQuery;
     // Enter on a query matching a history item fires both returnPressed and

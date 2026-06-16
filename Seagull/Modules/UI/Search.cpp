@@ -307,8 +307,14 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     connect(queryBar->lineEdit(), &QLineEdit::returnPressed, this, &Search::performSearch);
     // Picking a history entry from the arrow dropdown searches it right away.
     connect(queryBar, &QComboBox::textActivated, this, &Search::performSearch);
-    // Switching site updates the query bar's prompt to name the site being searched.
-    connect(siteBar, &QComboBox::currentTextChanged, this, [this](const QString&) { updateQueryPlaceholder(); });
+    // Switching site swaps the per-site history + updates the prompt/idle label.
+    connect(siteBar, &QComboBox::currentTextChanged, this, [this](const QString&) {
+        const SgSearch::Site s = currentSite();
+        if (s == m_uiSite) return; // typing within the same site -> nothing to swap
+        m_uiSite = s;
+        updateQueryPlaceholder();
+        applyHistoryToUi();
+    });
     // Enter in the site box jumps to the query so you can just type and search.
     connect(siteBar->lineEdit(), &QLineEdit::returnPressed, this, [this]() { queryBar->setFocus(); });
     updateQueryPlaceholder(); // initial prompt ("Search YouTube")
@@ -521,10 +527,11 @@ void Search::updateNavButtons() {
 }
 
 void Search::addToHistory(const QString& query) {
-    m_searchHistory.removeAll(query);
-    m_searchHistory.prepend(query);
-    if (m_searchHistory.size() > 50) m_searchHistory.removeLast();
-    m_historyModel->setStringList(m_searchHistory);
+    QStringList& h = m_historyFor[static_cast<int>(currentSite())]; // the searched site's history
+    h.removeAll(query);
+    h.prepend(query);
+    if (h.size() > 50) h.removeLast();
+    m_historyModel->setStringList(h);
 
     // Mirror into the combo's item list incrementally (a full rebuild would
     // disturb the edit text mid-search).
@@ -536,46 +543,59 @@ void Search::addToHistory(const QString& query) {
     queryBar->setCurrentIndex(0); // the bar keeps showing the running query
     queryBar->blockSignals(false);
 
-    saveHistory();
+    saveHistory(currentSite());
 }
 
-// History lives in a plain-text file the user can open and read: one query
-// per line, most recent first, next to config.ini.
-QString Search::historyFilePath() {
-    return QCoreApplication::applicationDirPath() + "/search_history.txt";
+// History is per-site, each in its own plain-text file (one query per line, most
+// recent first) next to config.ini. YouTube keeps the original filename so existing
+// history carries over; other sites get their own file.
+QString Search::historyFilePath(SgSearch::Site site) {
+    const QString base = QCoreApplication::applicationDirPath();
+    return site == SgSearch::Site::PornHub ? base + "/search_history_ph.txt"
+                                           : base + "/search_history.txt";
 }
 
 void Search::loadHistory() {
-    QFile f(historyFilePath());
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return; // none yet
-    m_searchHistory.clear();
-    QTextStream in(&f);
-    while (!in.atEnd() && m_searchHistory.size() < 50) {
-        const QString line = in.readLine().trimmed();
-        if (!line.isEmpty()) m_searchHistory.append(line);
+    for (int i = 0; i < 2; ++i) {
+        m_historyFor[i].clear();
+        QFile f(historyFilePath(static_cast<SgSearch::Site>(i)));
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue; // none yet
+        QTextStream in(&f);
+        while (!in.atEnd() && m_historyFor[i].size() < 50) {
+            const QString line = in.readLine().trimmed();
+            if (!line.isEmpty()) m_historyFor[i].append(line);
+        }
     }
-    m_historyModel->setStringList(m_searchHistory);
+    applyHistoryToUi();
+}
+
+void Search::applyHistoryToUi() {
+    const QStringList& h = m_historyFor[static_cast<int>(currentSite())];
+    const QString pending = queryBar->currentText(); // keep any in-progress query text
+    m_historyModel->setStringList(h);
     queryBar->blockSignals(true);
     queryBar->clear();
-    queryBar->addItems(m_searchHistory);
-    queryBar->setCurrentIndex(-1);
+    queryBar->addItems(h);
+    queryBar->setEditText(pending);
     queryBar->blockSignals(false);
 }
 
-void Search::saveHistory() {
-    QFile f(historyFilePath());
+void Search::saveHistory(SgSearch::Site site) {
+    QFile f(historyFilePath(site));
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) return;
     QTextStream out(&f);
-    for (const QString& q : m_searchHistory) out << q << '\n';
+    for (const QString& q : m_historyFor[static_cast<int>(site)]) out << q << '\n';
 }
 
 void Search::clearSearchHistory() {
-    m_searchHistory.clear();
-    m_historyModel->setStringList(m_searchHistory);
+    for (int i = 0; i < 2; ++i) { // clear every site's history + file
+        m_historyFor[i].clear();
+        QFile::remove(historyFilePath(static_cast<SgSearch::Site>(i)));
+    }
+    m_historyModel->setStringList({});
     queryBar->blockSignals(true);
     queryBar->clear(); // items and edit text both go
     queryBar->blockSignals(false);
-    QFile::remove(historyFilePath());
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,10 +1025,17 @@ SgSearch::Site Search::currentSite() const {
                                              : SgSearch::Site::YouTube;
 }
 
+QString Search::siteName() const {
+    return currentSite() == SgSearch::Site::PornHub ? QStringLiteral("PornHub")
+                                                    : QStringLiteral("YouTube");
+}
+
 void Search::updateQueryPlaceholder() {
-    const QString site = (currentSite() == SgSearch::Site::PornHub) ? "PornHub" : "YouTube";
     if (queryBar->lineEdit())
-        queryBar->lineEdit()->setPlaceholderText("Search " + site);
+        queryBar->lineEdit()->setPlaceholderText("Search " + siteName());
+    // Reflect the site in the idle prompt at the bottom (only while nothing's loaded).
+    if (m_viewMode == ViewMode::Search && m_allResults.isEmpty())
+        setStatus("Search " + siteName() + " to see results.", false);
 }
 
 void Search::clearResults() {
