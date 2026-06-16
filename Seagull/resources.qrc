@@ -22,6 +22,7 @@
         <file>Assets/icons/equalizer.svg</file>
         <file>Assets/icons/music-note.svg</file>
         <file>Assets/icons/search.svg</file>
+        <file>Assets/icons/sort.svg</file>
         <file>Assets/icons/account.svg</file>
         <file alias="docs/README.md">../README.md</file>
         <file alias="docs/FAQ.md">../FAQ.md</file>

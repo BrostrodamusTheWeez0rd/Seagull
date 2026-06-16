@@ -134,17 +134,17 @@ void Settings::setupUI() {
     visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio.");
     displayLayout->addRow("Visualizer:", visualizerCombo);
 
-    // All visualizer settings in one tight form folded under the picker. Behaviour
-    // is per-visualizer (the combo's value swaps with the selected visualizer);
-    // the cap + end-of-song are global. (No QStackedWidget — its unstable size hint
-    // left a shifting gap here.)
+    // All visualizer settings in one tight form folded under the picker. Behaviour,
+    // the cap, and end-of-song are all global — they apply to whichever visualizer
+    // is selected. (No QStackedWidget — its unstable size hint left a shifting gap
+    // here.)
     auto* vizBlock = new QWidget();
     auto* vizForm = new QFormLayout(vizBlock);
     vizForm->setContentsMargins(0, 0, 0, 0);
 
     behaviorCombo = new QComboBox();
     behaviorCombo->addItems({ "Drift", "Reverse", "Swooping", "Flocking" });
-    behaviorCombo->setToolTip("How the seagulls move for this visualizer: Drift (left to right), "
+    behaviorCombo->setToolTip("How the seagulls move: Drift (left to right), "
         "Reverse (right to left), Swooping, or Flocking.");
     vizForm->addRow("Seagull behavior:", behaviorCombo);
 
@@ -389,10 +389,7 @@ void Settings::setupUI() {
     connect(themeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(cardSizeCombo, &QComboBox::currentTextChanged, this, &Settings::onCardSizeChanged);
     connect(cardSizeSlider, &QSlider::valueChanged, this, &Settings::saveSettings);
-    connect(visualizerCombo, &QComboBox::currentIndexChanged, this, [this](int) {
-        loadBehaviorForVisualizer(); // show the newly-selected visualizer's behaviour
-        saveSettings();
-        });
+    connect(visualizerCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(behaviorCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(maxGullsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
     connect(killGullsCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
@@ -525,14 +522,6 @@ void Settings::applyUnifyState() {
         foldersForm->setRowVisible(row, !unified);
 }
 
-void Settings::loadBehaviorForVisualizer() {
-    const QString key = visualizerCombo->currentText().contains("Waves")
-        ? "Visualizer/WavesBehavior" : "Visualizer/SkyBehavior";
-    behaviorCombo->blockSignals(true); // just reflecting state; don't trigger an extra save
-    behaviorCombo->setCurrentText(iniSettings->value(key, "Drift").toString());
-    behaviorCombo->blockSignals(false);
-}
-
 void Settings::loadSettings() {
     // Populate controls without each change auto-saving back to disk.
     m_loading = true;
@@ -552,7 +541,8 @@ void Settings::loadSettings() {
     cardSizeSlider->setVisible(cardPreset.isEmpty());
 
     visualizerCombo->setCurrentText(iniSettings->value("Visualizer/Type", "Seagull Sky").toString());
-    loadBehaviorForVisualizer();
+    // Behaviour is global — one key shared by every visualizer.
+    behaviorCombo->setCurrentText(iniSettings->value("Visualizer/Behavior", "Drift").toString());
     maxGullsSpin->setValue(iniSettings->value("Visualizer/MaxGulls", 14).toInt());
     killGullsCheck->setChecked(iniSettings->value("Visualizer/KillOnEnd", true).toBool());
 
@@ -616,10 +606,8 @@ void Settings::saveSettings() {
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
     iniSettings->setValue("Display/CardWidth", currentCardWidth());
     iniSettings->setValue("Visualizer/Type", visualizerCombo->currentText());
-    // Behaviour is per-visualizer; write it to the currently-selected one's key
-    // (the other visualizer's value is already persisted from when it was shown).
-    iniSettings->setValue(visualizerCombo->currentText().contains("Waves")
-        ? "Visualizer/WavesBehavior" : "Visualizer/SkyBehavior", behaviorCombo->currentText());
+    // Behaviour is global — one key shared by every visualizer.
+    iniSettings->setValue("Visualizer/Behavior", behaviorCombo->currentText());
     iniSettings->setValue("Visualizer/MaxGulls", maxGullsSpin->value());
     iniSettings->setValue("Visualizer/KillOnEnd", killGullsCheck->isChecked());
     iniSettings->setValue("Download/Type", currentDownloadType());
@@ -675,8 +663,7 @@ void Settings::resetDefaults() {
     cardSizeSlider->hide();
     visualizerCombo->setCurrentText("Seagull Sky");
     behaviorCombo->setCurrentText("Drift");
-    iniSettings->setValue("Visualizer/SkyBehavior", "Drift");   // reset both visualizers' behaviour
-    iniSettings->setValue("Visualizer/WavesBehavior", "Drift");
+    iniSettings->setValue("Visualizer/Behavior", "Drift");
     maxGullsSpin->setValue(14);
     killGullsCheck->setChecked(true);
     typeVideoBtn->setChecked(true);

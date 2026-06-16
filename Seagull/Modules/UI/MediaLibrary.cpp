@@ -11,6 +11,8 @@
 #include <QScrollBar>
 #include <QPushButton>
 #include <QButtonGroup>
+#include <QMenu>
+#include <QActionGroup>
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
@@ -59,6 +61,9 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     m_targetWidth = qBound(120, cfg.value("Display/CardWidth", 360).toInt(), 480); // default Extra Large
     m_cardWidth = m_targetWidth;
+    m_sortMode = static_cast<SortMode>(qBound(0,
+        cfg.value("Library/SortMode", static_cast<int>(SortMode::DateNewest)).toInt(),
+        static_cast<int>(SortMode::DateOldest)));
 
     cardsHost = new QWidget();
     cardsFlow = new FlowLayout(cardsHost, 0, kGridSpacing, kGridSpacing);
@@ -111,6 +116,34 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     tintSearchIcon();
     connect(searchButton, &QPushButton::clicked, this, &MediaLibrary::toggleSearch);
 
+    // Floating sort/order button, sitting to the right of the magnifier. Same size
+    // and auto-hide rules; a click drops a menu of the basic orderings.
+    sortButton = new QPushButton(this);
+    sortButton->setObjectName("librarySearchButton"); // reuse the magnifier's themed style
+    sortButton->setCursor(Qt::PointingHandCursor);
+    sortButton->setFixedSize(34, 34);
+    sortButton->setToolTip("Sort this library");
+    tintSortIcon();
+    connect(sortButton, &QPushButton::clicked, this, &MediaLibrary::showSortMenu);
+
+    sortMenu = new QMenu(this);
+    auto* sortGroup = new QActionGroup(sortMenu);
+    sortGroup->setExclusive(true);
+    const struct { const char* label; SortMode mode; } orderings[] = {
+        { "Name (A\xE2\x80\x93" "Z)",  SortMode::NameAsc },
+        { "Name (Z\xE2\x80\x93" "A)",  SortMode::NameDesc },
+        { "Newest first",           SortMode::DateNewest },
+        { "Oldest first",           SortMode::DateOldest },
+    };
+    for (const auto& o : orderings) {
+        QAction* a = sortMenu->addAction(QString::fromUtf8(o.label));
+        a->setCheckable(true);
+        a->setChecked(o.mode == m_sortMode);
+        sortGroup->addAction(a);
+        const SortMode mode = o.mode;
+        connect(a, &QAction::triggered, this, [this, mode] { applySortMode(mode); });
+    }
+
     // The search bar itself: revealed on click, hidden by default. Uses the
     // shared OS spell checker (red squiggles + suggestions), like the Search and
     // File Explorer search fields.
@@ -162,6 +195,7 @@ void MediaLibrary::updatePillVisibility() {
     const bool hovered = zone.contains(mapFromGlobal(QCursor::pos()));
     const bool show = atTop || hovered;
     typePill->setVisible(show);
+    sortButton->setVisible(show); // always paired with the pill/magnifier strip
 
     // While the search bar is open it takes the magnifier's place. Keep it only
     // while it's actually in use: focused (typing), holding a query, or just
@@ -293,7 +327,14 @@ void MediaLibrary::rebuild() {
     m_currentPlayIndex = -1;
 
     QDir dir(folderForType());
-    m_buildQueue = dir.entryInfoList(extensionsForType(), QDir::Files, QDir::Time);
+    QDir::SortFlags sortFlags = QDir::Time; // Newest first (QDir::Time is most-recent-first)
+    switch (m_sortMode) {
+    case SortMode::NameAsc:     sortFlags = QDir::Name | QDir::IgnoreCase; break;
+    case SortMode::NameDesc:    sortFlags = QDir::Name | QDir::IgnoreCase | QDir::Reversed; break;
+    case SortMode::DateNewest:  sortFlags = QDir::Time; break;
+    case SortMode::DateOldest:  sortFlags = QDir::Time | QDir::Reversed; break;
+    }
+    m_buildQueue = dir.entryInfoList(extensionsForType(), QDir::Files, sortFlags);
     if (m_buildQueue.size() > kMaxCards) m_buildQueue = m_buildQueue.mid(0, kMaxCards);
     m_buildPos = 0;
 
@@ -431,9 +472,16 @@ void MediaLibrary::positionSearch() {
     const int sb = cardsArea->verticalScrollBar()->isVisible()
                        ? cardsArea->verticalScrollBar()->width() : 0;
     const int rightEdge = width() - kPillTopMargin - sb;
-    searchButton->move(rightEdge - searchButton->width(), kPillTopMargin);
+    constexpr int gap = 6;
+
+    // Sort sits at the far right; the magnifier (and its expanding bar) to its left.
+    sortButton->move(rightEdge - sortButton->width(), kPillTopMargin);
+    sortButton->raise();
+
+    const int searchRight = rightEdge - sortButton->width() - gap;
+    searchButton->move(searchRight - searchButton->width(), kPillTopMargin);
     searchButton->raise();
-    librarySearch->move(rightEdge - librarySearch->width(),
+    librarySearch->move(searchRight - librarySearch->width(),
         kPillTopMargin + (searchButton->height() - librarySearch->height()) / 2);
     librarySearch->raise();
 }
@@ -468,10 +516,39 @@ void MediaLibrary::tintSearchIcon() {
     searchButton->setIconSize(sz);
 }
 
+void MediaLibrary::tintSortIcon() {
+    if (!sortButton) return;
+    // Same flat-tint trick as the magnifier: recolour the glyph to the theme text.
+    const QSize sz(18, 18);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/sort.svg")).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), palette().color(QPalette::WindowText));
+    p.end();
+    sortButton->setIcon(QIcon(pm));
+    sortButton->setIconSize(sz);
+}
+
+void MediaLibrary::showSortMenu() {
+    // Drop the menu flush under the button's bottom-left corner.
+    sortMenu->popup(sortButton->mapToGlobal(QPoint(0, sortButton->height())));
+}
+
+void MediaLibrary::applySortMode(SortMode mode) {
+    if (mode == m_sortMode) return;
+    m_sortMode = mode;
+    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    cfg.setValue("Library/SortMode", static_cast<int>(mode));
+    rebuild(); // re-list the active folder in the new order
+}
+
 void MediaLibrary::changeEvent(QEvent* event) {
     QWidget::changeEvent(event);
-    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
         tintSearchIcon();
+        tintSortIcon();
+    }
 }
 
 void MediaLibrary::showEvent(QShowEvent* event) {

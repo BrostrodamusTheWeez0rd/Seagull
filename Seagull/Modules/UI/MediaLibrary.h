@@ -16,6 +16,7 @@ class QPushButton;
 class QButtonGroup;
 class QFrame;
 class QLabel;
+class QMenu;
 class QTimer;
 class FlowLayout;
 class VideoCard;
@@ -34,6 +35,8 @@ class MediaLibrary : public QWidget {
 
 public:
     enum class MediaType { Video, Audio, Image, Recording, Playlist };
+    // How the grid is ordered. Persisted globally to config.ini (Library/SortMode).
+    enum class SortMode { NameAsc, NameDesc, DateNewest, DateOldest };
 
     explicit MediaLibrary(SgSpellCheck* spell, QWidget* parent = nullptr);
 
@@ -76,15 +79,21 @@ private:
     QStringList extensionsForType() const;
     void positionTypePill();
     void updatePillVisibility(); // visible at scroll-top or when its strip is hovered
-    void positionSearch();       // place the magnifier button / bar at the top-right
+    void positionSearch();       // place the sort + magnifier buttons / bar at the top-right
     void toggleSearch();         // magnifier click: reveal the search bar (or collapse)
     void tintSearchIcon();       // recolour the magnifier glyph to the theme text colour
+    void tintSortIcon();         // recolour the sort glyph to the theme text colour
+    void showSortMenu();         // sort click: drop the ordering menu under the button
+    void applySortMode(SortMode mode); // remember + persist the choice, then re-list
 
     MediaType m_type = MediaType::Video;
 
     QFrame*       typePill = nullptr;     // floating translucent type switcher
     QButtonGroup* typeGroup = nullptr;
     QPushButton*  searchButton = nullptr;  // floating magnifier at the top-right
+    QPushButton*  sortButton = nullptr;    // floating sort/order button, right of the magnifier
+    QMenu*        sortMenu = nullptr;       // ordering options dropped under the sort button
+    SortMode      m_sortMode = SortMode::DateNewest; // active grid ordering
     SpellCheckLineEdit* librarySearch = nullptr; // revealed on click; filters the active type
     bool          m_searchOpen = false;    // is the search bar revealed?
     QElapsedTimer m_searchOpenedClock;     // grace after the magnifier click before auto-collapse

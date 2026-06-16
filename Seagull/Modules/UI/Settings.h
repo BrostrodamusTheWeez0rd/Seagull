@@ -36,7 +36,6 @@ private slots:
 
 private:
     void setupUI();
-    void loadBehaviorForVisualizer();    // set behaviorCombo from the selected visualizer's config key
     void updateDownloadFormatOptions();  // repopulate format list from the Download Type toggle
     void updateDownloadQualityOptions(); // repopulate quality list (resolutions vs bitrates)
     void onDownloadTypeChanged();        // type toggle -> refresh formats + qualities + save
@@ -69,9 +68,9 @@ private:
     QComboBox* cardSizeCombo;   // Small / Medium / Large / Extra Large / Custom
     QSlider*   cardSizeSlider;  // shown only for Custom; spans Small..Extra Large
 
-    // Visualizer: a picker + a stack of per-visualizer settings pages below it.
+    // Visualizer: a picker + a tight form of global visualizer settings below it.
     QComboBox*      visualizerCombo;      // which visualizer: Seagull Sky / Seagull Waves
-    QComboBox*      behaviorCombo;        // selected visualizer's gull behaviour (per-viz, swapped in)
+    QComboBox*      behaviorCombo;        // global gull behaviour (applies to every visualizer)
     QSpinBox*       maxGullsSpin;         // global perf cap on the flock size
     QCheckBox*      killGullsCheck;       // gulls die (spin + fall) at end of song, else live on
 

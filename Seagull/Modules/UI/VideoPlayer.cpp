@@ -1246,10 +1246,8 @@ void VideoPlayer::applyVisualizerSettings() {
     QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     const QString type = cfg.value("Visualizer/Type", "Seagull Sky").toString();
     visualizer->setMode(type);
-    const QString bkey = type.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)
-        ? QStringLiteral("Visualizer/WavesBehavior")
-        : QStringLiteral("Visualizer/SkyBehavior");
-    visualizer->setBehavior(cfg.value(bkey, "Drift").toString());
+    // Behaviour is global — one key shared by every visualizer.
+    visualizer->setBehavior(cfg.value("Visualizer/Behavior", "Drift").toString());
     visualizer->setMaxGulls(cfg.value("Visualizer/MaxGulls", 14).toInt());
     m_killGullsOnEnd = cfg.value("Visualizer/KillOnEnd", true).toBool();
 }

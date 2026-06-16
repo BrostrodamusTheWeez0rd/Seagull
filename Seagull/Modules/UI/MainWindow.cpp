@@ -850,6 +850,26 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // --- Wheel over a value control inside a scrolling tab page ---
+    // Combo boxes and spin boxes eat the mouse wheel to change their value, so a
+    // scroll gesture while reading down a page (the Settings tab is wrapped in a
+    // QScrollArea) silently flips whatever control the cursor passes over — the
+    // visualizer picker was the usual victim. Unless the control is focused (a
+    // deliberate interaction), redirect the wheel to the enclosing scroll area so
+    // the page scrolls and the value stays put.
+    if (event->type() == QEvent::Wheel) {
+        QWidget* w = qobject_cast<QWidget*>(watched);
+        if (w && !w->hasFocus()
+            && (qobject_cast<QComboBox*>(w) || qobject_cast<QAbstractSpinBox*>(w))) {
+            for (QWidget* p = w->parentWidget(); p; p = p->parentWidget()) {
+                if (auto* sa = qobject_cast<QScrollArea*>(p)) {
+                    QCoreApplication::sendEvent(sa->viewport(), event);
+                    return true; // the value control never sees the wheel
+                }
+            }
+        }
+    }
+
     // --- Click vs drag on the splitter handle ---
     // A clean click (press + release without ever crossing the drag threshold)
     // toggles the tabs pane: fully down / back to the remembered split. Real
