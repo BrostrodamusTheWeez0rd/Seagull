@@ -108,6 +108,11 @@ public:
     void setVolume(int volume, bool muted) {
         if (m_sink) m_sink->setVolume(muted ? 0.0 : qBound(0, volume, 100) / 100.0);
     }
+    // Halt/continue the pull WITHOUT draining or clearing the FIFO, so a pause stops
+    // the sound the instant VLC pauses (instead of playing out the ~1s VLC decoded
+    // ahead) and a resume picks up seamlessly from the buffered samples (no cutout).
+    void suspend() { if (m_sink) m_sink->suspend(); }
+    void resume()  { if (m_sink) m_sink->resume(); }
 
 private:
     AudioFifo* m_fifo;
@@ -182,10 +187,18 @@ void PlaybackEngine::disableEqualizer() {
     if (m_player) m_player->unsetEqualizer();
 }
 
+
 void PlaybackEngine::applyEqualizerToPlayer() {
     if (!m_player || !m_eqEnabled || m_eqGains.isEmpty()) return;
     VLC::Equalizer eq;                 // default ctor: all bands zeroed
-    eq.setPreamp(m_eqPreamp);
+    // Headroom / clip guard: VLC's graphic EQ has no output limiter, so any net
+    // boost runs straight past 0 dBFS on hot material and clips (audible crackle —
+    // on both the native video path and the audio tap, since both are post-EQ).
+    // Pull the preamp down so the hottest boosted band sits at unity; a user preamp
+    // that's already more conservative wins, so manual attenuation still works.
+    float maxBoost = 0.0f;
+    for (float g : m_eqGains) maxBoost = qMax(maxBoost, g);
+    eq.setPreamp(qMin(m_eqPreamp, -maxBoost));
     const unsigned bands = VLC::Equalizer::bandCount();
     for (unsigned b = 0; b < bands && static_cast<int>(b) < m_eqGains.size(); ++b)
         eq.setAmp(m_eqGains[static_cast<int>(b)], b);
@@ -216,9 +229,17 @@ void PlaybackEngine::hookEvents() {
         QMetaObject::invokeMethod(this, [this]() { emit endReached(); }, Qt::QueuedConnection);
         });
     m_player->eventManager().onPaused([this]() {
+        // Tap path: freeze the sink the moment VLC pauses so pause is instant and the
+        // buffered PCM survives for a clean resume (see AudioSinkWorker::suspend).
+        if (m_tapOn && m_audioWorker)
+            QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker]() { w->suspend(); },
+                                      Qt::QueuedConnection);
         QMetaObject::invokeMethod(this, [this]() { emit paused(); }, Qt::QueuedConnection);
         });
     m_player->eventManager().onPlaying([this]() {
+        if (m_tapOn && m_audioWorker)
+            QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker]() { w->resume(); },
+                                      Qt::QueuedConnection);
         QMetaObject::invokeMethod(this, [this]() { emit playing(); }, Qt::QueuedConnection);
         });
     m_player->eventManager().onEncounteredError([this]() {
@@ -234,7 +255,13 @@ void PlaybackEngine::setOutputWindow(void* hwnd) {
 }
 
 void PlaybackEngine::loadLocalFile(const QString& path) {
+    m_loadPath = path; // remembered so replay can rebuild a fresh Media (see reloadLastMedia)
     m_lastMedia = std::make_shared<VLC::Media>(*m_instance, path.toUtf8().constData(), VLC::Media::FromPath);
+    // Local disk doesn't need the 5s instance-level file-caching (that's for network
+    // streams). An oversized cache lets the decoder front-run the output clock on a
+    // restart, widening the "playback way too early -> inserting zeroes" silence pad
+    // that drops audio at the head of a replay. VLC's own default is 1000ms.
+    m_lastMedia->addOption(":file-caching=1000");
     // AV1 must decode in software (dav1d): VLC 3's AV1-over-D3D11VA hwaccel has
     // a broken frame pool (get_buffer()/"Failed to allocate space for current
     // frame" spam), which plays as constant stutter and a big hitch on
@@ -247,6 +274,7 @@ void PlaybackEngine::loadLocalFile(const QString& path) {
 
 void PlaybackEngine::loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint64 startMs,
     const QString& referer) {
+    m_loadPath.clear(); // a stream: replay re-arms m_lastMedia, not a local rebuild
     const bool hasAudio = audioUrl.isValid() && !audioUrl.isEmpty();
     // HLS sites that split audio into its own playlist (e.g. Chaturbate): VLC won't
     // pull audio from an input-slave .m3u8, and the site's own master manifest is
@@ -318,8 +346,18 @@ bool PlaybackEngine::writeHlsMaster(const QString& videoUrl, const QString& audi
 }
 
 void PlaybackEngine::reloadLastMedia() {
-    if (!m_player || !m_lastMedia) return;
+    if (!m_player) return;
     m_player->stop();
+    // Local files: rebuild a fresh Media rather than re-arming the one that just
+    // played to EOF. Reusing the played-out object can leave VLC's restart clock
+    // thinking playback already advanced, so it pads silence at the head ("playback
+    // way too early ... inserting zeroes") — an audible dropout on replay. A fresh
+    // Media (with its file-caching option) gives the input a clean start.
+    if (!m_loadPath.isEmpty()) {
+        loadLocalFile(m_loadPath); // sets m_lastMedia fresh + re-applies EQ
+        return;
+    }
+    if (!m_lastMedia) return;
     m_player->setMedia(*m_lastMedia);
     applyEqualizerToPlayer(); // keep EQ across replay / shorts-loop reloads
 }
@@ -331,6 +369,7 @@ void PlaybackEngine::releaseMedia() {
     // and a later play() restarts it from nowhere (and a local file stays held).
     stop();
     m_lastMedia.reset();
+    m_loadPath.clear();
 }
 
 // play() requires loaded media: after releaseMedia a stray play() (space bar,

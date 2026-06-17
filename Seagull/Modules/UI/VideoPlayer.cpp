@@ -720,6 +720,7 @@ void VideoPlayer::disableEqualizer() {
     if (engine) engine->disableEqualizer();
 }
 
+
 void VideoPlayer::applyEqualizerForCurrentKind() {
     // Apply the saved EQ for whatever's playing. The EQ tab owns the config; we just
     // read + push it so a freshly started track reflects its kind's curve even if the

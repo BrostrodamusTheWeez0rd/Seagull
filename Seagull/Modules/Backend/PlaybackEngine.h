@@ -107,6 +107,7 @@ private:
     std::shared_ptr<VLC::Instance>    m_instance;
     std::shared_ptr<VLC::MediaPlayer> m_player;
     std::shared_ptr<VLC::Media>       m_lastMedia;   // kept for replay-from-start
+    QString                           m_loadPath;    // last local file path; empty for streams (replay rebuilds a fresh Media)
     QString                           m_hlsMasterPath; // temp local master for split-HLS streams
 
     // Audio tap state.

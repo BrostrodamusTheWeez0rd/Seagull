@@ -294,13 +294,22 @@ void Theme::apply(const QString& name) {
         "QPushButton#eqTypeButton:hover { background-color:%5; }"
         "QPushButton#eqTypeButton:checked { background-color:%6; color:%3; }"
         "QComboBox#eqPresetCombo { background-color:%4; color:%2; border:1px solid %6; border-radius:11px; padding:3px 10px; }"
+        "QComboBox#eqPresetCombo::drop-down { width: 0; border: none; }"
+        "QComboBox#eqPresetCombo::down-arrow { image: none; width: 0; height: 0; }"
+        "QComboBox#eqPresetCombo QLineEdit { background: transparent; border: none; color: %2; padding: 0; selection-background-color: transparent; }"
+        "QLabel#eqSliderPopup { background-color:%4; color:%2; border:1px solid %6; border-radius:10px; padding:3px 10px; font-size:11px; font-weight:600; }"
+        "QPushButton#eqSaveButton { background:transparent; border:none; border-radius:13px; padding:2px; }"
+        "QPushButton#eqSaveButton:hover:enabled { background-color:%5; }"
+        "QPushButton#eqSaveButton:disabled { opacity:0.3; }"
         "QLabel#eqBandLabel { color:%2; background:transparent; font-size:10px; }"
+        // Pilled frame around the band sliders.
+        "QFrame#eqBandFrame { background-color:%4; border:1px solid %6; border-radius:14px; }"
         // Bipolar (center-detent) sliders: a plain groove + overlayFg handle, no
         // fill direction (the handle position conveys the ± gain).
         "QSlider#eqSlider, QSlider#eqPreampSlider { background:transparent; border:none; }"
-        "QSlider#eqSlider::groove:vertical, QSlider#eqPreampSlider::groove:vertical { border:none; background:%4; width:6px; border-radius:3px; }"
-        "QSlider#eqSlider::add-page:vertical, QSlider#eqPreampSlider::add-page:vertical { border:none; background:%4; border-radius:3px; }"
-        "QSlider#eqSlider::sub-page:vertical, QSlider#eqPreampSlider::sub-page:vertical { border:none; background:%4; border-radius:3px; }"
+        "QSlider#eqSlider::groove:vertical, QSlider#eqPreampSlider::groove:vertical { border:none; background:%1; width:6px; border-radius:3px; }"
+        "QSlider#eqSlider::add-page:vertical, QSlider#eqPreampSlider::add-page:vertical { border:none; background:%1; border-radius:3px; }"
+        "QSlider#eqSlider::sub-page:vertical, QSlider#eqPreampSlider::sub-page:vertical { border:none; background:%1; border-radius:3px; }"
         "QSlider#eqSlider::handle:vertical, QSlider#eqPreampSlider::handle:vertical { border:none; background:%6; height:12px; margin:0 -4px; border-radius:6px; }"
     ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line, rgba(c.window, 2));
 

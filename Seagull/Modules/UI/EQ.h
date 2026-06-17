@@ -11,6 +11,7 @@ class QButtonGroup;
 class QLabel;
 class QTimer;
 class ClickSlider;
+class QPushButton;
 
 // Which content type's EQ is being viewed/edited. The equalizer applies to Audio
 // media and Video media independently (Photo has no playback). Values double as the
@@ -37,6 +38,12 @@ private:
     struct Preset { QString name; float preamp = 0.0f; QVector<float> gains; };
 
     void buildUi();
+    bool eventFilter(QObject* obj, QEvent* event) override;
+    void positionPopup(ClickSlider* s);
+    void setCustomState();
+    void saveCurrentAsPreset();
+    void retintSaveButton();
+    void changeEvent(QEvent* e) override;
     void selectType(EqContentType t);          // pill: switch the viewed/edited type (no emit)
     void populatePresets();                     // Custom + stock + custom + "Add custom preset…"
     void onPresetActivated(int index);          // user picked a dropdown entry
@@ -47,6 +54,7 @@ private:
     void persistActive();                        // write Eq/<type>/{Enabled,Gains,Preamp}
     void saveCustomPreset(const QString& name, const QVector<float>& gains, float preamp);
     void selectCustomByName(const QString& name);
+    bool selectPresetByGains(const QVector<float>& gains, float preampDb);
 
     QVector<float> currentGains() const;
     float          currentPreamp() const;
@@ -64,6 +72,9 @@ private:
     QVector<ClickSlider*>  m_bands;              // one per equalizer band
     ClickSlider*           m_preamp = nullptr;
     QTimer*                m_persistTimer = nullptr; // debounce config writes on drag
+    QPushButton*           m_saveBtn = nullptr;
+    QLabel*                m_popup = nullptr;        // live dB callout while dragging
+    QTimer*                m_popupHideTimer = nullptr;
     QSettings              m_settings;
 };
 
