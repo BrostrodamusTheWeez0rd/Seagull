@@ -23,7 +23,13 @@ public:
     void push(const char* data, qint64 len) {
         QMutexLocker l(&m_mx);
         m_buf.append(data, len);
-        const int cap = 44100 * 2 * 2; // ~1s of stereo S16
+        // ~4s of stereo S16 (~1.4MB). Must comfortably exceed VLC's decode-ahead:
+        // at track start VLC bursts decoded audio into the ring faster than realtime
+        // to fill its own caches, and a tighter cap (it used to be ~1s — exactly
+        // VLC's file-caching) overflows and evicts unplayed samples from the front,
+        // an audible skip/glitch right as the track starts. The sink still plays in
+        // order at the hardware rate, so the extra headroom adds no latency.
+        const int cap = 44100 * 2 * 2 * 4;
         if (m_buf.size() > cap) m_buf.remove(0, m_buf.size() - cap);
     }
     QByteArray pop(qint64 maxlen) {
@@ -33,6 +39,7 @@ public:
         m_buf.remove(0, n);
         return out;
     }
+    qint64 size() const { QMutexLocker l(&m_mx); return m_buf.size(); }
 private:
     mutable QMutex m_mx;
     QByteArray m_buf;
@@ -46,16 +53,37 @@ private:
 class FifoDevice : public QIODevice {
 public:
     FifoDevice(AudioFifo* fifo, std::function<void(const QByteArray&)> onConsumed,
-               QObject* parent = nullptr)
-        : QIODevice(parent), m_fifo(fifo), m_onConsumed(std::move(onConsumed)) {}
+               qint64 primeBytes, QObject* parent = nullptr)
+        : QIODevice(parent), m_fifo(fifo), m_onConsumed(std::move(onConsumed)),
+          m_primeBytes(primeBytes) {}
 
 protected:
     qint64 readData(char* data, qint64 maxlen) override {
+        // Prime gate: until VLC has buffered a cushion, hand the sink silence
+        // (consuming nothing) so the first real samples play out of a filled FIFO
+        // instead of being spliced with zero-padding at the head — that splice is
+        // the click/crackle heard at the start of a track. Self-re-arming (see the
+        // dry-FIFO case below), so it kicks in for every track, not just the first.
+        if (!m_primed) {
+            if (m_fifo->size() < m_primeBytes) {
+                std::memset(data, 0, size_t(maxlen));
+                return maxlen;
+            }
+            m_primed = true;
+        }
         const QByteArray chunk = m_fifo->pop(maxlen);
         const qint64 got = chunk.size();
-        if (got > 0) std::memcpy(data, chunk.constData(), size_t(got));
-        if (got < maxlen) std::memset(data + got, 0, size_t(maxlen - got)); // pad silence
-        if (got > 0 && m_onConsumed) m_onConsumed(chunk);
+        if (got == 0) {
+            // FIFO ran fully dry (track gap / genuine underrun): re-arm priming so
+            // the next track / recovery rebuilds the cushion and resumes cleanly,
+            // rather than splicing silence into the middle of live audio.
+            m_primed = false;
+            std::memset(data, 0, size_t(maxlen));
+            return maxlen;
+        }
+        std::memcpy(data, chunk.constData(), size_t(got));
+        if (got < maxlen) std::memset(data + got, 0, size_t(maxlen - got)); // pad a partial tail
+        if (m_onConsumed) m_onConsumed(chunk);
         return maxlen; // always full so the sink stays Active across brief gaps
     }
     qint64 writeData(const char*, qint64) override { return -1; }
@@ -72,6 +100,8 @@ public:
 private:
     AudioFifo* m_fifo;
     std::function<void(const QByteArray&)> m_onConsumed;
+    const qint64 m_primeBytes;   // FIFO fill required before the first real pull
+    bool m_primed = false;
 };
 
 // Owns the QAudioSink on a DEDICATED thread, so the sink's pull runs on that
@@ -94,7 +124,10 @@ public:
         fmt.setSampleFormat(QAudioFormat::Int16);
         const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
         if (dev.isNull() || !dev.isFormatSupported(fmt)) return;
-        m_device = new FifoDevice(m_fifo, m_onConsumed);
+        // Buffer a ~150ms cushion before emitting real audio so the track head plays
+        // from a filled FIFO (no startup splice glitch); VLC decodes ahead, so the
+        // cushion fills near-instantly and adds only a brief, inaudible head delay.
+        m_device = new FifoDevice(m_fifo, m_onConsumed, fmt.bytesForDuration(150000));
         m_device->open(QIODevice::ReadOnly);
         m_sink = new QAudioSink(dev, fmt);
         m_sink->setBufferSize(fmt.bytesForDuration(100000)); // ~100ms: low latency, glitch-safe
