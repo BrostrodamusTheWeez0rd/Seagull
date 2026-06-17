@@ -220,6 +220,19 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             if (matches) videoPlayer->applyEqualizer(gains, preampDb);
         });
 
+    // EQ power toggle: apply the curve (on) or bypass the equalizer (off) live, but
+    // only when the playing media's kind matches the toggled type. Otherwise it's
+    // already persisted (Eq/<type>/Enabled) and VideoPlayer honours it on next play.
+    connect(eqModule, &EQ::eqEnabledChanged, this,
+        [this](EqContentType type, bool enabled, const QVector<float>& gains, float preampDb) {
+            const MediaKind k = videoPlayer->currentMediaKind();
+            const bool matches = (type == EqContentType::Audio && k == MediaKind::Audio)
+                              || (type == EqContentType::Video && k == MediaKind::Video);
+            if (!matches) return;
+            if (enabled) videoPlayer->applyEqualizer(gains, preampDb);
+            else         videoPlayer->disableEqualizer();
+        });
+
     // Multiple-instance tabs. The primary Search + File Explorer go through the same
     // per-tab wiring the duplicates use; register them as duplicable so the "+" menu
     // offers "New Search tab" / "New File Explorer tab", and wire the open/close hooks.

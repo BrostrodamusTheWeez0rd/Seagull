@@ -301,6 +301,8 @@ void Theme::apply(const QString& name) {
         "QPushButton#eqSaveButton { background:transparent; border:none; border-radius:13px; padding:2px; }"
         "QPushButton#eqSaveButton:hover:enabled { background-color:%5; }"
         "QPushButton#eqSaveButton:disabled { opacity:0.3; }"
+        "QPushButton#eqPowerButton { background:transparent; border:none; border-radius:13px; padding:2px; }"
+        "QPushButton#eqPowerButton:hover { background-color:%5; }"
         "QLabel#eqBandLabel { color:%2; background:transparent; font-size:10px; }"
         // Pilled frame around the band sliders.
         "QFrame#eqBandFrame { background-color:%4; border:1px solid %6; border-radius:14px; }"
@@ -311,7 +313,10 @@ void Theme::apply(const QString& name) {
         "QSlider#eqSlider::add-page:vertical, QSlider#eqPreampSlider::add-page:vertical { border:none; background:%1; border-radius:3px; }"
         "QSlider#eqSlider::sub-page:vertical, QSlider#eqPreampSlider::sub-page:vertical { border:none; background:%1; border-radius:3px; }"
         "QSlider#eqSlider::handle:vertical, QSlider#eqPreampSlider::handle:vertical { border:none; background:%6; height:12px; margin:0 -4px; border-radius:6px; }"
-    ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line, rgba(c.window, 2));
+        // Off (power button): dim the handles + band captions to read as greyed out.
+        "QSlider#eqSlider::handle:vertical:disabled, QSlider#eqPreampSlider::handle:vertical:disabled { background:%8; }"
+        "QLabel#eqBandLabel:disabled { color:%8; }"
+    ).arg(pill, c.text.name(), onLine, c.alt.name(), itemHover, line, rgba(c.window, 2), c.subtext.name());
 
     app->setStyleSheet(ss + cards + overlay);
 }

@@ -180,7 +180,26 @@ void EQ::buildUi() {
     presetRow->addWidget(m_saveBtn);
     topLayout->addLayout(presetRow);
 
-    root->addWidget(topGroup, 0, Qt::AlignHCenter);
+    // --- Power toggle: pinned top-right, turns the current type's EQ on/off ---
+    m_powerBtn = new QPushButton(this);
+    m_powerBtn->setObjectName("eqPowerButton");
+    m_powerBtn->setFixedSize(26, 26);
+    m_powerBtn->setIconSize(QSize(16, 16));
+    m_powerBtn->setToolTip("Turn the equalizer on or off");
+    m_powerBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_powerBtn, &QPushButton::clicked, this, [this]() { setEqEnabled(!m_enabled); });
+
+    // Header row: keep the type pill / preset combo centred while the power button
+    // sits at the far right. A left spacer the width of the button balances it.
+    auto* headerRow = new QHBoxLayout();
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(0);
+    headerRow->addSpacing(26);
+    headerRow->addStretch(1);
+    headerRow->addWidget(topGroup);
+    headerRow->addStretch(1);
+    headerRow->addWidget(m_powerBtn, 0, Qt::AlignTop);
+    root->addLayout(headerRow);
 
     // --- Drag popup: follows the handle, shows live dB value ---
     m_popup = new QLabel(this, Qt::ToolTip | Qt::FramelessWindowHint);
@@ -196,6 +215,7 @@ void EQ::buildUi() {
 
     // --- 3. Graphic EQ: pilled frame containing preamp + band columns ---
     auto* bandFrame = new QFrame(this);
+    m_bandFrame = bandFrame;
     bandFrame->setObjectName("eqBandFrame");
     auto* bandFrameLayout = new QVBoxLayout(bandFrame);
     bandFrameLayout->setContentsMargins(12, 14, 12, 14);
@@ -214,8 +234,15 @@ void EQ::buildUi() {
         s->setValue(0);
         s->setMinimumHeight(170);
         connect(s, &QSlider::valueChanged, this, [this, s](int) {
-            if (!m_loading && m_popup->isVisible())
+            // Show the dB callout for any user-driven change — including scroll-wheel
+            // and arrow keys, which never emit sliderPressed. During a handle drag the
+            // press/release pair owns the popup; on a wheel tick there's no release, so
+            // (re)arm the auto-hide so it fades shortly after scrolling stops.
+            if (!m_loading) {
                 positionPopup(s);
+                m_popup->show();
+                if (!s->isSliderDown()) m_popupHideTimer->start();
+            }
             onSliderMoved();
         });
         connect(s, &QSlider::sliderPressed, this, [this, s]() {
@@ -257,6 +284,7 @@ void EQ::buildUi() {
 
     root->addWidget(bandFrame, 1);
     retintSaveButton();
+    retintPowerButton();
 }
 
 // --- Type / presets ---------------------------------------------------------
@@ -361,9 +389,48 @@ void EQ::retintSaveButton() {
     m_saveBtn->setIcon(QIcon(pm));
 }
 
+void EQ::retintPowerButton() {
+    if (!m_powerBtn) return;
+    // Lit in the accent colour when on; dimmed to a faint outline when off.
+    QColor c = m_enabled ? palette().color(QPalette::Highlight)
+                         : palette().color(QPalette::WindowText);
+    if (!m_enabled) c.setAlphaF(0.40);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/power.svg")).pixmap(QSize(16, 16));
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), c);
+    p.end();
+    m_powerBtn->setIcon(QIcon(pm));
+}
+
+void EQ::setControlsEnabled(bool on) {
+    // Grey out the bands + preset picker while the EQ is off; the Video/Audio pill
+    // stays live so each type can still be switched and toggled independently.
+    // Disable the sliders directly (not just the frame) so the :disabled handle
+    // styling reliably kicks in regardless of widget parenting.
+    if (m_bandFrame)   m_bandFrame->setEnabled(on);
+    for (ClickSlider* s : m_bands) if (s) s->setEnabled(on);
+    if (m_preamp)      m_preamp->setEnabled(on);
+    if (m_presetCombo) m_presetCombo->setEnabled(on);
+    if (m_saveBtn)     m_saveBtn->setEnabled(on);
+}
+
+void EQ::setEqEnabled(bool on) {
+    m_enabled = on;
+    m_settings.setValue(ns() + "Enabled", on); // per-type, persisted immediately
+    m_settings.sync();
+    retintPowerButton();
+    setControlsEnabled(on);
+    // Apply the current curve (on) or bypass (off) live; the orchestrator gates on
+    // whether the playing media's kind matches this type.
+    emit eqEnabledChanged(m_type, on, currentGains(), currentPreamp());
+}
+
 void EQ::changeEvent(QEvent* e) {
-    if (e->type() == QEvent::PaletteChange)
+    if (e->type() == QEvent::PaletteChange) {
         retintSaveButton();
+        retintPowerButton();
+    }
     QWidget::changeEvent(e);
 }
 
@@ -433,11 +500,16 @@ void EQ::loadActiveIntoSliders() {
     setSliders(gains, preamp);
     if (!selectPresetByGains(gains, preamp))
         setCustomState();
+    // Reflect this type's saved power state (default on). Silent: this is a view
+    // load, so it never emits — it must not disturb what's currently playing.
+    m_enabled = m_settings.value(n + "Enabled", true).toBool();
+    retintPowerButton();
+    setControlsEnabled(m_enabled);
 }
 
 void EQ::persistActive() {
     const QString n = ns();
-    m_settings.setValue(n + "Enabled", true);
+    m_settings.setValue(n + "Enabled", m_enabled); // power button owns this
     m_settings.setValue(n + "Preamp", currentPreamp());
     m_settings.setValue(n + "Gains", gainsToCsv(currentGains()));
     m_settings.sync();
