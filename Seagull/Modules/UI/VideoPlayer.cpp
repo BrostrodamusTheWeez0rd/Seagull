@@ -829,6 +829,25 @@ void VideoPlayer::raiseOverlays() {
     if (titleBar) titleBar->raise();
 }
 
+// Called just before enterFullScreen / exitFullScreen triggers the OS window
+// state change. Hides both overlay windows so they don't jump or trail while
+// DWM animates the frame; showOverlaysAfterTransition() restores them once the
+// window has settled.
+void VideoPlayer::suppressOverlaysForTransition() {
+    if (playerControls && playerControls->isVisible()) playerControls->hide();
+    if (titleBar && titleBar->isVisible()) titleBar->hide();
+}
+
+// Called from the singleShot timer in enterFullScreen / exitFullScreen after
+// the window animation has finished. Re-shows the overlays, repositions them
+// to the now-settled frame geometry, and re-stacks them above the VLC surface.
+void VideoPlayer::showOverlaysAfterTransition() {
+    if (playerControls) playerControls->show();
+    if (titleBar) titleBar->show();
+    repositionOverlays();
+    raiseOverlays();
+}
+
 void VideoPlayer::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     repositionOverlays();

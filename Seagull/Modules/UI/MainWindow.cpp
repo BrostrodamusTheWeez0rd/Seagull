@@ -38,6 +38,7 @@
 #include <QStyle>
 #include <windows.h>
 #include <winuser.h>
+#include <dwmapi.h>
 
 namespace {
 // How far the cursor may leave the tab bar mid-drag before the tab tears off
@@ -125,6 +126,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     layout->addWidget(mainSplitter);
     resize(1000, 700);
+
+    // The VLC video surface is a native child window, so it renders live at the
+    // final size the instant we maximize — it can't ride Windows' smooth DWM
+    // grow animation the way the frame does, leaving the video visibly ahead of
+    // the frame mid-animation. Disabling the frame's transition animation makes
+    // maximize/restore/fullscreen snap instantly, so the frame and video land
+    // together as one. (winId() forces native creation so the HWND is valid.)
+    BOOL disableTransitions = TRUE;
+    DwmSetWindowAttribute(reinterpret_cast<HWND>(winId()), DWMWA_TRANSITIONS_FORCEDISABLED,
+                          &disableTransitions, sizeof(disableTransitions));
 
     QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     m_videoSplitRatio = qBound(0.1, settings.value("Display/VideoSplitRatio", 0.5).toDouble(), 0.9);
@@ -739,19 +750,26 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
 
 void MainWindow::enterFullScreen() {
     m_wasMaximized = isMaximized(); // remember so we can restore it on exit
+    // Hide overlays before the DWM animation so they don't trail the frame.
+    if (videoPlayer) videoPlayer->suppressOverlaysForTransition();
     showFullScreen();
     mainSplitter->setSizes({ 1000, 0 }); // immersive: video fills, tabs collapsed
     syncTabsPaneState(); // hides the handle (pane is down); the chevron brings the tabs up
-    QTimer::singleShot(100, this, [this]() {
-        if (videoPlayer) { videoPlayer->repositionOverlays(); videoPlayer->raiseOverlays(); }
+    QTimer::singleShot(150, this, [this]() {
+        if (videoPlayer) videoPlayer->showOverlaysAfterTransition();
         });
 }
 
 void MainWindow::exitFullScreen() {
-    if (m_wasMaximized) showMaximized(); else showNormal(); // restore the prior state
+    // Hide overlays so they don't trail the frame across the transition.
+    if (videoPlayer) videoPlayer->suppressOverlaysForTransition();
+    // DWM transitions are disabled on this window (see the ctor), so restoring
+    // the prior state snaps instantly — no animated shrink to maximized to flash
+    // through. Go straight back to maximized if that's where we came from.
+    if (m_wasMaximized) showMaximized(); else showNormal();
     applyStoredSplit(); // land back on the remembered split, not a fixed size
-    QTimer::singleShot(100, this, [this]() {
-        if (videoPlayer) { videoPlayer->repositionOverlays(); videoPlayer->raiseOverlays(); }
+    QTimer::singleShot(150, this, [this]() {
+        if (videoPlayer) videoPlayer->showOverlaysAfterTransition();
         });
 }
 

@@ -128,6 +128,7 @@ target_link_libraries(Seagull PRIVATE
     ole32           # CoCreateInstance / COM for SgSpellCheck (Spell Checking API)
     RuntimeObject   # WinRT activation (combase) for SgMediaControls (SMTC)
     shell32         # SetCurrentProcessExplicitAppUserModelID (SMTC app identity)
+    dwmapi          # DwmSetWindowAttribute (disable maximize/restore transition anim)
 )
 
 add_custom_command(TARGET Seagull POST_BUILD

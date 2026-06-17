@@ -31,3 +31,4 @@ Seagull/Tools/*
 /pack-release.bat
 /Seagull-*-win64.zip
 /Seagull.zip
+/docs/ARCHITECTURE.md
