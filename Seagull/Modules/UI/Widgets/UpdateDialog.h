@@ -6,6 +6,7 @@
 class QLabel;
 class QProgressBar;
 class QPushButton;
+class QTextBrowser;
 class SgUpdater;
 class SgAppUpdate;
 
@@ -78,6 +79,7 @@ private:
 
     QLabel*       titleLabel;
     QLabel*       bodyLabel;
+    QTextBrowser* notesView;  // scrollable, markdown-rendered release notes (app-update prompt only)
     QLabel*       statusLabel;
     QProgressBar* progressBar;
     QPushButton*  updateBtn; // primary: Check Now / Update Now / Close, by stage

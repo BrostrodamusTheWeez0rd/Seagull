@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QTextBrowser>
 #include <QTimer>
 #include <QFont>
 
@@ -36,6 +37,16 @@ UpdateDialog::UpdateDialog(SgAppUpdate* appUpdate, SgUpdater* toolUpdater,
     bodyLabel->setTextFormat(Qt::PlainText);
     bodyLabel->setWordWrap(true);
     lay->addWidget(bodyLabel);
+
+    // Release notes are markdown and can be long, so they get their own scrollable,
+    // markdown-rendering view (a QLabel would show raw text and grow unbounded).
+    // Only the app-update prompt uses it; every other stage keeps it hidden.
+    notesView = new QTextBrowser(this);
+    notesView->setOpenExternalLinks(true);
+    notesView->setMinimumHeight(180);
+    notesView->setMaximumHeight(320);
+    notesView->hide();
+    lay->addWidget(notesView, 1);
 
     statusLabel = new QLabel(this);
     statusLabel->setObjectName("metaStats"); // theme's dimmed text styling
@@ -140,9 +151,16 @@ void UpdateDialog::onAppUpdateAvailable(const QString& version, const QString& n
     m_stage = Stage::AppPrompt;
     m_busy  = false;
     titleLabel->setText(QString("Seagull %1 is available").arg(version));
-    bodyLabel->setText(notes.trimmed().isEmpty()
-        ? QStringLiteral("A new version of Seagull is available.")
-        : notes.trimmed());
+    const QString trimmedNotes = notes.trimmed();
+    if (trimmedNotes.isEmpty()) {
+        bodyLabel->setText(QStringLiteral("A new version of Seagull is available."));
+        bodyLabel->show();
+        notesView->hide();
+    } else {
+        bodyLabel->hide();
+        notesView->setMarkdown(trimmedNotes); // GitHub-flavored markdown, scrollable
+        notesView->show();
+    }
     statusLabel->hide();
     progressBar->hide();
     updateBtn->setText("Update Now");
@@ -167,6 +185,8 @@ void UpdateDialog::proceedToTools() {
 void UpdateDialog::beginCheck() {
     m_stage = Stage::Checking;
     m_busy  = true;
+    notesView->hide();   // leaving the app-update prompt: back to the plain body text
+    bodyLabel->show();
     titleLabel->setText("Checking tools");
     bodyLabel->setText("Checking for new versions of yt-dlp, ffmpeg and Deno.");
     statusLabel->setText("Contacting update servers...");
