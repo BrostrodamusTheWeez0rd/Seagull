@@ -224,14 +224,7 @@ void PlaybackEngine::disableEqualizer() {
 void PlaybackEngine::applyEqualizerToPlayer() {
     if (!m_player || !m_eqEnabled || m_eqGains.isEmpty()) return;
     VLC::Equalizer eq;                 // default ctor: all bands zeroed
-    // Headroom / clip guard: VLC's graphic EQ has no output limiter, so any net
-    // boost runs straight past 0 dBFS on hot material and clips (audible crackle —
-    // on both the native video path and the audio tap, since both are post-EQ).
-    // Pull the preamp down so the hottest boosted band sits at unity; a user preamp
-    // that's already more conservative wins, so manual attenuation still works.
-    float maxBoost = 0.0f;
-    for (float g : m_eqGains) maxBoost = qMax(maxBoost, g);
-    eq.setPreamp(qMin(m_eqPreamp, -maxBoost));
+    eq.setPreamp(m_eqPreamp);
     const unsigned bands = VLC::Equalizer::bandCount();
     for (unsigned b = 0; b < bands && static_cast<int>(b) < m_eqGains.size(); ++b)
         eq.setAmp(m_eqGains[static_cast<int>(b)], b);
