@@ -299,6 +299,10 @@ VideoCard* MediaLibrary::addCardForEntry(const QFileInfo& fi) {
     const int index = m_files.size() - 1;
     connect(card, &VideoCard::playRequested, this, [this, index](const QUrl& url, const QString&) {
         m_currentPlayIndex = index;
+        // Freeze the list we launched from so auto-advance/skip keep walking it
+        // even after the grid is rebuilt for another type/sort (see m_sessionFiles).
+        m_sessionFiles = m_files;
+        m_sessionIndex = index;
         emit playMediaRequested(url);
         });
     // Card "Queue" -> the Queue tab's local queue (purity handled there).
@@ -416,17 +420,19 @@ void MediaLibrary::setThumbnailsHeld(bool held) {
 }
 
 void MediaLibrary::playNextFile() {
-    if (m_files.isEmpty()) return;
-    const int next = m_currentPlayIndex + 1;
-    if (next >= m_files.size()) return; // end of the grid — stop
-    m_currentPlayIndex = next;
-    emit playMediaRequested(QUrl::fromLocalFile(m_files[next]));
+    // Walk the session list captured at play time, not the (possibly rebuilt)
+    // grid — so browsing to another type/sort can't change what plays next.
+    if (m_sessionFiles.isEmpty()) return;
+    const int next = m_sessionIndex + 1;
+    if (next >= m_sessionFiles.size()) return; // end of the session list — stop
+    m_sessionIndex = next;
+    emit playMediaRequested(QUrl::fromLocalFile(m_sessionFiles[next]));
 }
 
 void MediaLibrary::playPrevFile() {
-    if (m_files.isEmpty() || m_currentPlayIndex <= 0) return;
-    --m_currentPlayIndex;
-    emit playMediaRequested(QUrl::fromLocalFile(m_files[m_currentPlayIndex]));
+    if (m_sessionFiles.isEmpty() || m_sessionIndex <= 0) return;
+    --m_sessionIndex;
+    emit playMediaRequested(QUrl::fromLocalFile(m_sessionFiles[m_sessionIndex]));
 }
 
 int MediaLibrary::fillCardWidth() const {

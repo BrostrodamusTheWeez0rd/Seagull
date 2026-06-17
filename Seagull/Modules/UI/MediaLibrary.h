@@ -113,6 +113,14 @@ private:
     QStringList m_files;          // displayed order (newest first)
     int m_currentPlayIndex = -1;
 
+    // Playback session: the ordered list + position captured the moment the user
+    // pressed play. Auto-advance/skip walk THIS, not m_files, so switching the
+    // grid's type/sort (which rebuilds m_files) can't hijack what plays next —
+    // audio started from the Audio grid keeps advancing through audio even while
+    // you're browsing the Video grid.
+    QStringList m_sessionFiles;
+    int m_sessionIndex = -1;
+
     // Incremental grid build: entries are turned into cards a batch at a time on
     // an idle timer, so a big folder never freezes the UI on a tab/category switch.
     QFileInfoList m_buildQueue;

@@ -274,6 +274,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         if (queueModule->playNextOrStart()) return;
         if (activeSource == ActiveSource::Library)       libraryModule->playNextFile();
         else if (activeSource == ActiveSource::Explorer && m_activeExplorer) m_activeExplorer->playNextFile();
+        else if (activeSource == ActiveSource::Search && m_activeSearch) m_activeSearch->playAdjacentResult(1);
         });
 
     // The skip buttons (single-click = nudge, double-click = jump tracks) land here,
