@@ -50,7 +50,7 @@ FileExplorer::FileExplorer(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     addressBar->setInsertPolicy(QComboBox::NoInsert);
     addressBar->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     {
-        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
         const QStringList hist = cfg.value("FileExplorer/AddressHistory").toStringList();
         for (const QString& p : hist)
             addressBar->addItem(p);
@@ -533,7 +533,7 @@ void FileExplorer::addToAddressHistory(const QString& path) {
     for (int i = 0; i < addressBar->count(); ++i)
         hist << addressBar->itemText(i);
 
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     cfg.setValue("FileExplorer/AddressHistory", hist);
 }
 

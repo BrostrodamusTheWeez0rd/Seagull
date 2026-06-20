@@ -2,6 +2,7 @@
 #include "../Backend/PlaybackEngine.h"
 #include "../Backend/SgYtDlp.h"          // StreamOption
 #include "../Backend/SgThumbnailer.h"    // decodeViaFfmpeg (WebP fallback)
+#include "../Backend/SgPaths.h"
 #include "Widgets/PlayerControls.h"
 #include "Widgets/PlayerTitleBar.h"
 #include "Widgets/Visualizer.h"
@@ -729,7 +730,7 @@ void VideoPlayer::applyEqualizerForCurrentKind() {
     if (m_kind == MediaKind::Photo) { engine->disableEqualizer(); return; }
     const QString ns = (m_kind == MediaKind::Audio) ? QStringLiteral("Eq/Audio/")
                                                     : QStringLiteral("Eq/Video/");
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     if (!cfg.value(ns + "Enabled", false).toBool()) { engine->disableEqualizer(); return; }
     const float preamp = cfg.value(ns + "Preamp", 0.0).toFloat();
     QVector<float> gains;
@@ -1015,7 +1016,7 @@ void VideoPlayer::handleAvailableQualities(const QList<StreamOption>& options) {
     // If the user hasn't manually picked a quality this session, highlight the
     // option matching the default Stream Quality setting so the OSD reflects reality.
     if (lastRequestedFormatId.isEmpty()) {
-        QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
         QString defaultLabel = settings.value("Streaming/Quality", "Best Available").toString();
 
         if (!defaultLabel.isEmpty() && defaultLabel != "Best Available") {
@@ -1257,7 +1258,7 @@ void VideoPlayer::applyKindChrome() {
     }
     if (m_kind == MediaKind::Audio) {
         // Restore the persisted on/off choice (survives track changes + restarts).
-        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
         m_visualizerActive = cfg.value("Visualizer/Active", false).toBool();
         if (playerControls) playerControls->setVisualizerActive(m_visualizerActive);
         if (m_visualizerActive && visualizer) {
@@ -1303,7 +1304,7 @@ void VideoPlayer::showAudioArt() {
 
 void VideoPlayer::applyVisualizerSettings() {
     if (!visualizer) return;
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     const QString type = cfg.value("Visualizer/Type", "Seagull Sky").toString();
     visualizer->setMode(type);
     // Behaviour is global — one key shared by every visualizer.
@@ -1319,7 +1320,7 @@ void VideoPlayer::setVisualizerSuspended(bool on) {
 void VideoPlayer::cycleVisualizer(int delta) {
     if (!visualizer) return;
     static const QStringList kTypes = { "Seagull Sky", "Seagull Waves" };
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     const QString cur = cfg.value("Visualizer/Type", "Seagull Sky").toString();
     int idx = qMax(0, int(kTypes.indexOf(cur)));
     idx = (idx + delta + kTypes.size()) % kTypes.size();
@@ -1333,7 +1334,7 @@ void VideoPlayer::toggleVisualizer() {
     m_visualizerActive = !m_visualizerActive;
     // Persist the on/off choice so it restores next track / next launch.
     {
-        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
         cfg.setValue("Visualizer/Active", m_visualizerActive);
         cfg.sync();
     }

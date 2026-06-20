@@ -5,6 +5,14 @@
 #include <QSettings>
 #include <QStandardPaths>
 
+QString SgPaths::configDir() {
+    return QCoreApplication::applicationDirPath() + "/Config";
+}
+
+QString SgPaths::configFile() {
+    return configDir() + "/config.ini";
+}
+
 namespace {
 
 // Per-type folder lookup with a staged fallback: an explicitly configured
@@ -13,7 +21,7 @@ namespace {
 // user's matching Windows folder (Videos / Music / Pictures).
 QString typedFolder(const char* key, QStandardPaths::StandardLocation loc,
                     const QString& sub = QString()) {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     if (cfg.contains(key))
         return cfg.value(key).toString();
     if (cfg.contains("Paths/DownloadFolder"))
@@ -25,7 +33,7 @@ QString typedFolder(const char* key, QStandardPaths::StandardLocation loc,
 } // namespace
 
 QString SgPaths::homeFolder() {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     return cfg.value("Paths/HomeFolder",
         QStandardPaths::writableLocation(QStandardPaths::HomeLocation)).toString();
 }
@@ -33,13 +41,13 @@ QString SgPaths::homeFolder() {
 QString SgPaths::downloadFolder() {
     // Paths/DownloadFolder doubles as the pre-per-type-folders legacy key, so
     // configs from before this setting keep downloading where they always did.
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     return cfg.value("Paths/DownloadFolder",
         QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
 }
 
 bool SgPaths::unifyMedia() {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     return cfg.value("Paths/UnifyMedia", false).toBool();
 }
 
@@ -72,7 +80,7 @@ QString SgPaths::playlistFolder(bool honourUnify) {
     if (honourUnify && unifyMedia()) return unifiedFolder();
     // Deliberately NOT typedFolder(): its legacy Paths/DownloadFolder hop would
     // scatter app-created .sgpl files into the Downloads folder on older configs.
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     QString folder = cfg.contains("Paths/PlaylistFolder")
         ? cfg.value("Paths/PlaylistFolder").toString()
         : QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/Playlists";

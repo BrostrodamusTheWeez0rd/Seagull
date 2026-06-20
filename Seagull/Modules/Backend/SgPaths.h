@@ -12,6 +12,9 @@
 // Pass honourUnify=false to read a type's own configured folder regardless
 // (the Settings page does, so the per-type rows keep their values).
 namespace SgPaths {
+    QString configDir();       // Where config.ini and history files live (Config/ subfolder)
+    QString configFile();      // Convenience: configDir() + "/config.ini"
+
     QString homeFolder();      // File Explorer's starting directory
 
     // Where yt-dlp downloads land. Dedicated and deliberately OUTSIDE the unify

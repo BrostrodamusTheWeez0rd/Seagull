@@ -4,6 +4,7 @@
 #include "Widgets/SpellCheckLineEdit.h"
 #include "../Backend/SgSearch.h"
 #include "../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
+#include "../Backend/SgPaths.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -180,7 +181,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     resultsArea->viewport()->setAutoFillBackground(true);
     resultsArea->viewport()->setBackgroundRole(QPalette::Window);
 
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     m_targetWidth = qBound(120, cfg.value("Display/CardWidth", 360).toInt(), 480); // default Extra Large
     m_cardWidth = m_targetWidth;
 
@@ -243,7 +244,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     // Persisted ordering (default Newest first), loaded before the menu so the
     // right item starts checked.
     {
-        QSettings sortCfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QSettings sortCfg(SgPaths::configFile(), QSettings::IniFormat);
         m_sortMode = static_cast<SortMode>(qBound(0,
             sortCfg.value("Search/SortMode", static_cast<int>(SortMode::Newest)).toInt(),
             static_cast<int>(SortMode::Oldest)));
@@ -552,15 +553,14 @@ void Search::addToHistory(const QString& query) {
     saveHistory(currentSite());
 }
 
-// History is per-site, each in its own plain-text file (one query per line, most
-// recent first) next to config.ini. YouTube keeps the original filename so existing
-// history carries over; other sites get their own file.
+// History is per-site, each in its own plain-text file inside the Config folder
+// (one query per line, most recent first).
 QString Search::historyFilePath(SgSearch::Site site) {
-    const QString base = QCoreApplication::applicationDirPath();
+    const QString base = SgPaths::configDir();
     switch (site) {
     case SgSearch::Site::PornHub:    return base + "/search_history_ph.txt";
     case SgSearch::Site::Chaturbate: return base + "/search_history_cb.txt";
-    default:                         return base + "/search_history.txt"; // YouTube keeps the original
+    default:                         return base + "/search_history.txt";
     }
 }
 
@@ -653,7 +653,7 @@ void Search::startSearch(const QString& query) {
     m_endReached   = false;
     refreshBtn->setEnabled(true);
 
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     m_batchSize = qBound(5, settings.value("Search/ResultLimit", 20).toInt(), 100);
     m_lastRequested = m_batchSize;
 
@@ -845,7 +845,7 @@ bool Search::shows(const SearchResult& r) const {
 void Search::applySortMode(SortMode mode) {
     if (mode == m_sortMode) return;
     m_sortMode = mode;
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     cfg.setValue("Search/SortMode", static_cast<int>(mode));
     applySort();
     rebuildCards();
@@ -965,7 +965,7 @@ void Search::openChannelUrl(const QString& channelUrl, const QString& label) {
     m_endReached  = false;
     refreshBtn->setEnabled(true);
 
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     m_batchSize = qBound(5, settings.value("Search/ResultLimit", 20).toInt(), 100);
     m_lastRequested = m_batchSize;
 
@@ -1065,7 +1065,7 @@ bool Search::anotherTabOnSite(SgSearch::Site site) const {
 bool Search::confirmSharedSiteSearch() {
     if (m_dupeSiteAcknowledged) return true; // already warned + continued in this tab
     if (m_dupePromptOpen) return false;      // a prompt is already up — don't stack a twin
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     if (!cfg.value("Search/WarnDuplicateSite", true).toBool()) return true; // opted out app-wide
     if (!anotherTabOnSite(currentSite())) return true;                      // no conflict
 

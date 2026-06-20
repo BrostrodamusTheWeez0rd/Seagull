@@ -2,6 +2,7 @@
 #include "Modules/UI/Theme.h"
 #include "Modules/UI/SetupDialog.h"
 #include "Modules/UI/Widgets/UpdateDialog.h"
+#include "Modules/Backend/SgPaths.h"
 #include "Modules/Backend/SgThumbnailer.h"
 #include <QApplication>
 #include <QSettings>
@@ -250,7 +251,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         appUpdate->checkForUpdate();
     });
     connect(qApp, &QCoreApplication::aboutToQuit, searchModule, [this]() {
-        QSettings s(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QSettings s(SgPaths::configFile(), QSettings::IniFormat);
         if (s.value("Search/ClearHistoryOnExit", false).toBool())
             searchModule->clearSearchHistory();
         });
@@ -594,7 +595,7 @@ bool Seagull::run() {
     // modally BEFORE the window (safe now that the player's deferred winId hookup
     // is gone). Declining quits the app. Closing or Escape counts as declining.
     {
-        QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+        QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
         if (!cfg.value("Setup/TermsAccepted", false).toBool()) {
             QDialog dlg(nullptr);
             dlg.setWindowTitle("Seagull - Terms of Use");
@@ -617,7 +618,7 @@ bool Seagull::run() {
         }
     }
 
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     m_autoUpdateStartup = cfg.value("General/AutoUpdate", true).toBool();
     const bool firstRunTools = SetupDialog::isNeeded();
 
@@ -750,7 +751,7 @@ void Seagull::onUpdateReadyToApply(const QString& stagedAppDir) {
     const qint64  pid        = QCoreApplication::applicationPid();
 
     // The swap helper: waits for us to exit, copies the staged build over the
-    // install (preserving config.ini, search_history.txt and the Tools folder),
+    // install (preserving the Config folder and the Tools folder),
     // then relaunches and cleans up the staging area. Lives in temp root so the
     // staged-folder cleanup can't delete it mid-run.
     const QString helperPath = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
@@ -759,7 +760,7 @@ void Seagull::onUpdateReadyToApply(const QString& stagedAppDir) {
         "param([int]$ProcId,[string]$Staged,[string]$Install,[string]$Exe)\n"
         "try { Wait-Process -Id $ProcId -Timeout 30 -ErrorAction SilentlyContinue } catch {}\n"
         "Start-Sleep -Milliseconds 500\n"
-        "robocopy $Staged $Install /E /XF config.ini search_history.txt /XD Tools | Out-Null\n"
+        "robocopy $Staged $Install /E /XD Tools Config | Out-Null\n"
         "Start-Process -FilePath $Exe\n"
         "Remove-Item -LiteralPath (Split-Path $Staged -Parent) -Recurse -Force -ErrorAction SilentlyContinue\n");
 
@@ -797,8 +798,27 @@ int main(int argc, char* argv[]) {
     QApplication::setApplicationName(QStringLiteral("Seagull"));
     QApplication::setApplicationVersion(QString::fromLatin1(SEAGULL_VERSION));
 
+    // Migrate flat config files into Config/ if upgrading from a pre-0.14 install.
+    // This must happen before any QSettings is opened so the settings are found at the new path.
+    {
+        const QString appDir    = QCoreApplication::applicationDirPath();
+        const QString configDir = SgPaths::configDir();
+        if (!QDir(configDir).exists() && QFile::exists(appDir + "/config.ini")) {
+            QDir().mkpath(configDir);
+            for (const QString& name : { "config.ini", "search_history.txt",
+                                          "search_history_ph.txt", "search_history_cb.txt" }) {
+                const QString src = appDir + "/" + name;
+                if (QFile::exists(src))
+                    QFile::rename(src, configDir + "/" + name);
+            }
+        }
+    }
+    // Ensure the Config directory exists even on a clean install (migration above handles
+    // upgrades; mkpath is a no-op when the folder is already there).
+    QDir().mkpath(SgPaths::configDir());
+
     // Apply the saved theme before any widgets are built so the whole UI is themed.
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     Theme::apply(settings.value("Display/Theme", "Seagull").toString());
 
     Seagull orchestrator;

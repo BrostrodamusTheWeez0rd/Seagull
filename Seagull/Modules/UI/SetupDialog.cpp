@@ -27,7 +27,7 @@ bool SetupDialog::toolsMissing() {
 }
 
 bool SetupDialog::isNeeded() {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     return !cfg.value("Setup/Completed", false).toBool() || toolsMissing();
 }
 
@@ -128,7 +128,7 @@ SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)
 void SetupDialog::onGetStarted() {
     // Persist the confirmed folders + the done flag. SgPaths reads these keys,
     // so every module picks them up with no further plumbing.
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     cfg.setValue("Paths/DownloadFolder", dlEdit->text());
     cfg.setValue("Paths/VideoFolder", videoEdit->text());
     cfg.setValue("Paths/AudioFolder", audioEdit->text());

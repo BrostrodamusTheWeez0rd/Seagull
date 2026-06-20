@@ -1,5 +1,6 @@
 #include "PlayerControls.h"
 #include "../../Backend/PlaybackEngine.h"
+#include "../../Backend/SgPaths.h"
 #include "ClickSlider.h"
 #include <QFrame>
 #include <QStyle>
@@ -40,7 +41,7 @@ QString volumeIconPath(bool muted) {
 
 PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     : QWidget(parent), m_engine(engine), m_duration(0), isUserSeeking(false),
-    m_settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat) {
+    m_settings(SgPaths::configFile(), QSettings::IniFormat) {
 
     auto* windowLayout = new QVBoxLayout(this);
     windowLayout->setContentsMargins(0, 0, 0, 0);

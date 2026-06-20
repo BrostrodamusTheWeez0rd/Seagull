@@ -1,4 +1,5 @@
 #include "SgUpdater.h"
+#include "SgPaths.h"
 #include <QCoreApplication>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
@@ -93,7 +94,7 @@ QString SgUpdater::resolveLatestTag(const QString& latestReleaseUrl) const {
 }
 
 void SgUpdater::checkForUpdates(bool ignoreCooldown) {
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     qint64 lastCheck = settings.value("Updates/LastChecked", 0).toLongLong();
     qint64 now = QDateTime::currentSecsSinceEpoch();
 

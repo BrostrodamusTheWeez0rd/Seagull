@@ -7,8 +7,7 @@
 QStringList SgOptions::buildDownloadArgs(const QString& url) {
     QStringList args;
 
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini",
-        QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
 
     QString type = settings.value("Download/Type", "Video").toString();
     QString format = settings.value("Download/Format", "mp4").toString();
@@ -52,7 +51,7 @@ QStringList SgOptions::buildDownloadArgs(const QString& url) {
 }
 
 QStringList SgOptions::cookieArgs() {
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     const QString choice = settings.value("Streaming/CookiesBrowser", "None").toString();
     if (choice.isEmpty() || choice == "None") return {};
     // The combo labels map straight to yt-dlp's browser keywords once lowercased
@@ -61,7 +60,7 @@ QStringList SgOptions::cookieArgs() {
 }
 
 int SgOptions::defaultStreamHeight() {
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     QString quality = settings.value("Streaming/Quality", "Best Available").toString();
 
     if (quality.isEmpty() || quality == "Best Available")

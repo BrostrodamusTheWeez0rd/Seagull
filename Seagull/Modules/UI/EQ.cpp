@@ -1,6 +1,7 @@
 #include "EQ.h"
 #include "Widgets/ClickSlider.h"
 #include "../Backend/PlaybackEngine.h"  // band count / frequencies (static)
+#include "../Backend/SgPaths.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -93,7 +94,7 @@ protected:
 
 EQ::EQ(QWidget* parent)
     : QWidget(parent),
-      m_settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat) {
+      m_settings(SgPaths::configFile(), QSettings::IniFormat) {
     buildUi();
 
     m_persistTimer = new QTimer(this);

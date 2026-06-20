@@ -65,12 +65,12 @@ QString SgRecorder::outputDir() const {
 }
 
 bool SgRecorder::audioOnly() const {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     return cfg.value("Recording/Type", "Video").toString() == "Audio";
 }
 
 QString SgRecorder::extForFormat() const {
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     if (audioOnly()) {
         const QString fmt = cfg.value("Recording/Format", "M4A").toString().toLower();
         if (fmt == "mp3" || fmt == "opus" || fmt == "flac" || fmt == "wav") return fmt;

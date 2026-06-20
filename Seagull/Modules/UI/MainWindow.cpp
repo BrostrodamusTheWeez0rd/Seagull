@@ -2,6 +2,7 @@
 #include "VideoPlayer.h"
 #include "Theme.h"
 #include "Widgets/CircleGlyphButton.h"
+#include "../Backend/SgPaths.h"
 #include <QApplication>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -137,7 +138,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     DwmSetWindowAttribute(reinterpret_cast<HWND>(winId()), DWMWA_TRANSITIONS_FORCEDISABLED,
                           &disableTransitions, sizeof(disableTransitions));
 
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     m_videoSplitRatio = qBound(0.1, settings.value("Display/VideoSplitRatio", 0.5).toDouble(), 0.9);
 }
 
@@ -164,7 +165,7 @@ void MainWindow::captureSplit() {
     if (total <= 0) return;
     // Clamp so a fully-collapsed pane never becomes the saved default.
     m_videoSplitRatio = qBound(0.1, double(s.value(0)) / total, 0.9);
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     settings.setValue("Display/VideoSplitRatio", m_videoSplitRatio);
     settings.sync();
 }
@@ -216,7 +217,7 @@ void MainWindow::addTab(QWidget* tab, const QString& label) {
     // Honour the remembered closed set (default empty: one of each tab open).
     // The page still lives — parented to the tab widget, just never inserted —
     // so its module keeps running and "+" can open it later.
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     if (cfg.value("Tabs/Closed").toStringList().contains(label)) {
         scroll->hide();
         scroll->setParent(tabs);
@@ -653,7 +654,7 @@ void MainWindow::saveOpenTabs() {
     QStringList closed;
     for (const TabInfo& t : m_tabOrder)
         if (tabs->indexOf(t.wrapper) < 0 && t.wrapper->window() == this) closed << t.label;
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     cfg.setValue("Tabs/Closed", closed);
 }
 

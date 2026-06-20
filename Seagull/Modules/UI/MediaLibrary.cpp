@@ -58,7 +58,7 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     cardsArea->viewport()->setAutoFillBackground(true);
     cardsArea->viewport()->setBackgroundRole(QPalette::Window);
 
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     m_targetWidth = qBound(120, cfg.value("Display/CardWidth", 360).toInt(), 480); // default Extra Large
     m_cardWidth = m_targetWidth;
     m_sortMode = static_cast<SortMode>(qBound(0,
@@ -546,7 +546,7 @@ void MediaLibrary::showSortMenu() {
 void MediaLibrary::applySortMode(SortMode mode) {
     if (mode == m_sortMode) return;
     m_sortMode = mode;
-    QSettings cfg(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     cfg.setValue("Library/SortMode", static_cast<int>(mode));
     rebuild(); // re-list the active folder in the new order
 }

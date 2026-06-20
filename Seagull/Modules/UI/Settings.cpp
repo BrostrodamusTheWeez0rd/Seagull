@@ -53,9 +53,7 @@ QString presetName(int px) {
 }
 
 Settings::Settings(QWidget* parent) : QWidget(parent) {
-    // Force QSettings to create a "config.ini" right next to your .exe
-    QString iniPath = QCoreApplication::applicationDirPath() + "/config.ini";
-    iniSettings = new QSettings(iniPath, QSettings::IniFormat, this);
+    iniSettings = new QSettings(SgPaths::configFile(), QSettings::IniFormat, this);
 
     setupUI();
     loadSettings();
