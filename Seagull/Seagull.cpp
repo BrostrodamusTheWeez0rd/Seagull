@@ -2,6 +2,7 @@
 #include "Modules/UI/Theme.h"
 #include "Modules/UI/SetupDialog.h"
 #include "Modules/UI/Widgets/UpdateDialog.h"
+#include "Modules/Backend/SgFavorites.h"
 #include "Modules/Backend/SgPaths.h"
 #include "Modules/Backend/SgThumbnailer.h"
 #include <QApplication>
@@ -590,6 +591,11 @@ bool Seagull::run() {
     // the landmine: it could fire inside a modal's nested event loop and realize
     // the native windows under an active modal block, leaving the app input-dead.
     // With it gone, nothing touches winId() while a pre-window modal is up.
+
+    // Eagerly construct the favorites singleton so it loads its JSON before any
+    // VideoCard is built (the singleton is safe to call before this, but this
+    // guarantees the load happens on the main thread before modules are shown).
+    SgFavorites::instance();
 
     // First-run Terms of Use: must be accepted before the app is usable. Shown
     // modally BEFORE the window (safe now that the player's deferred winId hookup

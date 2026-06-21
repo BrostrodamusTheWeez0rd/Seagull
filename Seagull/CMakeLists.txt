@@ -80,6 +80,8 @@ add_executable(Seagull
     Modules/Backend/SgOptions.cpp
     Modules/Backend/SgPaths.h
     Modules/Backend/SgPaths.cpp
+    Modules/Backend/SgFavorites.h
+    Modules/Backend/SgFavorites.cpp
     Modules/Backend/SgThumbnailer.h
     Modules/Backend/SgThumbnailer.cpp
     Modules/Backend/SgUpdater.h

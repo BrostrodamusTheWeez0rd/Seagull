@@ -1,10 +1,14 @@
 #include "VideoCard.h"
+#include "../../Backend/SgFavorites.h"
+#include "../../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
 
 #include <QDateTime>
+#include <QEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QToolButton>
 #include <QPixmap>
 #include <QPainter>
 #include <QPainterPath>
@@ -19,7 +23,6 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QSvgRenderer>
-#include "../../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
 
 namespace {
 constexpr int kCardMargin = 8;    // QVBoxLayout content margin (left+right)
@@ -151,41 +154,92 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
     lay->addWidget(title);
     m_title = title; // click-to-play target (with the thumbnail)
 
-    auto* meta = new QLabel(this);
-    meta->setObjectName("metaStats"); // reuse the theme's dimmed stat styling
-    meta->setWordWrap(false);         // single line keeps card height deterministic
+    // Meta area: for cards that have a YouTube channel URL we insert a star button
+    // beside the channel name. For all other cards the layout is the same single
+    // label it always was — just wrapped in a QHBoxLayout so the chrome height
+    // calculation stays correct.
+    m_channelUrl = m_result.channelUrl;
+    const bool isYouTube = !m_channelUrl.isEmpty()
+                           && m_channelUrl.contains("youtube.com", Qt::CaseInsensitive);
+
+    auto* metaRow = new QHBoxLayout();
+    metaRow->setContentsMargins(0, 0, 0, 0);
+    metaRow->setSpacing(2);
+
+    if (isYouTube) {
+        // Star button — flat, icon-only, sits to the left of the channel name.
+        m_starBtn = new QToolButton(this);
+        m_starBtn->setFixedSize(16, 16);
+        m_starBtn->setAutoRaise(true);        // flat / no border
+        m_starBtn->setCursor(Qt::PointingHandCursor);
+        m_starBtn->setToolTip("Favorite channel");
+        updateStarIcon(SgFavorites::instance()->isFavorited(m_channelUrl));
+        connect(m_starBtn, &QToolButton::clicked, this, [this]() {
+            SgFavorites::instance()->toggle(m_channelUrl, m_result.channel);
+        });
+        // When another card (or any other caller) toggles the same channel, sync up.
+        connect(SgFavorites::instance(), &SgFavorites::changed, this,
+                [this](const QString& url, bool fav) {
+                    if (url == m_channelUrl) updateStarIcon(fav);
+                });
+        metaRow->addWidget(m_starBtn);
+    }
+
     if (m_result.isChannel) {
+        auto* meta = new QLabel(this);
+        meta->setObjectName("metaStats");
+        meta->setWordWrap(false);
         meta->setText(!m_result.subscriberText.isEmpty()
             ? m_result.subscriberText
             : (m_result.subscriberCount >= 0
                 ? formatViewCount(m_result.subscriberCount) + " subscribers"
                 : QStringLiteral("Channel")));
+        metaRow->addWidget(meta, 1);
     } else if (!m_result.channelUrl.isEmpty() && !m_result.channel.isEmpty()) {
-        // Uploader name is a clickable link; the rest of the meta stays plain. The
-        // inline style keeps it looking like the dimmed meta, underlined to signal
-        // it's clickable (theme-aware via the palette's placeholder colour).
-        meta->setTextFormat(Qt::RichText);
-        meta->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        // Uploader name is a clickable link. We keep it in its own label so the star
+        // sits neatly to its left; trailing stats go in a separate label to the right.
+        auto* channelLabel = new QLabel(this);
+        channelLabel->setObjectName("metaStats");
+        channelLabel->setWordWrap(false);
+        channelLabel->setTextFormat(Qt::RichText);
+        channelLabel->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
         const QString dim = palette().color(QPalette::PlaceholderText).name();
-        QStringList bits;
-        bits << QString("<a href=\"#\" style=\"color:%1;text-decoration:underline;\">%2</a>")
-                    .arg(dim, m_result.channel.toHtmlEscaped());
-        if (m_result.duration >= 0)  bits << formatDuration(m_result.duration).toHtmlEscaped();
-        if (m_result.viewCount >= 0) bits << (formatViewCount(m_result.viewCount).toHtmlEscaped() + " views");
-        if (const QString age = formatAge(m_result.timestamp); !age.isEmpty()) bits << age.toHtmlEscaped();
-        meta->setText(bits.join("   |   "));
-        connect(meta, &QLabel::linkActivated, this, [this](const QString&) {
+        channelLabel->setText(
+            QString("<a href=\"#\" style=\"color:%1;text-decoration:underline;\">%2</a>")
+                .arg(dim, m_result.channel.toHtmlEscaped()));
+        connect(channelLabel, &QLabel::linkActivated, this, [this](const QString&) {
             emit channelRequested(m_result.channelUrl, m_result.channel);
         });
+        metaRow->addWidget(channelLabel);
+
+        QStringList statBits;
+        if (m_result.duration >= 0)  statBits << ("   |   " + formatDuration(m_result.duration).toHtmlEscaped());
+        if (m_result.viewCount >= 0) statBits << ("   |   " + formatViewCount(m_result.viewCount).toHtmlEscaped() + " views");
+        if (const QString age = formatAge(m_result.timestamp); !age.isEmpty()) statBits << ("   |   " + age.toHtmlEscaped());
+        if (!statBits.isEmpty()) {
+            auto* statsLabel = new QLabel(this);
+            statsLabel->setObjectName("metaStats");
+            statsLabel->setWordWrap(false);
+            statsLabel->setTextFormat(Qt::RichText);
+            statsLabel->setText(QString("<span style=\"color:%1;\">%2</span>")
+                .arg(dim, statBits.join(QString())));
+            metaRow->addWidget(statsLabel);
+        }
+        metaRow->addStretch(1);
     } else {
+        auto* meta = new QLabel(this);
+        meta->setObjectName("metaStats");
+        meta->setWordWrap(false);
         QStringList bits;
         if (!m_result.channel.isEmpty()) bits << m_result.channel;
         if (m_result.duration >= 0)      bits << formatDuration(m_result.duration);
         if (m_result.viewCount >= 0)     bits << (formatViewCount(m_result.viewCount) + " views");
         if (const QString age = formatAge(m_result.timestamp); !age.isEmpty()) bits << age;
         meta->setText(bits.join("   |   "));
+        metaRow->addWidget(meta, 1);
     }
-    lay->addWidget(meta);
+
+    lay->addLayout(metaRow);
 
     auto* btnRow = new QHBoxLayout();
     btnRow->setSpacing(4);
@@ -261,6 +315,38 @@ void VideoCard::mousePressEvent(QMouseEvent* event) {
         }
     }
     QWidget::mousePressEvent(event);
+}
+
+void VideoCard::changeEvent(QEvent* event) {
+    if (event->type() == QEvent::PaletteChange && m_starBtn) {
+        updateStarIcon(SgFavorites::instance()->isFavorited(m_channelUrl));
+    }
+    QWidget::changeEvent(event);
+}
+
+QPixmap VideoCard::tintSvg(const QString& resourcePath, const QColor& color) {
+    // Render the SVG to a 16x16 pixmap then paint the target colour over its alpha.
+    QSvgRenderer renderer(resourcePath);
+    QPixmap pm(16, 16);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    renderer.render(&p);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), color);
+    p.end();
+    return pm;
+}
+
+void VideoCard::updateStarIcon(bool favorited) {
+    if (!m_starBtn) return;
+    const QColor color = favorited
+        ? palette().color(QPalette::Highlight)
+        : palette().color(QPalette::PlaceholderText);
+    const QString path = favorited
+        ? QStringLiteral(":/Assets/icons/star.svg")
+        : QStringLiteral(":/Assets/icons/star-outline.svg");
+    m_starBtn->setIcon(QIcon(tintSvg(path, color)));
+    m_starBtn->setIconSize(QSize(14, 14));
 }
 
 void VideoCard::loadThumbnail(QNetworkAccessManager* nam) {

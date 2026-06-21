@@ -6,6 +6,7 @@
 #include "../../Backend/SgSearch.h" // SearchResult
 
 class QNetworkAccessManager;
+class QToolButton;
 class RoundedThumb;
 
 // A reusable result tile: thumbnail + title + "channel | length | views", styled
@@ -57,15 +58,23 @@ signals:
 
 protected:
     void mousePressEvent(QMouseEvent* event) override; // click anywhere = play (or open channel)
+    void changeEvent(QEvent* event) override;          // PaletteChange -> re-tint star icon
 
 private:
     void loadThumbnail(QNetworkAccessManager* nam);
     void applyThumbnail(QPixmap pm, const QString& cacheKey); // cap + cache + show
     static int chromeHeight(); // fixed height below the thumbnail (title+meta+buttons)
 
+    // Tint an SVG resource path to the given colour; returns a 16x16 pixmap.
+    static QPixmap tintSvg(const QString& resourcePath, const QColor& color);
+    // Apply the correct star icon (filled/outline) based on current favorite state.
+    void updateStarIcon(bool favorited);
+
     SearchResult  m_result;
+    QString       m_channelUrl; // cached from m_result.channelUrl for signal handler
     RoundedThumb* m_thumb;
-    QWidget*      m_title = nullptr; // click-to-play is limited to the thumbnail + title
+    QWidget*      m_title    = nullptr; // click-to-play target (with the thumbnail)
+    QToolButton*  m_starBtn  = nullptr; // null when not a YouTube card
 };
 
 #endif // VIDEOCARD_H
