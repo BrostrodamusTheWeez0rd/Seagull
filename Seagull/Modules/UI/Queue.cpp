@@ -482,6 +482,21 @@ bool Queue::playNextOrStart() {
     return true;
 }
 
+bool Queue::playRandomOrStart() {
+    if (queueTable->rowCount() == 0) return false;
+    if (isStreamingQueue) { // active session — jump somewhere random in it
+        if (m_streamQueue.size() <= 1) { playQueueIndex(m_queuePlayIndex); return false; }
+        int next = QRandomGenerator::global()->bounded(m_streamQueue.size());
+        if (next == m_queuePlayIndex) next = (next + 1) % m_streamQueue.size();
+        m_queuePlayIndex = next;
+        playQueueIndex(m_queuePlayIndex);
+        return true;
+    }
+    if (m_queueDrained) return false; // already played to the end — don't loop
+    onStreamQueueClicked();           // queued-but-never-started: take over now
+    return true;
+}
+
 void Queue::playPrevQueuedItem() {
     if (!isStreamingQueue) return;
     m_queuePlayIndex = qMax(0, m_queuePlayIndex - 1);

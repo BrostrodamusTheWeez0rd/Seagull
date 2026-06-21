@@ -79,7 +79,7 @@ private:
 
     void wireSearchTab(Search* s);          // connect a Search instance's signals
     void wireExplorerTab(FileExplorer* e);  // connect a FileExplorer instance's signals
-    void openDuplicateTab(const QString& kind);    // "+" -> build + wire + add a new instance
+    void openDuplicateTab(const QString& kind, bool switchTo = true); // "+" -> build + wire + add a new instance
     void disposeDuplicateTab(QWidget* page);       // tab closed -> delete the instance (+ worker)
 
     // The orchestrator owns every backend worker and hands them out to modules.
@@ -108,6 +108,17 @@ private:
     SgMediaControls* mediaControls;
     QTimer* smtcTimelineTimer;
     void skipActive(int delta); // shared by the skip buttons + the SMTC next/prev keys
+
+    // Settings namespace for the content type currently playing (e.g.
+    // "search.youtube", "library.image"). Drives the per-type autoplay/shuffle
+    // toggles and the slideshow chrome via MainWindow::setPlaybackContext.
+    QString currentContextKey() const;
+
+    // Photo slideshow: in photo mode with autoplay on, advance to the next photo
+    // every N seconds (the MainWindow spin box). Re-armed each time a photo loads.
+    QTimer* slideshowTimer = nullptr;
+    bool    m_currentIsPhoto = false;
+    void    updateSlideshow(); // (re)arm or stop the timer for the current state
 
     // Checks GitHub Releases for a newer Seagull build and, if found, prompts the
     // user with the release notes + a button to open the download page.

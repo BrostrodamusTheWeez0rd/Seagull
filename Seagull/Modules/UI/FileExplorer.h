@@ -194,6 +194,7 @@ signals:
 public slots:
     void playNextFile();
     void playPrevFile();
+    void playRandomFile(); // shuffle: a random other playable row in the current folder
 
 protected:
     // Drag files from the file table onto a folder in the tree to move them there.

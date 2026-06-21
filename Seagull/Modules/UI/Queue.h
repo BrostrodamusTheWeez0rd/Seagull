@@ -44,6 +44,10 @@ public:
     // a queue that already played to its end. Returns true if it took over.
     bool playNextOrStart();
 
+    // Shuffle variant of playNextOrStart: when a session is active, jumps to a
+    // random other item instead of the next one. Returns true if it took over.
+    bool playRandomOrStart();
+
     // Clears the URL bar once a video starts playing, but leaves the metadata
     // preview up (so it shows the now-playing video until a new link is pasted).
     void clearUrlForPlayback();

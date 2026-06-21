@@ -167,7 +167,8 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
     metaRow->setSpacing(2);
 
     if (isYouTube) {
-        // Star button — flat, icon-only, sits to the left of the channel name.
+        // Star button — flat, icon-only, sits to the right of the channel name.
+        // Constructed here, but added to metaRow after the channel label below.
         m_starBtn = new QToolButton(this);
         m_starBtn->setFixedSize(16, 16);
         m_starBtn->setAutoRaise(true);        // flat / no border
@@ -175,14 +176,20 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
         m_starBtn->setToolTip("Favorite channel");
         updateStarIcon(SgFavorites::instance()->isFavorited(m_channelUrl));
         connect(m_starBtn, &QToolButton::clicked, this, [this]() {
-            SgFavorites::instance()->toggle(m_channelUrl, m_result.channel);
+            // Only pass the thumbnail URL when this is a channel card; video cards
+            // carry a video frame thumbnail, not the channel avatar. SgFavorites will
+            // emit avatarNeeded for entries with an empty URL so the avatar can be
+            // fetched asynchronously via yt-dlp.
+            SgFavorites::instance()->toggle(
+                m_channelUrl,
+                m_result.channel,
+                m_result.isChannel ? m_result.thumbnail : QString());
         });
         // When another card (or any other caller) toggles the same channel, sync up.
         connect(SgFavorites::instance(), &SgFavorites::changed, this,
                 [this](const QString& url, bool fav) {
                     if (url == m_channelUrl) updateStarIcon(fav);
                 });
-        metaRow->addWidget(m_starBtn);
     }
 
     if (m_result.isChannel) {
@@ -195,9 +202,10 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
                 ? formatViewCount(m_result.subscriberCount) + " subscribers"
                 : QStringLiteral("Channel")));
         metaRow->addWidget(meta, 1);
+        // Star sits to the right of the subscriber count on channel cards too.
+        if (m_starBtn) metaRow->addWidget(m_starBtn);
     } else if (!m_result.channelUrl.isEmpty() && !m_result.channel.isEmpty()) {
-        // Uploader name is a clickable link. We keep it in its own label so the star
-        // sits neatly to its left; trailing stats go in a separate label to the right.
+        // Uploader name is a clickable link; star sits to its right.
         auto* channelLabel = new QLabel(this);
         channelLabel->setObjectName("metaStats");
         channelLabel->setWordWrap(false);
@@ -211,6 +219,8 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
             emit channelRequested(m_result.channelUrl, m_result.channel);
         });
         metaRow->addWidget(channelLabel);
+        // Star to the right of the channel name.
+        if (m_starBtn) metaRow->addWidget(m_starBtn);
 
         QStringList statBits;
         if (m_result.duration >= 0)  statBits << ("   |   " + formatDuration(m_result.duration).toHtmlEscaped());

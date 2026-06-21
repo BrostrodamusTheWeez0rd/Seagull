@@ -12,6 +12,7 @@
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QAbstractSpinBox>
 #include <QAbstractItemView>
 #include <QAbstractSlider>
@@ -23,6 +24,7 @@
 #include <QMovie>
 #include <QFrame>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QKeyEvent>
@@ -115,6 +117,74 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_shareBtn->setToolTip("Copy video link");
     m_shareBtn->hide();
     connect(m_shareBtn, &QToolButton::clicked, this, [this]() { emit shareRequested(); });
+
+    // Autoplay toggle: between the "+" and Share. Shown only while media is playing.
+    // In photo mode it relabels to "Slideshow" (see setPlaybackContext). Its state
+    // is per-content-type, loaded by setPlaybackContext when playback starts.
+    m_autoplayBtn = new QToolButton(tabs);
+    m_autoplayBtn->setObjectName("tabAutoplayButton");
+    m_autoplayBtn->setFixedSize(18, 18);
+    m_autoplayBtn->setIconSize(QSize(12, 12));
+    m_autoplayBtn->setCursor(Qt::PointingHandCursor);
+    m_autoplayBtn->setToolTip("Autoplay next video");
+    m_autoplayBtn->setCheckable(true);
+    m_autoplayBtn->hide(); // positionPlusButton() shows it once media is playing
+    connect(m_autoplayBtn, &QToolButton::toggled, this, [this](bool on) {
+        m_autoplayEnabled = on;
+        tintAutoplayButton();
+        if (!m_contextKey.isEmpty()) {
+            QSettings s(SgPaths::configFile(), QSettings::IniFormat);
+            s.setValue("Player/Autoplay/" + m_contextKey, on);
+        }
+        positionPlusButton(); // shuffle rides on autoplay being on
+        emit autoplayChanged(on);
+    });
+
+    // Shuffle toggle: right of autoplay (or its slideshow interval, in photo mode),
+    // shown only while autoplay is on. Random next pick from the active source.
+    // Like autoplay, its state is per-content-type.
+    m_shuffleBtn = new QToolButton(tabs);
+    m_shuffleBtn->setObjectName("tabShuffleButton");
+    m_shuffleBtn->setFixedSize(18, 18);
+    m_shuffleBtn->setIconSize(QSize(12, 12));
+    m_shuffleBtn->setCursor(Qt::PointingHandCursor);
+    m_shuffleBtn->setToolTip("Shuffle");
+    m_shuffleBtn->setCheckable(true);
+    m_shuffleBtn->hide();
+    connect(m_shuffleBtn, &QToolButton::toggled, this, [this](bool on) {
+        m_shuffleEnabled = on;
+        tintShuffleButton();
+        if (!m_contextKey.isEmpty()) {
+            QSettings s(SgPaths::configFile(), QSettings::IniFormat);
+            s.setValue("Player/Shuffle/" + m_contextKey, on);
+        }
+        emit shuffleChanged(on);
+    });
+
+    // Slideshow interval (seconds between photos): shown only in photo mode, snug
+    // to the right of the (relabelled) autoplay button. Persisted globally.
+    m_photoIntervalSpin = new QSpinBox(tabs);
+    m_photoIntervalSpin->setObjectName("tabPhotoIntervalSpin");
+    m_photoIntervalSpin->setRange(1, 60);
+    m_photoIntervalSpin->setSuffix("s");
+    m_photoIntervalSpin->setFixedSize(40, 18);
+    m_photoIntervalSpin->setAlignment(Qt::AlignCenter);
+    m_photoIntervalSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_photoIntervalSpin->setToolTip("Seconds between photos");
+    m_photoIntervalSpin->setCursor(Qt::PointingHandCursor);
+    m_photoIntervalSpin->hide();
+    {
+        QSettings s(SgPaths::configFile(), QSettings::IniFormat);
+        m_photoIntervalSecs = qBound(1, s.value("Player/SlideshowInterval", 5).toInt(), 60);
+    }
+    m_photoIntervalSpin->setValue(m_photoIntervalSecs);
+    connect(m_photoIntervalSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+        m_photoIntervalSecs = v;
+        QSettings s(SgPaths::configFile(), QSettings::IniFormat);
+        s.setValue("Player/SlideshowInterval", v);
+        emit photoIntervalChanged(v);
+    });
+
     // Drag-reordering moves the last tab's edge without any add/remove of ours.
     connect(tabs->tabBar(), &QTabBar::tabMoved, this, [this](int, int) { schedulePlusReposition(); });
     // Selecting a tab can shift tab widths; re-tuck the manual close buttons.
@@ -255,15 +325,17 @@ void MainWindow::registerDuplicableTab(const QString& kind, const QString& menuL
     m_duplicableKinds.append({ kind, menuLabel });
 }
 
-void MainWindow::addDuplicateTab(QWidget* page, const QString& label) {
+void MainWindow::addDuplicateTab(QWidget* page, const QString& label, bool switchTo) {
     // A runtime extra instance: it gets a close x and tear-off like any tab, but it
-    // is NOT added to m_tabOrder (so it's never persisted or offered by "+"), and
-    // closing it disposes the page (see closeTabAt). Opened at the end of the bar.
+    // is NOT added to m_tabOrder (so it's never offered by "+"), and closing it
+    // disposes the page (see closeTabAt). Opened at the end of the bar.
     QWidget* wrapper = wrapPage(page);
     m_duplicateTabs.insert(wrapper, page);
+    m_duplicateKindMap.insert(wrapper, label);
     tabs->addTab(wrapper, label);
     addCloseButton(wrapper);
-    tabs->setCurrentIndex(tabs->indexOf(wrapper)); // they asked for it — show it
+    if (switchTo)
+        tabs->setCurrentIndex(tabs->indexOf(wrapper)); // they asked for it — show it
     schedulePlusReposition();
 }
 
@@ -280,6 +352,66 @@ void MainWindow::tintShareButton() {
     m_shareBtn->setIcon(QIcon(pm));
 }
 
+void MainWindow::tintAutoplayButton() {
+    if (!m_autoplayBtn) return;
+    const QSize sz(12, 12);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/skip-next.svg")).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    const QColor color = m_autoplayEnabled
+        ? palette().color(QPalette::Highlight)
+        : Theme::colorsFor(Theme::currentName()).subtext;
+    p.fillRect(pm.rect(), color);
+    p.end();
+    m_autoplayBtn->setIcon(QIcon(pm));
+    m_autoplayBtn->setIconSize(sz);
+}
+
+void MainWindow::tintShuffleButton() {
+    if (!m_shuffleBtn) return;
+    const QSize sz(12, 12);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/shuffle.svg")).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    const QColor color = m_shuffleEnabled
+        ? palette().color(QPalette::Highlight)
+        : Theme::colorsFor(Theme::currentName()).subtext;
+    p.fillRect(pm.rect(), color);
+    p.end();
+    m_shuffleBtn->setIcon(QIcon(pm));
+    m_shuffleBtn->setIconSize(sz);
+}
+
+void MainWindow::setPlaybackContext(const QString& contextKey, bool photoMode) {
+    if (contextKey.isEmpty()) return;
+    m_contextKey = contextKey;
+    m_photoMode  = photoMode;
+
+    // Load this content type's remembered toggles. Autoplay defaults on for
+    // audio/video, but slideshow (photo autoplay) defaults off so opening one
+    // photo doesn't immediately start flipping the folder. Shuffle defaults off.
+    QSettings s(SgPaths::configFile(), QSettings::IniFormat);
+    const bool autoplay = s.value("Player/Autoplay/" + contextKey, !photoMode).toBool();
+    const bool shuffle  = s.value("Player/Shuffle/"  + contextKey, false).toBool();
+
+    // Reflect the state without re-persisting (block the toggled write-back).
+    m_autoplayEnabled = autoplay;
+    m_shuffleEnabled  = shuffle;
+    QSignalBlocker ba(m_autoplayBtn);
+    QSignalBlocker bs(m_shuffleBtn);
+    m_autoplayBtn->setChecked(autoplay);
+    m_shuffleBtn->setChecked(shuffle);
+
+    // In photo mode the autoplay toggle reads as a slideshow control.
+    m_autoplayBtn->setToolTip(photoMode ? "Slideshow" : "Autoplay next video");
+
+    tintAutoplayButton();
+    tintShuffleButton();
+    positionPlusButton();
+}
+
 void MainWindow::setShareAvailable(bool on) {
     m_shareAvailable = on;
     if (on) tintShareButton();
@@ -288,10 +420,12 @@ void MainWindow::setShareAvailable(bool on) {
 
 void MainWindow::changeEvent(QEvent* event) {
     QMainWindow::changeEvent(event);
-    // Keep the share glyph in step with theme switches, like the stroked +/× chips.
-    if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
-        && m_shareAvailable)
-        tintShareButton();
+    // Keep the glyphs in step with theme switches, like the stroked +/× chips.
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
+        tintAutoplayButton();
+        tintShuffleButton();
+        if (m_shareAvailable) tintShareButton();
+    }
 }
 
 void MainWindow::addCloseButton(QWidget* wrapper) {
@@ -397,11 +531,26 @@ void MainWindow::settleCloseButton(QWidget* wrapper) {
 
 void MainWindow::positionPlusButton() {
     QTabBar* bar = tabs->tabBar();
-    if (bar->count() == 0) { m_plusBtn->hide(); m_shareBtn->hide(); return; }
+    if (bar->count() == 0) {
+        m_plusBtn->hide(); m_autoplayBtn->hide(); m_shuffleBtn->hide();
+        m_photoIntervalSpin->hide(); m_shareBtn->hide();
+        return;
+    }
     const QRect last = bar->tabRect(bar->count() - 1);
+
+    // What's visible this pass: autoplay only while media plays; the slideshow
+    // interval only in photo mode; shuffle only when autoplay is on.
+    const bool showAutoplay = m_playbackActive;
+    const bool showSpin     = m_playbackActive && m_photoMode;
+    const bool showShuffle  = m_playbackActive && m_autoplayEnabled;
+
     // Tab-bar coords -> tab-widget coords; clamp so a crowded bar can't push
     // the buttons out of view.
-    const int reserved = m_plusBtn->width() + (m_shareAvailable ? m_shareBtn->width() + 4 : 0);
+    const int reserved = m_plusBtn->width()
+                       + (showAutoplay ? 4 + m_autoplayBtn->width() : 0)
+                       + (showSpin     ? 4 + m_photoIntervalSpin->width() : 0)
+                       + (showShuffle  ? 4 + m_shuffleBtn->width() : 0)
+                       + (m_shareAvailable ? 4 + m_shareBtn->width() : 0);
     int x = bar->pos().x() + last.right() + 6;
     x = qMin(x, tabs->width() - reserved - 4);
     const int y = bar->pos().y() + last.top() + (last.height() - m_plusBtn->height()) / 2;
@@ -409,13 +558,21 @@ void MainWindow::positionPlusButton() {
     m_plusBtn->raise();
     m_plusBtn->show();
 
-    if (m_shareAvailable) {
-        m_shareBtn->move(x + m_plusBtn->width() + 4, y);
-        m_shareBtn->raise();
-        m_shareBtn->show();
-    } else {
-        m_shareBtn->hide();
-    }
+    // Lay the floating chrome out left-to-right, advancing `next` past each one
+    // that's actually shown: autoplay -> slideshow interval -> shuffle -> share.
+    int next = x + m_plusBtn->width();
+    auto place = [&](QWidget* w, bool show, int h) {
+        if (!show) { w->hide(); return; }
+        const int wy = bar->pos().y() + last.top() + (last.height() - h) / 2;
+        w->move(next + 4, wy);
+        w->raise();
+        w->show();
+        next += 4 + w->width();
+    };
+    place(m_autoplayBtn,      showAutoplay, m_autoplayBtn->height());
+    place(m_photoIntervalSpin, showSpin,    m_photoIntervalSpin->height());
+    place(m_shuffleBtn,        showShuffle, m_shuffleBtn->height());
+    place(m_shareBtn,          m_shareAvailable, m_shareBtn->height());
 }
 
 void MainWindow::schedulePlusReposition() {
@@ -587,6 +744,7 @@ void MainWindow::closeTabAt(int index) {
     // the orchestrator delete the instance (and its worker) via duplicateTabClosed.
     if (m_duplicateTabs.contains(wrapper)) {
         QWidget* page = m_duplicateTabs.take(wrapper);
+        m_duplicateKindMap.remove(wrapper);
         tabs->removeTab(index);
         removeCloseButton(wrapper);
         m_tabPages.remove(page);
@@ -654,8 +812,19 @@ void MainWindow::saveOpenTabs() {
     QStringList closed;
     for (const TabInfo& t : m_tabOrder)
         if (tabs->indexOf(t.wrapper) < 0 && t.wrapper->window() == this) closed << t.label;
+
+    // Save duplicate (extra) tabs in their current bar order so they restore in the
+    // same left-to-right sequence they were in when the user closed the app.
+    QStringList extra;
+    for (int i = 0; i < tabs->count(); ++i) {
+        QWidget* w = tabs->widget(i);
+        if (m_duplicateKindMap.contains(w))
+            extra << m_duplicateKindMap.value(w);
+    }
+
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     cfg.setValue("Tabs/Closed", closed);
+    cfg.setValue("Tabs/ExtraTabs", extra);
 }
 
 void MainWindow::setTabBusy(QWidget* tab, bool busy) {
@@ -734,6 +903,8 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
         // Only apply the remembered split when the video area is collapsed (first
         // show); otherwise keep whatever size the user dragged it to this session.
         if (mainSplitter->sizes().value(0) <= 0) applyStoredSplit();
+        m_playbackActive = true; // media playing — surface the autoplay toggle
+        positionPlusButton();
         });
     connect(player, &VideoPlayer::closed, this, [this]() {
         // If it was floating, bring it home first (re-docks + restores the split)
@@ -744,6 +915,8 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
         if (!isFullScreen()) captureSplit();
         if (videoPlayer) videoPlayer->hide();
         if (isFullScreen()) exitFullScreen();
+        m_playbackActive = false; // nothing playing — retire the autoplay toggle
+        positionPlusButton();
         });
 
     player->hide(); // nothing playing yet — let the tabs fill the window
@@ -888,6 +1061,8 @@ void MainWindow::moveEvent(QMoveEvent* event) {
 
 void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
+    tintAutoplayButton(); // palette is themed by now; first tint happens here
+    tintShuffleButton();
     // A hand-edited Tabs/Closed could list every tab; never come up with zero.
     if (tabs->count() == 0 && !m_tabOrder.isEmpty()) reopenTab(0);
     schedulePlusReposition();
@@ -897,6 +1072,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     // Pull every floating tab back in: they get saved as open for next launch,
     // and no orphan window outlives the shell (which would keep the app alive).
     while (!m_floating.isEmpty()) dockFloating(m_floating.first(), false);
+    saveOpenTabs(); // final authoritative write — covers the no-floating-tabs path
     QMainWindow::closeEvent(event);
 }
 

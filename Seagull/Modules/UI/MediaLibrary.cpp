@@ -7,6 +7,7 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QRandomGenerator>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QPushButton>
@@ -303,6 +304,7 @@ VideoCard* MediaLibrary::addCardForEntry(const QFileInfo& fi) {
         // even after the grid is rebuilt for another type/sort (see m_sessionFiles).
         m_sessionFiles = m_files;
         m_sessionIndex = index;
+        m_sessionType  = m_type; // remember the type for per-content settings
         emit playMediaRequested(url);
         });
     // Card "Queue" -> the Queue tab's local queue (purity handled there).
@@ -433,6 +435,27 @@ void MediaLibrary::playPrevFile() {
     if (m_sessionFiles.isEmpty() || m_sessionIndex <= 0) return;
     --m_sessionIndex;
     emit playMediaRequested(QUrl::fromLocalFile(m_sessionFiles[m_sessionIndex]));
+}
+
+void MediaLibrary::playRandomFile() {
+    if (m_sessionFiles.isEmpty()) return;
+    int next = QRandomGenerator::global()->bounded(m_sessionFiles.size());
+    // Avoid replaying the same file back-to-back when there's a choice.
+    if (m_sessionFiles.size() > 1 && next == m_sessionIndex)
+        next = (next + 1) % m_sessionFiles.size();
+    m_sessionIndex = next;
+    emit playMediaRequested(QUrl::fromLocalFile(m_sessionFiles[next]));
+}
+
+QString MediaLibrary::sessionContextKey() const {
+    switch (m_sessionType) {
+    case MediaType::Audio:     return QStringLiteral("library.audio");
+    case MediaType::Image:     return QStringLiteral("library.image");
+    case MediaType::Recording: return QStringLiteral("library.recording");
+    case MediaType::Video:
+    case MediaType::Playlist:  break;
+    }
+    return QStringLiteral("library.video");
 }
 
 int MediaLibrary::fillCardWidth() const {

@@ -242,7 +242,8 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     m_explorerTabs.append(explorerModule); m_activeExplorer = explorerModule; wireExplorerTab(explorerModule);
     mainWindow->registerDuplicableTab("Search", "New Search tab");
     mainWindow->registerDuplicableTab("File Explorer", "New File Explorer tab");
-    connect(mainWindow, &MainWindow::newTabRequested,   this, &Seagull::openDuplicateTab);
+    connect(mainWindow, &MainWindow::newTabRequested,   this,
+        [this](const QString& kind) { openDuplicateTab(kind); }); // "+" menu: switch to the new tab
     connect(mainWindow, &MainWindow::duplicateTabClosed, this, &Seagull::disposeDuplicateTab);
 
     // General "Check for Updates" button -> manual app-version check (shows an
@@ -280,16 +281,27 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // stays up, showing the now-playing video). Library playback leaves it alone.
     connect(videoPlayer, &VideoPlayer::playbackStarted, this, [this]() {
         if (activeSource == ActiveSource::Queue) queueModule->clearUrlForPlayback();
+        // Point the autoplay/shuffle toggles at this content type and arm the
+        // slideshow if a photo just loaded.
+        m_currentIsPhoto = (videoPlayer->currentMediaKind() == MediaKind::Photo);
+        mainWindow->setPlaybackContext(currentContextKey(), m_currentIsPhoto);
+        updateSlideshow();
         });
 
     // A finished video rolls into the next one — but anything waiting in the
     // queue outranks the grids: it plays next no matter where the finished item
-    // came from (the queue's play signals re-point activeSource at Queue).
+    // came from (the queue's play signals re-point activeSource at Queue). When
+    // shuffle is on, the next pick from each source is random.
     connect(videoPlayer, &VideoPlayer::mediaEnded, this, [this]() {
-        if (queueModule->playNextOrStart()) return;
-        if (activeSource == ActiveSource::Library)       libraryModule->playNextFile();
-        else if (activeSource == ActiveSource::Explorer && m_activeExplorer) m_activeExplorer->playNextFile();
-        else if (activeSource == ActiveSource::Search && m_activeSearch) m_activeSearch->playAdjacentResult(1);
+        if (!mainWindow->autoplayEnabled()) return;
+        const bool shuffle = mainWindow->shuffleEnabled();
+        if (shuffle ? queueModule->playRandomOrStart() : queueModule->playNextOrStart()) return;
+        if (activeSource == ActiveSource::Library)
+            shuffle ? libraryModule->playRandomFile() : libraryModule->playNextFile();
+        else if (activeSource == ActiveSource::Explorer && m_activeExplorer)
+            shuffle ? m_activeExplorer->playRandomFile() : m_activeExplorer->playNextFile();
+        else if (activeSource == ActiveSource::Search && m_activeSearch)
+            shuffle ? m_activeSearch->playRandomResult() : m_activeSearch->playAdjacentResult(1);
         });
 
     // The skip buttons (single-click = nudge, double-click = jump tracks) land here,
@@ -329,6 +341,21 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             mediaControls->setTimeline(videoPlayer->mediaPosition(), videoPlayer->mediaDuration());
         });
     smtcTimelineTimer->start();
+
+    // Photo slideshow: advance to the next photo when the interval elapses. Each
+    // new photo's playbackStarted re-arms it (see updateSlideshow); landing on the
+    // last photo simply leaves the one-shot timer stopped, so the show ends there.
+    slideshowTimer = new QTimer(this);
+    slideshowTimer->setSingleShot(true);
+    connect(slideshowTimer, &QTimer::timeout, this, [this]() { skipActive(1); });
+    // Toggling the slideshow control, or editing the interval, re-evaluates it.
+    connect(mainWindow, &MainWindow::autoplayChanged,      this, [this](bool) { updateSlideshow(); });
+    connect(mainWindow, &MainWindow::photoIntervalChanged, this, [this](int)  { updateSlideshow(); });
+    // Tearing down playback ends any running slideshow.
+    connect(videoPlayer, &VideoPlayer::closed, this, [this]() {
+        m_currentIsPhoto = false;
+        slideshowTimer->stop();
+        });
 
     // Surface the player worker's logs (stream resolution, yt-dlp errors) in the
     // same dev console as the others, by re-emitting through the downloader.
@@ -449,7 +476,7 @@ void Seagull::wireExplorerTab(FileExplorer* e) {
     connect(e, &FileExplorer::enqueueRequested, queueModule, &Queue::addLocalFilesToQueue);
 }
 
-void Seagull::openDuplicateTab(const QString& kind) {
+void Seagull::openDuplicateTab(const QString& kind, bool switchTo) {
     // "+" menu -> a fresh extra instance. Each Search duplicate gets its OWN SgSearch
     // worker (true concurrent searching — which is exactly why Search warns about the
     // bot risk of two tabs on one site). File Explorer has no worker.
@@ -460,13 +487,13 @@ void Seagull::openDuplicateTab(const QString& kind) {
         m_searchWorkers.insert(s, worker);
         m_searchTabs.append(s);
         wireSearchTab(s);
-        mainWindow->addDuplicateTab(s, "Search");
+        mainWindow->addDuplicateTab(s, "Search", switchTo);
     }
     else if (kind == QStringLiteral("File Explorer")) {
         auto* e = new FileExplorer(spellChecker);
         m_explorerTabs.append(e);
         wireExplorerTab(e);
-        mainWindow->addDuplicateTab(e, "File Explorer");
+        mainWindow->addDuplicateTab(e, "File Explorer", switchTo);
     }
 }
 
@@ -564,22 +591,50 @@ void Seagull::onExtractionBlocked(const QString& kind, const QString& detail) {
 }
 
 void Seagull::skipActive(int delta) {
+    // Forward skips honour shuffle (random next); backward always steps in order.
+    const bool shuffle = delta > 0 && mainWindow->autoplayEnabled()
+                                   && mainWindow->shuffleEnabled();
     if (activeSource == ActiveSource::Library) {
-        if (delta > 0) libraryModule->playNextFile();
-        else           libraryModule->playPrevFile();
+        if (shuffle)        libraryModule->playRandomFile();
+        else if (delta > 0) libraryModule->playNextFile();
+        else                libraryModule->playPrevFile();
     }
     else if (activeSource == ActiveSource::Explorer) {
         if (m_activeExplorer) {
-            if (delta > 0) m_activeExplorer->playNextFile();
-            else           m_activeExplorer->playPrevFile();
+            if (shuffle)        m_activeExplorer->playRandomFile();
+            else if (delta > 0) m_activeExplorer->playNextFile();
+            else                m_activeExplorer->playPrevFile();
         }
     }
     else if (activeSource == ActiveSource::Queue) {
-        if (delta > 0) queueModule->playNextQueuedItem();
-        else           queueModule->playPrevQueuedItem();
+        if (shuffle)        queueModule->playRandomOrStart();
+        else if (delta > 0) queueModule->playNextQueuedItem();
+        else                queueModule->playPrevQueuedItem();
     }
     else if (activeSource == ActiveSource::Search) {
-        if (m_activeSearch) m_activeSearch->playAdjacentResult(delta > 0 ? 1 : -1);
+        if (shuffle && m_activeSearch)      m_activeSearch->playRandomResult();
+        else if (m_activeSearch)            m_activeSearch->playAdjacentResult(delta > 0 ? 1 : -1);
+    }
+}
+
+QString Seagull::currentContextKey() const {
+    switch (activeSource) {
+    case ActiveSource::Library:  return libraryModule->sessionContextKey();
+    case ActiveSource::Explorer: return QStringLiteral("explorer");
+    case ActiveSource::Queue:    return QStringLiteral("queue");
+    case ActiveSource::Search:   return m_activeSearch ? m_activeSearch->playbackContextKey()
+                                                       : QStringLiteral("search.youtube");
+    case ActiveSource::None:     break;
+    }
+    return QStringLiteral("queue"); // direct URL paste etc. -> queue-style context
+}
+
+void Seagull::updateSlideshow() {
+    // Run the slideshow only for a photo with autoplay (slideshow) enabled.
+    if (m_currentIsPhoto && mainWindow->autoplayEnabled()) {
+        slideshowTimer->start(mainWindow->photoIntervalSeconds() * 1000);
+    } else {
+        slideshowTimer->stop();
     }
 }
 
@@ -678,6 +733,9 @@ bool Seagull::run() {
     mainWindow->show();
     videoPlayer->rebindOutputWindow(); // bind VLC now the render HWND exists
     mediaControls->attachToWindow(reinterpret_cast<void*>(mainWindow->winId()));
+
+    for (const QString& kind : cfg.value("Tabs/ExtraTabs").toStringList())
+        openDuplicateTab(kind, false /*switchTo*/);
 
     finishStartupUpdates(); // release thumbnail holds + shut the updater thread
     return true;

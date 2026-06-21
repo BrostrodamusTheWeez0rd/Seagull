@@ -50,6 +50,11 @@ public slots:
     // next (+1) / previous (-1) result that passes the current filter. Walking
     // past the loaded tail pulls the next batch and continues when it lands.
     void playAdjacentResult(int delta);
+    // Shuffle: play a random other result that passes the current filter.
+    void playRandomResult();
+    // Settings namespace for this tab's active site (e.g. "search.youtube"), so
+    // autoplay/shuffle settings are remembered per site.
+    QString playbackContextKey() const;
     // Wipe the search history: completer entries + the persisted history file.
     // Settings' "Clear History Now" and the on-close auto-clear land here.
     void clearSearchHistory();
@@ -89,6 +94,8 @@ private:
         QString target; // the query string, or the channel URL
         QString label;  // what to show in the query bar
         SgSearch::Site site = SgSearch::Site::YouTube; // site the query ran against (Query entries)
+        QList<SearchResult> results;     // cached result list (empty = needs fetch)
+        SearchResult        channelInfo; // channel header info (Channel entries only)
     };
 
     SgSearch::Site currentSite() const; // the site picked/typed in the dropdown
@@ -130,17 +137,21 @@ private:
     void positionFilterPill();
     void updateFilterPillVisibility();
 
-    // Top-right magnifier + sort controls (the Library tab's chips, mirrored here
-    // with the same auto-hide as the filter pill).
+    // Top-right magnifier + sort + favourites chips (mirroring the Library tab).
     void positionTopControls();     // place the magnifier + sort at the grid's top-right
     void toggleResultSearch();      // magnifier: reveal / collapse the title-filter bar
     void tintResultSearchIcon();    // recolour the magnifier glyph to the theme text
     void tintResultSortIcon();      // recolour the sort glyph to the theme text
+    void tintFavoritesIcon();       // recolour the star glyph (active = Highlight, inactive = WindowText)
     void showResultSortMenu();      // drop the ordering menu under the sort button
     void applySortMode(SortMode mode); // remember the choice, then re-sort + rebuild
     void applySort();               // stable-reorder m_allResults by m_sortMode; keep m_playingIndex
     bool matchesQuery(const SearchResult& r) const; // title contains the filter text
     bool shows(const SearchResult& r) const;        // passesFilter AND matchesQuery (card visibility)
+
+    // Favourites view: enter (show only favourited channels) / exit (restore last results).
+    void enterFavoritesView();
+    void exitFavoritesView();
 
     static constexpr int kPillTopMargin = 8;
 
@@ -160,13 +171,15 @@ private:
     QPushButton* m_filterShortsBtn;
     QTimer*      pillHoverTimer;
 
-    // Top-right chips over the grid: a magnifier that reveals a title filter, and a
-    // sort button. Children of resultsArea (like the pill) so they stack above the
-    // viewport; same auto-hide rules.
-    QPushButton*        m_resultSearchBtn = nullptr;
-    SpellCheckLineEdit* m_resultSearchBar = nullptr; // revealed on click; filters loaded results by title
-    QPushButton*        m_resultSortBtn   = nullptr;
-    QMenu*              m_resultSortMenu  = nullptr;
+    // Top-right chips over the grid: a magnifier that reveals a title filter, a sort
+    // button, and a favourites toggle. Children of resultsArea (like the pill) so they
+    // stack above the viewport; same auto-hide rules.
+    QPushButton*        m_resultSearchBtn  = nullptr;
+    SpellCheckLineEdit* m_resultSearchBar  = nullptr; // revealed on click; filters loaded results by title
+    QPushButton*        m_resultSortBtn    = nullptr;
+    QMenu*              m_resultSortMenu   = nullptr;
+    QPushButton*        m_favoritesBtn     = nullptr; // YouTube-only; toggles the favourites view
+    bool                m_favoritesActive  = false;
     bool                m_resultSearchOpen = false;
     QElapsedTimer       m_resultSearchOpenedClock; // grace after the click before auto-collapse
     QString             m_resultQuery;             // current title filter (lowercased on use)

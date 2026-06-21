@@ -3,6 +3,7 @@
 #include "Widgets/SpellCheckLineEdit.h"
 #include <QTimer>
 #include <QMenu>
+#include <QRandomGenerator>
 #include <QInputDialog>
 #include <QDir>
 #include <QRegularExpression>
@@ -364,6 +365,28 @@ void FileExplorer::playPrevFile() {
     if (currentPlayIndex <= 0) return;
     int prevRow = currentPlayIndex - 1;
     QModelIndex proxyIdx = tableFilter->index(prevRow, 0, fileTable->rootIndex());
+    if (proxyIdx.isValid())
+        onFileDoubleClicked(proxyIdx);
+}
+
+void FileExplorer::playRandomFile() {
+    // Gather the playable (file, not folder) rows in the current view, then pick
+    // one at random that isn't the one already playing.
+    const int rows = tableFilter->rowCount(fileTable->rootIndex());
+    QList<int> fileRows;
+    for (int r = 0; r < rows; ++r) {
+        const QModelIndex proxyIdx = tableFilter->index(r, 0, fileTable->rootIndex());
+        const QModelIndex srcIdx = tableFilter->mapToSource(proxyIdx);
+        if (srcIdx.isValid() && QFileInfo(fileModel->filePath(srcIdx)).isFile())
+            fileRows.append(r);
+    }
+    if (fileRows.isEmpty()) return;
+    int pick = fileRows.at(QRandomGenerator::global()->bounded(fileRows.size()));
+    if (fileRows.size() > 1 && pick == currentPlayIndex) {
+        const int pos = fileRows.indexOf(pick);
+        pick = fileRows.at((pos + 1) % fileRows.size());
+    }
+    const QModelIndex proxyIdx = tableFilter->index(pick, 0, fileTable->rootIndex());
     if (proxyIdx.isValid())
         onFileDoubleClicked(proxyIdx);
 }

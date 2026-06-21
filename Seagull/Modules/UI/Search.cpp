@@ -3,11 +3,13 @@
 #include "Widgets/VideoCard.h"
 #include "Widgets/SpellCheckLineEdit.h"
 #include "../Backend/SgSearch.h"
+#include "../Backend/SgFavorites.h"
 #include "../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
 #include "../Backend/SgPaths.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QRandomGenerator>
 #include <QLineEdit>
 #include <QComboBox>
 #include <QPushButton>
@@ -238,8 +240,21 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     m_resultSortBtn->setFixedSize(34, 34);
     m_resultSortBtn->setToolTip("Sort these results");
     connect(m_resultSortBtn, &QPushButton::clicked, this, &Search::showResultSortMenu);
+
+    // Favourites chip — YouTube only. Toggles a view that lists all starred channels.
+    m_favoritesBtn = new QPushButton(resultsArea);
+    m_favoritesBtn->setObjectName("librarySearchButton");
+    m_favoritesBtn->setCursor(Qt::PointingHandCursor);
+    m_favoritesBtn->setFixedSize(34, 34);
+    m_favoritesBtn->setToolTip("Show favourite channels");
+    connect(m_favoritesBtn, &QPushButton::clicked, this, [this]() {
+        if (m_favoritesActive) exitFavoritesView();
+        else                   enterFavoritesView();
+    });
+
     tintResultSearchIcon();
     tintResultSortIcon();
+    tintFavoritesIcon();
 
     // Persisted ordering (default Newest first), loaded before the menu so the
     // right item starts checked.
@@ -315,12 +330,18 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     // Picking a history entry from the arrow dropdown searches it right away.
     connect(queryBar, &QComboBox::textActivated, this, &Search::performSearch);
     // Switching site swaps the per-site history + updates the prompt/idle label.
+    // The favourites chip is YouTube-only: show it only when on YouTube.
     connect(siteBar, &QComboBox::currentTextChanged, this, [this](const QString&) {
         const SgSearch::Site s = currentSite();
         if (s == m_uiSite) return; // typing within the same site -> nothing to swap
+        // Leaving favourites mode when switching site keeps state clean.
+        if (m_favoritesActive) exitFavoritesView();
         m_uiSite = s;
         updateQueryPlaceholder();
         applyHistoryToUi();
+        // Show the star chip only on YouTube.
+        if (m_favoritesBtn)
+            m_favoritesBtn->setVisible(s == SgSearch::Site::YouTube);
     });
     // Enter in the site box jumps to the query so you can just type and search.
     connect(siteBar->lineEdit(), &QLineEdit::returnPressed, this, [this]() { queryBar->setFocus(); });
@@ -338,7 +359,10 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
         if (m_navIndex < 0 || m_navIndex >= m_navHistory.size()) return;
         for (const SearchResult& r : m_allResults)
             if (!r.thumbnail.isEmpty()) QPixmapCache::remove(r.thumbnail);
-        navigateTo(m_navIndex); // reload the current page (search or channel)
+        // Clear the cache so navigateTo re-fetches instead of restoring.
+        m_navHistory[m_navIndex].results.clear();
+        m_navHistory[m_navIndex].channelInfo = {};
+        navigateTo(m_navIndex);
     });
 
     // Filter pill: clicking the active button unchecks it (= show all).
@@ -358,6 +382,13 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
         if (sb->maximum() > 0 && value >= sb->maximum() - 48)
             loadMore();
     });
+
+    // When a channel is starred or unstarred, refresh the favourites view if it is open
+    // so the grid stays in sync without the user having to exit and re-enter.
+    connect(SgFavorites::instance(), &SgFavorites::changed, this,
+            [this](const QString&, bool) {
+                if (m_favoritesActive) enterFavoritesView();
+            });
 
     if (m_search) {
         connect(m_search, &SgSearch::resultsReady,       this, &Search::onResultsReady);
@@ -404,26 +435,28 @@ void Search::positionTopControls() {
     const int rightEdge = resultsArea->width() - kPillTopMargin - sb - 2;
     constexpr int gap = 6;
 
-    // Sort at the far right; the magnifier (and its expanding bar) to its left.
-    m_resultSortBtn->move(rightEdge - m_resultSortBtn->width(), kPillTopMargin);
-    m_resultSortBtn->raise();
+    // Layout from right to left: [favorites] [sort] [search / expanding bar]
+    int nextRight = rightEdge;
 
-    const int searchRight = rightEdge - m_resultSortBtn->width() - gap;
-    m_resultSearchBtn->move(searchRight - m_resultSearchBtn->width(), kPillTopMargin);
+    // The favourites chip is YouTube-only; leave space for it only on that site.
+    if (m_favoritesBtn && currentSite() == SgSearch::Site::YouTube) {
+        m_favoritesBtn->move(nextRight - m_favoritesBtn->width(), kPillTopMargin);
+        m_favoritesBtn->raise();
+        nextRight -= m_favoritesBtn->width() + gap;
+    }
+
+    m_resultSortBtn->move(nextRight - m_resultSortBtn->width(), kPillTopMargin);
+    m_resultSortBtn->raise();
+    nextRight -= m_resultSortBtn->width() + gap;
+
+    m_resultSearchBtn->move(nextRight - m_resultSearchBtn->width(), kPillTopMargin);
     m_resultSearchBtn->raise();
-    m_resultSearchBar->move(searchRight - m_resultSearchBar->width(),
+    m_resultSearchBar->move(nextRight - m_resultSearchBar->width(),
         kPillTopMargin + (m_resultSearchBtn->height() - m_resultSearchBar->height()) / 2);
     m_resultSearchBar->raise();
 }
 
 void Search::updateFilterPillVisibility() {
-    if (m_viewMode == ViewMode::Channel) { // no chrome on a channel page
-        m_filterPill->hide();
-        m_resultSearchBtn->hide();
-        m_resultSearchBar->hide();
-        m_resultSortBtn->hide();
-        return;
-    }
     const bool atTop = (resultsArea->verticalScrollBar()->value() <= 0);
     // Zone is relative to resultsArea (the chips' parent); tall enough to cover the
     // chips (taller than the pill) so hovering them doesn't fall outside and hide them.
@@ -431,9 +464,17 @@ void Search::updateFilterPillVisibility() {
     const QRect zone(0, 0, resultsArea->width(), stripH + 2 * kPillTopMargin);
     const bool hovered = zone.contains(resultsArea->mapFromGlobal(QCursor::pos()));
     const bool show = atTop || hovered;
-    // The Videos/Shorts pill is YouTube-only; other sites have no such split.
-    m_filterPill->setVisible(show && m_currentSite == SgSearch::Site::YouTube);
+    // The Videos/Shorts pill and the favourites chip are YouTube-only.
+    const bool isYouTube = (currentSite() == SgSearch::Site::YouTube);
+    m_filterPill->setVisible(show && isYouTube);
     m_resultSortBtn->setVisible(show);
+    if (m_favoritesBtn) {
+        const bool favShow = show && isYouTube;
+        if (m_favoritesBtn->isVisible() != favShow) {
+            m_favoritesBtn->setVisible(favShow);
+            positionTopControls(); // reflow the chip row when the star appears/disappears
+        }
+    }
 
     // The filter bar takes the magnifier's place while it's in use (focused, holding
     // a query, or just opened). Otherwise it collapses back to the magnifier.
@@ -495,6 +536,77 @@ void Search::tintResultSortIcon() {
     m_resultSortBtn->setIconSize(sz);
 }
 
+void Search::tintFavoritesIcon() {
+    if (!m_favoritesBtn) return;
+    const QSize sz(18, 18);
+    const QString path = m_favoritesActive
+        ? QStringLiteral(":/Assets/icons/star.svg")
+        : QStringLiteral(":/Assets/icons/star-outline.svg");
+    QPixmap pm = QIcon(path).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    // Active: accent colour so the button reads as "on"; inactive: same dim tint as the other chips.
+    const QColor color = m_favoritesActive
+        ? palette().color(QPalette::Highlight)
+        : palette().color(QPalette::WindowText);
+    p.fillRect(pm.rect(), color);
+    p.end();
+    m_favoritesBtn->setIcon(QIcon(pm));
+    m_favoritesBtn->setIconSize(sz);
+}
+
+void Search::enterFavoritesView() {
+    m_favoritesActive = true;
+
+    // Clear the grid and fill it with favourites — m_allResults is left untouched
+    // so background search batches can still accumulate while the overlay is open.
+    QLayoutItem* item;
+    while ((item = resultsFlow->takeAt(0)) != nullptr) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+
+    const auto favs = SgFavorites::instance()->favorites();
+    for (const auto& fav : favs) {
+        SearchResult r;
+        r.isChannel  = true;
+        r.url        = fav.url;
+        r.channelUrl = fav.url;
+        r.channel    = fav.name;
+        r.title      = fav.name;
+        if (!fav.cachedThumbPath.isEmpty())
+            r.thumbnail = QUrl::fromLocalFile(fav.cachedThumbPath).toString();
+        else if (!fav.thumbnailUrl.isEmpty())
+            r.thumbnail = fav.thumbnailUrl;
+        addCard(r);
+    }
+
+    applyCardWidth();
+
+    if (favs.isEmpty())
+        setStatus("No favourite channels yet. Star a channel to add it.", false);
+    else
+        setStatus("", false);
+
+    tintFavoritesIcon();
+}
+
+void Search::exitFavoritesView() {
+    m_favoritesActive = false;
+
+    // m_allResults was never touched while favourites was open, so just rebuild
+    // the grid from it directly — no save/restore needed.
+    rebuildCards();
+
+    if (m_allResults.isEmpty())
+        setStatus("Search YouTube to see results.", false);
+    else
+        setStatus("", false);
+
+    tintFavoritesIcon();
+}
+
 void Search::showResultSortMenu() {
     m_resultSortMenu->popup(m_resultSortBtn->mapToGlobal(QPoint(0, m_resultSortBtn->height())));
 }
@@ -504,6 +616,9 @@ void Search::showResultSortMenu() {
 // ---------------------------------------------------------------------------
 
 void Search::pushNavEntry(const NavEntry& entry) {
+    // Snapshot the current entry's results before cutting forward history.
+    if (m_navIndex >= 0 && m_navIndex < m_navHistory.size())
+        m_navHistory[m_navIndex].results = m_allResults;
     if (m_navIndex < m_navHistory.size() - 1)
         m_navHistory = m_navHistory.mid(0, m_navIndex + 1);
     m_navHistory.append(entry);
@@ -513,17 +628,67 @@ void Search::pushNavEntry(const NavEntry& entry) {
 
 void Search::navigateTo(int index) {
     if (index < 0 || index >= m_navHistory.size()) return;
+
+    // Snapshot the current entry's results before leaving it (only when actually
+    // changing entries; refresh calls navigateTo with the same index and must not
+    // overwrite the cache it just cleared).
+    if (m_navIndex >= 0 && m_navIndex < m_navHistory.size() && m_navIndex != index)
+        m_navHistory[m_navIndex].results = m_allResults;
+
     m_navIndex = index;
     const NavEntry& e = m_navHistory[index];
     queryBar->setCurrentText(e.label);
-    if (e.kind == NavEntry::Channel) {
-        openChannelUrl(e.target, e.label);
+
+    if (!e.results.isEmpty()) {
+        // Restore from cache: no network fetch needed.
+        if (e.kind == NavEntry::Channel) {
+            if (m_favoritesActive) exitFavoritesView();
+            setViewMode(ViewMode::Channel);
+            m_currentChannelUrl = e.target;
+            if (!e.channelInfo.title.isEmpty())
+                updateChannelHeader(e.channelInfo);
+            else {
+                m_channelName->setText(e.label);
+                m_channelSubs->clear();
+                loadAvatar(QString());
+            }
+        } else {
+            // Exit favourites view cleanly before restoring a search page.
+            if (m_favoritesActive) {
+                m_favoritesActive = false;
+                tintFavoritesIcon();
+            }
+            setViewMode(ViewMode::Search);
+            siteBar->blockSignals(true);
+            siteBar->setCurrentText(e.site == SgSearch::Site::PornHub ? "PornHub" : "YouTube");
+            siteBar->blockSignals(false);
+            m_currentQuery = e.target;
+            m_currentSite  = e.site;
+        }
+        clearResults();
+        m_allResults  = e.results;
+        m_shownCount  = e.results.size();
+        m_endReached  = true; // don't auto-load-more on a restored page
+        refreshBtn->setEnabled(true);
+        // Rebuild the seen-URL set from the restored results for dedup consistency.
+        for (const SearchResult& r : m_allResults)
+            if (!r.url.isEmpty()) m_seenUrls.insert(r.url);
+        rebuildCards();
+        setStatus("", false);
     } else {
-        // Restore the site this query ran against so startSearch routes correctly.
-        siteBar->blockSignals(true);
-        siteBar->setCurrentText(e.site == SgSearch::Site::PornHub ? "PornHub" : "YouTube");
-        siteBar->blockSignals(false);
-        startSearch(e.target);
+        // No cache yet — fetch normally (first visit or after a forced refresh).
+        if (e.kind == NavEntry::Channel) {
+            if (m_favoritesActive) exitFavoritesView();
+            openChannelUrl(e.target, e.label);
+        } else {
+            // Restore the site this query ran against so startSearch routes correctly.
+            siteBar->blockSignals(true);
+            siteBar->setCurrentText(e.site == SgSearch::Site::PornHub ? "PornHub" : "YouTube");
+            siteBar->blockSignals(false);
+            m_currentQuery = e.target;
+            m_currentSite  = e.site;
+            startSearch(e.target);
+        }
     }
     updateNavButtons();
 }
@@ -644,6 +809,11 @@ void Search::performSearch() {
 }
 
 void Search::startSearch(const QString& query) {
+    // Exit favourites view before a real search so the grid is clean.
+    if (m_favoritesActive) {
+        m_favoritesActive = false;
+        tintFavoritesIcon();
+    }
     setViewMode(ViewMode::Search);
     clearResults();
     m_currentQuery = query;
@@ -677,6 +847,7 @@ void Search::startSearch(const QString& query) {
 }
 
 void Search::loadMore() {
+    if (m_favoritesActive) return;
     if (m_loadingMore || m_endReached || m_shownCount == 0 || !m_search) return;
     if (m_shownCount >= kMaxResults) { m_endReached = true; return; }
 
@@ -717,6 +888,30 @@ void Search::playAdjacentResult(int delta) {
     playResultAt(i);
 }
 
+void Search::playRandomResult() {
+    if (m_allResults.isEmpty()) return;
+    // Collect the indices that currently pass the filter, then pick one that
+    // isn't already playing.
+    QList<int> shown;
+    for (int i = 0; i < m_allResults.size(); ++i)
+        if (shows(m_allResults[i])) shown.append(i);
+    if (shown.isEmpty()) return;
+    int pick = shown.at(QRandomGenerator::global()->bounded(shown.size()));
+    if (shown.size() > 1 && pick == m_playingIndex) {
+        const int pos = shown.indexOf(pick);
+        pick = shown.at((pos + 1) % shown.size());
+    }
+    playResultAt(pick);
+}
+
+QString Search::playbackContextKey() const {
+    switch (m_currentSite) {
+    case SgSearch::Site::PornHub:    return QStringLiteral("search.pornhub");
+    case SgSearch::Site::Chaturbate: return QStringLiteral("search.chaturbate");
+    default:                         return QStringLiteral("search.youtube");
+    }
+}
+
 void Search::playResultAt(int index) {
     m_playingIndex = index;
     const SearchResult& r = m_allResults[index];
@@ -743,7 +938,12 @@ void Search::onResultsReady(const QList<SearchResult>& results) {
 void Search::onChannelVideosReady(const SearchResult& channelInfo,
                                   const QList<SearchResult>& videos) {
     if (m_viewMode != ViewMode::Channel) return; // late reply after navigating away
-    if (m_shownCount == 0) updateChannelHeader(channelInfo); // first page fills the header
+    if (m_shownCount == 0) {
+        updateChannelHeader(channelInfo); // first page fills the header
+        // Cache the channel header info so back/forward can restore it without re-fetching.
+        if (m_navIndex >= 0 && m_navIndex < m_navHistory.size())
+            m_navHistory[m_navIndex].channelInfo = channelInfo;
+    }
     ingestResults(videos);
 }
 
@@ -754,7 +954,7 @@ void Search::ingestResults(const QList<SearchResult>& results) {
         m_endReached = true;
 
     if (m_shownCount == 0 && results.isEmpty()) {
-        setStatus("No results.", false);
+        if (!m_favoritesActive) setStatus("No results.", false);
         return;
     }
 
@@ -772,9 +972,17 @@ void Search::ingestResults(const QList<SearchResult>& results) {
         m_allResults.append(r);
     }
     m_shownCount = results.size();
+    if (m_shownCount >= kMaxResults) m_endReached = true;
 
-    // Channel pages show their natural order (the sort chips are hidden there).
-    if (m_viewMode == ViewMode::Search && m_sortMode != SortMode::Relevance) {
+    // Always keep the nav cache consistent with the real result list.
+    if (m_navIndex >= 0 && m_navIndex < m_navHistory.size())
+        m_navHistory[m_navIndex].results = m_allResults;
+
+    // Favourites overlay is active — data accumulated, but grid is frozen.
+    // The grid rebuilds correctly when the user exits favourites.
+    if (m_favoritesActive) return;
+
+    if (m_sortMode != SortMode::Relevance) {
         // A non-default sort means the new arrivals have to merge into the order, so
         // re-sort and rebuild the grid wholesale.
         applySort();
@@ -784,8 +992,6 @@ void Search::ingestResults(const QList<SearchResult>& results) {
         for (int i = before; i < m_allResults.size(); ++i)
             if (shows(m_allResults[i])) addCard(m_allResults[i]);
     }
-
-    if (m_shownCount >= kMaxResults) m_endReached = true;
 
     applyCardWidth();
     setStatus("", false);
@@ -821,7 +1027,6 @@ void Search::onSearchFailed(const QString& message) {
 // ---------------------------------------------------------------------------
 
 bool Search::passesFilter(const SearchResult& r) const {
-    if (m_viewMode == ViewMode::Channel) return true; // a channel page shows all its videos
     if (m_currentSite != SgSearch::Site::YouTube) return true; // no Videos/Shorts split off YouTube
     if (r.isChannel) return true; // channel cards aren't videos/shorts; never filtered out
     switch (m_filterMode) {
@@ -928,6 +1133,7 @@ void Search::setFilterMode(FilterMode mode) {
 }
 
 void Search::rebuildCards() {
+    if (m_favoritesActive) return;
     QLayoutItem* item;
     while ((item = resultsFlow->takeAt(0)) != nullptr) {
         if (QWidget* w = item->widget()) w->deleteLater();
@@ -950,6 +1156,7 @@ void Search::setViewMode(ViewMode mode) {
 
 void Search::openChannel(const QString& channelUrl, const QString& name) {
     if (channelUrl.trimmed().isEmpty()) return;
+    if (m_favoritesActive) exitFavoritesView();
     pushNavEntry({ NavEntry::Channel, channelUrl, name });
     openChannelUrl(channelUrl, name);
 }
@@ -1128,6 +1335,7 @@ void Search::changeEvent(QEvent* event) {
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
         tintResultSearchIcon();
         tintResultSortIcon();
+        tintFavoritesIcon();
     }
 }
 

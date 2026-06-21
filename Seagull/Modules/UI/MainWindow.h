@@ -11,6 +11,7 @@
 class QSplitter;
 class QTabWidget;
 class QToolButton;
+class QSpinBox;
 class QPropertyAnimation;
 class QLabel;
 class QMovie;
@@ -87,6 +88,17 @@ public:
     // Floating Share button beside the "+", shown while an online video plays.
     void setShareAvailable(bool on);
 
+    bool autoplayEnabled() const { return m_autoplayEnabled; }
+    bool shuffleEnabled()  const { return m_shuffleEnabled; }
+    int  photoIntervalSeconds() const { return m_photoIntervalSecs; }
+
+    // Point the autoplay/shuffle toggles at a playback context so each content
+    // type keeps its own remembered settings (e.g. YouTube autoplay is separate
+    // from local-video autoplay). `photoMode` relabels autoplay -> "Slideshow"
+    // and surfaces the interval spin box. Called by the orchestrator when media
+    // starts. An empty key leaves the toggles as they are.
+    void setPlaybackContext(const QString& contextKey, bool photoMode);
+
     // Splitter click-toggle: drop the tabs pane completely (video fills) or
     // return to the split it was at before the drop. Triggered by a clean
     // click on the splitter handle (see eventFilter) and by the orchestrator
@@ -100,10 +112,13 @@ public:
     // Unlike canonical tabs, a duplicate isn't persisted or reopenable, and closing it
     // disposes the page (the orchestrator deletes the instance via duplicateTabClosed).
     void registerDuplicableTab(const QString& kind, const QString& menuLabel);
-    void addDuplicateTab(QWidget* page, const QString& label);
+    void addDuplicateTab(QWidget* page, const QString& label, bool switchTo = true);
 
 signals:
     void shareRequested();                      // the floating Share button was clicked
+    void autoplayChanged(bool enabled);         // the autoplay toggle was flipped
+    void shuffleChanged(bool enabled);          // the shuffle toggle was flipped
+    void photoIntervalChanged(int seconds);     // the slideshow interval spin changed
     void newTabRequested(const QString& kind);  // "+" menu -> open a new instance of `kind`
     void duplicateTabClosed(QWidget* page);     // a duplicate tab closed -> dispose its page
 
@@ -146,6 +161,8 @@ private:
     void positionPlusButton();      // snug the "+" (and Share) against the last tab
     void schedulePlusReposition();  // ...after the pending layout pass settles
     void tintShareButton();         // recolour the share glyph to the theme's dim text
+    void tintAutoplayButton();      // recolour the autoplay glyph (highlight when on, subtext when off)
+    void tintShuffleButton();       // recolour the shuffle glyph (highlight when on, subtext when off)
 
     // Player pop-out: detach the VideoPlayer into its own window and back.
     friend class PlayerWindow;
@@ -174,12 +191,22 @@ private:
     QHash<QWidget*, QWidget*> m_tabPages; // inner page widget -> its QScrollArea wrapper
     QList<TabInfo> m_tabOrder;            // every registered (canonical) tab, in addTab order
     QHash<QWidget*, QWidget*> m_duplicateTabs;       // duplicate tab wrapper -> its page (disposed on close)
+    QHash<QWidget*, QString> m_duplicateKindMap;    // duplicate tab wrapper -> kind label (for persistence)
     QList<QPair<QString, QString>> m_duplicableKinds; // (kind, "New <kind> tab" menu label)
     QHash<QWidget*, QToolButton*> m_closeButtons; // open tab wrapper -> its manual close x
     QLabel* m_tabSpinner = nullptr;       // busy spinner shown in place of the busy tab's x
     QMovie* m_tabSpinnerMovie = nullptr;  // the seagull animation driving m_tabSpinner
-    QToolButton* m_plusBtn = nullptr;     // "+" corner button (reopen menu)
-    QToolButton* m_shareBtn = nullptr;    // floating Share, right of the "+"
+    QToolButton* m_plusBtn = nullptr;      // "+" corner button (reopen menu)
+    QToolButton* m_autoplayBtn = nullptr;  // autoplay toggle, between "+" and Share
+    bool         m_autoplayEnabled = true;
+    bool         m_playbackActive = false; // only show the autoplay toggle while media plays
+    QToolButton* m_shuffleBtn = nullptr;   // shuffle toggle, shown only while autoplay is on
+    bool         m_shuffleEnabled = false;
+    QSpinBox*    m_photoIntervalSpin = nullptr; // slideshow seconds, shown only in photo mode
+    int          m_photoIntervalSecs = 5;
+    bool         m_photoMode = false;      // current context is a photo (slideshow chrome)
+    QString      m_contextKey;             // settings namespace for the active content type
+    QToolButton* m_shareBtn = nullptr;     // floating Share, right of the autoplay button
     bool m_shareAvailable = false;
     QMenu* m_plusMenu = nullptr;
     QList<FloatingTab*> m_floating;       // torn-off tabs currently in own windows

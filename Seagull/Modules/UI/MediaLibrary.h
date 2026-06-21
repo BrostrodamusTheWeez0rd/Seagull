@@ -49,6 +49,10 @@ public:
     // update modal finishes so an ffmpeg.exe swap never races a running grab.
     void setThumbnailsHeld(bool held);
 
+    // Settings namespace for the media type that's currently playing (e.g.
+    // "library.video"), so autoplay/shuffle settings are remembered per type.
+    QString sessionContextKey() const;
+
 signals:
     void playMediaRequested(const QUrl& url);
     void playPlaylistRequested(const QString& path);       // .sgpl card -> Queue loads + plays it
@@ -58,6 +62,7 @@ signals:
 public slots:
     void playNextFile();   // auto-advance / skip, in displayed order
     void playPrevFile();
+    void playRandomFile(); // shuffle: a random other file from the play session
     void refresh();        // re-list the active folder
 
 protected:
@@ -120,6 +125,7 @@ private:
     // you're browsing the Video grid.
     QStringList m_sessionFiles;
     int m_sessionIndex = -1;
+    MediaType m_sessionType = MediaType::Video; // type captured when the session began
 
     // Incremental grid build: entries are turned into cards a batch at a time on
     // an idle timer, so a big folder never freezes the UI on a tab/category switch.
