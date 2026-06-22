@@ -25,6 +25,7 @@
 #include <QStandardPaths>
 #include <QFile>
 #include <QDateTime>
+#include <QLockFile>
 
 // Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
 #ifndef SEAGULL_VERSION
@@ -893,7 +894,20 @@ int main(int argc, char* argv[]) {
     QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     Theme::apply(settings.value("Display/Theme", "Seagull").toString());
 
+    // Startup guard (not a lifetime single-instance lock). A second instance is fine
+    // once we're up, but two *cold* starts launched back-to-back race each other,
+    // both hammering the disk/AV loading the same DLLs + VLC plugins and both trying
+    // to build a window. Hold a lock across construction + run() so concurrent
+    // launches can't overlap; a launch that arrives while another is still starting
+    // just exits. The lock is released the instant startup finishes, so a deliberately
+    // launched second instance afterward runs normally. A crashed startup leaves a
+    // stale lock, which QLockFile clears automatically (dead PID), so this never wedges.
+    QLockFile startupLock(QDir(QDir::tempPath()).filePath(QStringLiteral("seagull-startup.lock")));
+    if (!startupLock.tryLock(0)) return 0; // another instance is mid-startup
+
     Seagull orchestrator;
-    if (!orchestrator.run()) return 0; // user declined the Terms of Use
+    const bool started = orchestrator.run();
+    startupLock.unlock(); // startup done — later launches may run as separate instances
+    if (!started) return 0; // user declined the Terms of Use
     return app.exec();
 }

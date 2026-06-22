@@ -34,6 +34,13 @@ public:
     static void createDesktopShortcut();
     static void createStartMenuShortcut();
 
+    // Add this app's install folder to the Windows Defender exclusion list. Defender
+    // rescans Seagull's many DLLs and VLC plugins on a cold launch (after a reboot or
+    // long idle), which is the main cause of the slow-then-fast first start; excluding
+    // the folder skips that rescan. Adding an exclusion needs admin, so this raises a
+    // UAC prompt; if the user declines, nothing changes. Best-effort; failures silent.
+    static void addDefenderExclusion();
+
     bool isAvailable() const;        // SMTC bound OK?
     void attachToWindow(void* hwnd); // bind to the app's top-level HWND (once)
 

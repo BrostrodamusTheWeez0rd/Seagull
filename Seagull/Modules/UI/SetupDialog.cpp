@@ -100,6 +100,22 @@ SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)
     startMenuShortcutCheck->setChecked(true);
     lay->addWidget(startMenuShortcutCheck);
 
+    // Defender exclusion (recommended). After a reboot or a long idle, Windows
+    // Defender rescans Seagull's many DLLs and VLC plugins on launch, which is the
+    // main reason the first start can be slow before later ones are instant. The
+    // exclusion needs admin, so accepting raises a UAC prompt (see onGetStarted).
+    defenderExclusionCheck = new QCheckBox(
+        "Speed up startup by adding Seagull to Windows Defender's exclusions (recommended)", this);
+    defenderExclusionCheck->setChecked(true);
+    lay->addWidget(defenderExclusionCheck);
+    auto* defenderNote = new QLabel(
+        "Windows Defender rescans Seagull's files after every restart, which can make "
+        "the first launch slow. Excluding the app folder lets Seagull start quickly "
+        "every time. Windows will ask for permission.", this);
+    defenderNote->setWordWrap(true);
+    defenderNote->setObjectName("metaStats"); // theme's dimmed text styling
+    lay->addWidget(defenderNote);
+
     statusLabel = new QLabel(this);
     statusLabel->setObjectName("metaStats");
     statusLabel->hide();
@@ -147,6 +163,10 @@ void SetupDialog::onGetStarted() {
     // Create the requested shortcuts (best-effort; never blocks setup).
     if (desktopShortcutCheck->isChecked())   SgMediaControls::createDesktopShortcut();
     if (startMenuShortcutCheck->isChecked()) SgMediaControls::createStartMenuShortcut();
+
+    // Best-effort; raises a UAC prompt. Fire it before the tool download so the
+    // consent prompt isn't sprung mid-progress. Declining changes nothing.
+    if (defenderExclusionCheck->isChecked()) SgMediaControls::addDefenderExclusion();
 
     if (toolsMissing()) startToolDownload();
     else accept();

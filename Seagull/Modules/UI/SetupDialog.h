@@ -44,6 +44,7 @@ private:
 
     QCheckBox* desktopShortcutCheck;
     QCheckBox* startMenuShortcutCheck;
+    QCheckBox* defenderExclusionCheck;
 
     QLabel*       statusLabel;
     QProgressBar* progressBar;

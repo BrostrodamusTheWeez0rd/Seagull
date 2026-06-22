@@ -22,6 +22,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shellapi.h>      // ShellExecuteW (elevated launch for the Defender exclusion)
 #include <shobjidl_core.h> // SetCurrentProcessExplicitAppUserModelID
 #include <shlobj.h>        // IShellLinkW, CLSID_ShellLink, IPersistFile
 #include <propsys.h>       // IPropertyStore (interface only; no propsys.lib needed)
@@ -133,6 +134,20 @@ void SgMediaControls::createStartMenuShortcut() {
     const QString lnk = QDir(QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation))
                             .filePath(QStringLiteral("Seagull.lnk"));
     writeShortcut(QDir::toNativeSeparators(lnk), exe, dir);
+}
+
+void SgMediaControls::addDefenderExclusion() {
+    // Escape any single quote so it can't break out of the PowerShell string literal.
+    QString dir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    dir.replace(QLatin1Char('\''), QLatin1String("''"));
+
+    // Elevate (UAC) and add the folder exclusion in a hidden PowerShell. "runas"
+    // shows the consent prompt; declining or any failure just leaves Defender as-is.
+    const QString args = QStringLiteral(
+        "-NoProfile -WindowStyle Hidden -Command \"Add-MpPreference -ExclusionPath '%1'\"")
+        .arg(dir);
+    ShellExecuteW(nullptr, L"runas", L"powershell.exe",
+                  reinterpret_cast<LPCWSTR>(args.utf16()), nullptr, SW_HIDE);
 }
 
 SgMediaControls::SgMediaControls(QObject* parent) : QObject(parent), d(new Impl) {}
