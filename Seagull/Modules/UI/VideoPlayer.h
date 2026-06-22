@@ -103,6 +103,7 @@ public slots:
     void onVideoInfo(const QString& title, const QString& uploader,
         const QString& views, const QString& date, const QString& description);
     void onLiveStatus(bool isLive); // probe reported live/VOD — drives the LIVE seeker
+    void onCommentCount(int count); // probe reported comment_count — announce a Comments tab
 
     // Recorder state, pushed back from the orchestrator's SgRecorder.
     void onRecordingStarted();
@@ -139,6 +140,11 @@ signals:
     void videoInfoChanged(const QString& title, const QString& uploader,
         const QString& views, const QString& date, const QString& description);
     void shareAvailableChanged(bool available);
+
+    // An online VOD resolved and reports `commentCount` comments: the shell offers a
+    // dynamic Comments tab and fetches lazily (only when viewed). Fired once per
+    // distinct page URL (the probe re-reports on quality switches).
+    void commentsAvailable(const QString& pageUrl, int commentCount);
 
     // Recording (handled by the orchestrator's SgRecorder), dispatched by source type:
     //  - live: ffmpeg -c copy (recordStart / recordStop).
@@ -287,6 +293,7 @@ private:
 
     // Metadata for the Info modal (filled by the probe's videoInfoReady).
     QString m_infoTitle, m_infoUploader, m_infoViews, m_infoDate, m_infoDescription;
+    QString m_commentsRequestedUrl; // page URL we last announced comments for (dedup across re-probes)
 
     bool m_isStreaming = false;   // current media is an online stream (not a local file)
     bool m_isLive = false;        // online stream is live (vs VOD) — picks the record method

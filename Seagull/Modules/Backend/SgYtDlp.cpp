@@ -187,6 +187,29 @@ void SgYtDlp::fetchPlaylistEntries(const QString& playlistUrl) {
     m_process->start(exePath, args);
 }
 
+void SgYtDlp::fetchComments(const QString& url, int maxComments) {
+    if (m_process->state() == QProcess::Running) return; // caller cancels first when switching
+
+    currentMode = JobMode::FetchingComments;
+    processBuffer.clear();
+
+    QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
+
+    QStringList args;
+    // -J dumps the info dict (incl. the `comments` array once --write-comments turns
+    // comment extraction on). Cap the window to maxComments (top-sorted); "load more"
+    // re-requests a bigger window. The cap is YouTube-only.
+    args << "-J" << "--write-comments" << "--quiet" << "--no-warnings" << "--no-playlist";
+    args << "--extractor-args"
+         << QStringLiteral("youtube:comment_sort=top;max_comments=%1,all,%1").arg(maxComments);
+    addImpersonateIfNeeded(args, url);
+    args += SgOptions::cookieArgs();
+    args << url;
+
+    emit logMessage(QString("Fetching up to %1 comments for: %2").arg(maxComments).arg(url));
+    m_process->start(exePath, args);
+}
+
 void SgYtDlp::cancel() {
     if (m_process->state() == QProcess::Running) {
         m_process->kill();
@@ -202,7 +225,8 @@ void SgYtDlp::handleReadyRead() {
 
     if (currentMode == JobMode::FetchingMetadata ||
         currentMode == JobMode::Probing ||
-        currentMode == JobMode::FetchingPlaylist) {
+        currentMode == JobMode::FetchingPlaylist ||
+        currentMode == JobMode::FetchingComments) {
 
         processBuffer.append(output);
         return;
@@ -296,6 +320,11 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         m_pendingMetaUrl.clear();
         processMetadata(obj);
     }
+
+    else if (mode == JobMode::FetchingComments) {
+        const QJsonObject root = doc.object();
+        emit commentsReady(root["comments"].toArray(), root["comment_count"].toInt());
+    }
 }
 
 // The probe runs on every play, so surface the poster thumbnail + the full
@@ -316,6 +345,9 @@ void SgYtDlp::emitProbeResults(const QJsonObject& root) {
         QLocale(QLocale::English).toString(root["view_count"].toInt()),
         vdate,
         root["description"].toString());
+    // After videoInfoReady so the shell's Description tab opens first and Comments
+    // (driven off this) lands to its right.
+    emit commentCountKnown(root["comment_count"].toInt());
 }
 
 void SgYtDlp::processMetadata(const QJsonObject& obj) {

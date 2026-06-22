@@ -440,6 +440,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     // Reset the Info panel; the title is known now, the rest arrives with the probe.
     m_infoTitle = title;
     m_infoUploader.clear(); m_infoViews.clear(); m_infoDate.clear(); m_infoDescription.clear();
+    m_commentsRequestedUrl.clear(); // new media — let the probe re-trigger a comments fetch
 
     emit playbackStarted();
 
@@ -1234,6 +1235,18 @@ void VideoPlayer::onVideoInfo(const QString& title, const QString& uploader,
     emit videoInfoChanged(m_infoTitle, uploader, views, date, description);
     // SMTC: refresh now that the uploader (artist/subtitle) is known.
     emit smtcMetadata(m_infoTitle, uploader, m_kind == MediaKind::Video);
+}
+
+void VideoPlayer::onCommentCount(int count) {
+    // Announce a Comments tab for online VOD that has comments. Skip live (no useful
+    // comments) and de-dup per page URL (the probe re-reports on quality switches),
+    // so the shell doesn't reset an already-loaded Comments tab. The shell fetches
+    // the actual comments lazily — only when the tab is viewed — so it never competes
+    // with the stream.
+    const QString pageUrl = currentBaseUrl.toString();
+    if (!m_isStreaming || m_isLive || pageUrl.isEmpty() || pageUrl == m_commentsRequestedUrl) return;
+    m_commentsRequestedUrl = pageUrl;
+    emit commentsAvailable(pageUrl, count);
 }
 
 void VideoPlayer::shareLink() {

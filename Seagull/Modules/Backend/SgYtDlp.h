@@ -7,6 +7,7 @@
 #include <QUrl>
 #include <QHash>
 #include <QJsonObject>
+#include <QJsonArray>
 #include "SgFormat.h" // StreamOption + format-selection policy
 
 class SgHlsProxy;
@@ -29,6 +30,12 @@ public:
     void fetchMetadataAndStreamUrl(const QString& url, const QString& formatId = QString(), bool freshResolve = false);
     void probeAvailableQualities(const QString& url);
     void fetchPlaylistEntries(const QString& playlistUrl);
+    // Fetch up to maxComments (top) comments for a video page as a separate, bounded
+    // job — comment extraction is slow/paginated, so it never rides along with the
+    // play-path probe. Run it on its own worker. yt-dlp has no offset, so "load more"
+    // re-requests a larger window; the caller de-dupes by comment id. Emits
+    // commentsReady; empty array = none / unsupported.
+    void fetchComments(const QString& url, int maxComments);
     void cancel();
 
     // Optional shared ad-stripping HLS proxy. When set, a resolved Twitch *live*
@@ -55,8 +62,15 @@ signals:
     // Full metadata for the player's Info panel (includes the description).
     void videoInfoReady(const QString& title, const QString& uploader,
         const QString& views, const QString& date, const QString& description);
+    // The video's comment_count straight from the probe (free — no comment extraction).
+    // Lets the shell decide whether to offer a Comments tab before fetching anything.
+    void commentCountKnown(int count);
     void streamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl = QUrl());
     void playlistEntriesReady(const QList<QString>& urls);
+    // The video's comments (yt-dlp `comments` array: author/text/like_count/timestamp/
+    // parent/author_is_uploader per entry) and its total comment_count. Empty array
+    // when the source has none or doesn't support comment extraction.
+    void commentsReady(const QJsonArray& comments, int totalCount);
     // A job failed in a way that looks like the source (usually YouTube) is blocking
     // us: bot-check ("Sign in to confirm you're not a bot") or rate-limiting / throttling
     // (HTTP 429). kind is "bot" or "throttle"; detail is the trimmed yt-dlp error line.
@@ -79,7 +93,7 @@ private:
 
     QProcess* m_process;
 
-    enum class JobMode { Idle, Downloading, FetchingMetadata, Probing, FetchingPlaylist };
+    enum class JobMode { Idle, Downloading, FetchingMetadata, Probing, FetchingPlaylist, FetchingComments };
     JobMode currentMode = JobMode::Idle;
 
     QByteArray processBuffer;

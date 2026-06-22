@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QList>
 #include <QHash>
+#include <QSet>
 #include "Modules/UI/MainWindow.h"
 #include "Modules/UI/VideoPlayer.h"
 #include "Modules/UI/Queue.h"
@@ -28,6 +29,10 @@ class QTextBrowser;
 class SgThumbnailer;
 class QTimer;
 class QProgressDialog;
+class QWidget;
+class QFrame;
+class QLabel;
+class QMovie;
 
 class Seagull : public QObject {
     Q_OBJECT
@@ -36,6 +41,11 @@ public:
     ~Seagull();
 
     bool run(); // false = the user declined the Terms of Use; main() should exit
+
+protected:
+    // Watches the Comments page for its first Show (the tab being viewed) so comments
+    // are fetched lazily, never while the stream is just starting up.
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
     // Library = the card-grid media library; Explorer = the file-manager tab.
@@ -64,6 +74,61 @@ private:
     Settings* settingsModule;
     EQ* eqModule;                  // the EQ tab (10-band equalizer, per-kind presets)
     QTextBrowser* descriptionView; // the dynamic "Description" tab's page
+    QTextBrowser* commentsView;    // the dynamic "Comments" tab's page (opens right of Description)
+    QWidget* commentsContainer = nullptr; // wraps commentsView + a bottom "loading" pill (the dynamic tab)
+    QFrame*  m_commentsStatusPill  = nullptr; // bottom pill shown while a comment fetch is in flight
+    QLabel*  m_commentsStatusLabel = nullptr;
+    QLabel*  m_commentsSpinner     = nullptr; // animated spinner inside the pill
+    QMovie*  m_commentsMovie       = nullptr;
+    void setCommentsStatus(const QString& text, bool busy); // drive the bottom loading pill
+    // The comment fetch + JSON parse run on commentsThread (off the GUI thread); the
+    // parsed comments are rendered into the view in small batches so the layout never
+    // freezes. The first batch is preloaded the moment the tab becomes available (the
+    // fetch is on its own worker thread, so it doesn't stall the stream), so the list
+    // is usually ready by the time the user clicks the Comments tab.
+    void loadCommentsLazy();        // first fetch for this video (preload on tab availability)
+    void requestComments();         // (re)issue the fetch for the current window size
+    void renderCommentBatch();      // append the next chunk of (collapsed) comment threads
+    void resetCommentsState();      // clear per-video comment state + abort any fetch
+    // Replies are hidden behind a "View N replies" toggle (YouTube-style). yt-dlp returns
+    // replies inline in the same batch (each carries a `parent` id), so we group them
+    // under their parent and reveal on click — no extra fetch. A toggle re-renders the
+    // whole list from m_commentThreads (cheap; it's occasional) preserving scroll.
+    //
+    // We store the raw (theme-independent) pieces of each comment, NOT pre-coloured HTML,
+    // so every colour is resolved fresh at render time. That keeps the cards in step with
+    // the active theme, and a palette change just re-renders (see eventFilter).
+    struct CommentEntry {
+        QString authorHtml;         // escaped author name
+        bool    isUploader = false; // show the accent "(creator)" badge
+        QString metaText;           // "N likes &middot; date" (entities/digits only, no colour)
+        QString textHtml;           // escaped, pre-wrapped comment body
+    };
+    struct CommentThread {
+        QString id;                 // the top-level comment's id (toggle anchor target)
+        CommentEntry comment;       // the top-level comment itself
+        QList<CommentEntry> replies;// hidden until the thread is expanded
+        bool expanded = false;      // is this thread's reply list currently shown?
+    };
+    QString commentEntryHtml(const CommentEntry& e) const;   // author line + body (themed)
+    QString commentThreadHtml(const CommentThread& t) const; // one bordered comment card
+    void rerenderComments();        // rebuild the whole list (reply toggle / theme change)
+    void toggleCommentThread(const QString& id); // flip one thread's replies open/closed
+    QString m_commentsPageUrl;      // page URL to fetch comments for (current online VOD)
+    int     m_commentCount = 0;     // comment_count from the probe (gates the tab)
+    bool    m_commentsFetched = false; // first fetch issued for this video?
+    QList<CommentThread> m_commentThreads; // top-level comments (with grouped replies), in order
+    QHash<QString, int>  m_commentThreadIndex; // comment id -> index in m_commentThreads
+    QString m_commentsHeaderHtml;   // "<h3>Comments (N)</h3><hr>" — reused on re-render
+    int     m_commentRenderIdx = 0; // how many of m_commentThreads are on screen
+    QTimer* m_commentRenderTimer = nullptr; // drips the remaining threads in after the first
+    QThread* commentsThread = nullptr;      // commentsWorker lives here (off the GUI thread)
+    // "Load more" pagination: yt-dlp has no offset, so each scroll-to-bottom re-requests
+    // a bigger window; we de-dupe by comment id so re-fetched comments aren't repeated.
+    QSet<QString> m_commentSeenIds; // comment ids already on screen
+    int  m_commentsRequested = 0;   // current max_comments window we asked yt-dlp for
+    bool m_commentsLoadingMore = false; // a load-more fetch is in flight
+    bool m_commentsAllLoaded = false;   // reached the end (got fewer than requested)
     ActiveSource activeSource = ActiveSource::None;
 
     // Multiple-instance tabs (Search, File Explorer). The primary instances above
@@ -88,6 +153,7 @@ private:
     SgYtDlp* prefetcherWorker;
     SgYtDlp* playerWorker;     // dedicated to the player's probe/stream-url traffic
     SgYtDlp* downloadWorker;   // dedicated to ad-hoc (Search card) downloads
+    SgYtDlp* commentsWorker;   // dedicated to the slow, paginated comments fetch
     SgSearch* searchWorker;    // backend for the Search tab (discovery)
     SgSpellCheck* spellChecker; // shared OS spell checker for the text fields
 

@@ -9,11 +9,17 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QTextBrowser>
+#include <QTextCursor>
 #include <QTimer>
+#include <QScrollBar>
 #include <QDialog>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QDialogButtonBox>
 #include <QLabel>
+#include <QFrame>
+#include <QMovie>
+#include <QWidget>
 #include <QFont>
 #include <QPushButton>
 #include <QDesktopServices>
@@ -26,6 +32,14 @@
 #include <QFile>
 #include <QDateTime>
 #include <QLockFile>
+#include <QEvent>
+#include <QLocale>
+#include <QStringList>
+#include <QHash>
+#include <QPalette>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 
 // Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
 #ifndef SEAGULL_VERSION
@@ -46,6 +60,17 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     playerWorker = new SgYtDlp(this);
     downloadWorker = new SgYtDlp(this);
     searchWorker = new SgSearch(this);
+
+    // The comments worker runs the slow, paginated comment extraction + JSON parse on
+    // its OWN thread so none of it touches the GUI thread (no parent — required for
+    // moveToThread; its child QProcess moves across with it). Its commentsReady crosses
+    // back to the GUI queued, so register its payload type for queued delivery.
+    qRegisterMetaType<QJsonArray>("QJsonArray");
+    commentsThread = new QThread(this);
+    commentsWorker = new SgYtDlp(nullptr);
+    commentsWorker->moveToThread(commentsThread);
+    connect(commentsThread, &QThread::finished, commentsWorker, &QObject::deleteLater);
+    commentsThread->start();
 
     // Shared Windows OS spell checker for the Search query combo + File Explorer
     // search box. Inert if the OS/language is unsupported (fields stay plain).
@@ -138,11 +163,69 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     descriptionView->setOpenExternalLinks(true);
     descriptionView->setReadOnly(true);
 
+    // Comments page: a second dynamic tab that opens to the right of Description when
+    // the comments fetch lands. Built from yt-dlp's `comments` array (see below).
+    commentsView = new QTextBrowser();
+    commentsView->setReadOnly(true);
+    // We handle link clicks ourselves: the only anchors are the "View replies" toggles
+    // (href="toggle:<id>"). Comment text is HTML-escaped, so it contains no real links.
+    commentsView->setOpenLinks(false);
+    connect(commentsView, &QTextBrowser::anchorClicked, this, [this](const QUrl& url) {
+        if (url.scheme() == QLatin1String("toggle")) toggleCommentThread(url.path());
+    });
+    commentsView->installEventFilter(this); // catch QEvent::PaletteChange to re-theme the cards
+
+    // The Comments tab is the view plus a bottom "loading" pill that mirrors the
+    // Search tab's status pill, so the lazy comment fetch (initial load + scroll
+    // "load more") surfaces the same familiar progress affordance at the bottom of
+    // the screen. The pill reuses the searchStatus* object names so Theme styles it.
+    m_commentsMovie = new QMovie(":/Assets/SeagullAnim.gif", QByteArray(), this);
+    m_commentsMovie->jumpToFrame(0);
+    const QSize cFrame = m_commentsMovie->currentPixmap().size();
+    const int cSpinH = 22;
+    const int cSpinW = cFrame.height() > 0 ? cFrame.width() * cSpinH / cFrame.height() : cSpinH;
+    m_commentsMovie->setScaledSize(QSize(cSpinW, cSpinH));
+    m_commentsSpinner = new QLabel();
+    m_commentsSpinner->setMovie(m_commentsMovie);
+    m_commentsSpinner->hide();
+
+    m_commentsStatusLabel = new QLabel();
+    m_commentsStatusLabel->setObjectName("searchStatus");
+
+    m_commentsStatusPill = new QFrame();
+    m_commentsStatusPill->setObjectName("searchStatusPill");
+    auto* cPillInner = new QHBoxLayout(m_commentsStatusPill);
+    cPillInner->setContentsMargins(16, 7, 16, 7);
+    cPillInner->setSpacing(8);
+    cPillInner->addWidget(m_commentsStatusLabel);
+    cPillInner->addWidget(m_commentsSpinner);
+    m_commentsStatusPill->hide();
+
+    auto* cStatusFrame = new QWidget();
+    auto* cStatusLay   = new QHBoxLayout(cStatusFrame);
+    cStatusLay->setContentsMargins(10, 4, 10, 10);
+    cStatusLay->addStretch(1);
+    cStatusLay->addWidget(m_commentsStatusPill);
+    cStatusLay->addStretch(1);
+
+    commentsContainer = new QWidget();
+    auto* cLay = new QVBoxLayout(commentsContainer);
+    cLay->setContentsMargins(0, 0, 0, 0);
+    cLay->setSpacing(0);
+    cLay->addWidget(commentsView, 1);
+    cLay->addWidget(cStatusFrame);
+    commentsContainer->installEventFilter(this); // fetch comments lazily when the tab is viewed
+
     connect(videoPlayer, &VideoPlayer::videoInfoChanged, this,
         [this](const QString& title, const QString& uploader, const QString& views,
                const QString& date, const QString& description) {
             if (description.trimmed().isEmpty()) {
                 mainWindow->closeDynamicTab(descriptionView);
+                // The empty emit is also the per-video reset / teardown signal — retire
+                // the Comments tab too and abort any in-flight fetch; the probe re-offers
+                // it (commentsAvailable) when the next video resolves.
+                mainWindow->closeDynamicTab(commentsContainer);
+                resetCommentsState();
                 return;
             }
             QStringList bits;
@@ -158,6 +241,137 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         });
     connect(videoPlayer, &VideoPlayer::shareAvailableChanged, mainWindow, &MainWindow::setShareAvailable);
     connect(mainWindow, &MainWindow::shareRequested, videoPlayer, &VideoPlayer::shareLink);
+
+    // --- Comments tab (lazy) --------------------------------------------------
+    // The probe reports comment_count for free, so we can offer a Comments tab
+    // without fetching anything. The actual (slow, paginated) comment fetch runs
+    // only when the tab is first viewed (eventFilter -> loadCommentsLazy), so a
+    // second heavy yt-dlp extraction never contends with the just-started stream.
+    connect(playerWorker, &SgYtDlp::commentCountKnown, videoPlayer,
+            &VideoPlayer::onCommentCount, Qt::QueuedConnection);
+
+    // Drips the remaining comment batches into the view after the first one, so the
+    // rich-text layout never does a single huge pass that freezes the UI.
+    m_commentRenderTimer = new QTimer(this);
+    m_commentRenderTimer->setInterval(30);
+    connect(m_commentRenderTimer, &QTimer::timeout, this, &Seagull::renderCommentBatch);
+
+    // "Load more" on scroll-to-bottom: once everything fetched is on screen and more
+    // exist, re-request a bigger window (yt-dlp has no offset; dedupe handles overlap).
+    connect(commentsView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
+        QScrollBar* sb = commentsView->verticalScrollBar();
+        if (sb->maximum() <= 0 || value < sb->maximum() - 60) return; // not near the bottom
+        if (m_commentsLoadingMore || m_commentsAllLoaded) return;
+        if (m_commentRenderIdx < m_commentThreads.size()) return;     // still drip-rendering
+        m_commentsLoadingMore = true;
+        m_commentsRequested += 50;   // widen the window by one page
+        setCommentsStatus("Loading more comments.", true);
+        requestComments();
+    });
+
+    connect(videoPlayer, &VideoPlayer::commentsAvailable, this,
+        [this](const QString& pageUrl, int commentCount) {
+            resetCommentsState(); // drop any prior video's fetch + half-rendered list
+            m_commentsPageUrl = pageUrl;
+            m_commentCount    = commentCount;
+            if (commentCount <= 0) { mainWindow->closeDynamicTab(commentsContainer); return; }
+            // Placeholder shown the instant the tab is opened; the fetch starts then.
+            commentsView->setHtml(
+                "<h3>Comments (" + QLocale(QLocale::English).toString(commentCount) + ")</h3>"
+                "<hr><p>Loading...</p>");
+            mainWindow->openDynamicTab(commentsContainer, "Comments"); // appends right of Description
+            // Preload the first batch now (don't wait for the tab to be viewed). The fetch
+            // runs on commentsThread / its own yt-dlp process, so it doesn't stall the
+            // stream, and the list is usually ready by the time the user clicks the tab.
+            loadCommentsLazy();
+        });
+
+    // The fetched comments land here (queued from commentsThread). yt-dlp returns the
+    // thread in display order (each comment followed by its replies), so we render in
+    // array order and only APPEND comment ids we haven't shown yet — that makes the
+    // "load more" re-fetch (a bigger window) cost-free to merge.
+    connect(commentsWorker, &SgYtDlp::commentsReady, this,
+        [this](const QJsonArray& comments, int totalCount) {
+            m_commentRenderTimer->stop();
+            const bool firstBatch = m_commentSeenIds.isEmpty();
+
+            if (firstBatch) {
+                if (comments.isEmpty()) {
+                    commentsView->setHtml("<h3>Comments</h3><hr><p>Comments are unavailable.</p>");
+                    m_commentsAllLoaded = true;
+                    setCommentsStatus("", false);
+                    return;
+                }
+                // Always show the video's TOTAL comment count (from the probe), not how
+                // many we've fetched/rendered so far. m_commentCount is the canonical total.
+                const int shownTotal = m_commentCount > 0 ? m_commentCount : totalCount;
+                QString header = "<h3>Comments";
+                if (shownTotal > 0) header += " (" + QLocale(QLocale::English).toString(shownTotal) + ")";
+                header += "</h3><hr>";
+                m_commentsHeaderHtml = header;
+                commentsView->setHtml(header);
+            }
+
+            // Extract the theme-independent pieces of one comment (no colours baked in —
+            // commentEntryHtml applies the themed colours fresh at render time).
+            auto makeEntry = [](const QJsonObject& c) -> CommentEntry {
+                const qint64 likes = qint64(c["like_count"].toDouble());
+                const qint64 ts    = qint64(c["timestamp"].toDouble());
+                QStringList meta;
+                if (likes > 0) meta << QLocale(QLocale::English).toString(likes) + " likes";
+                if (ts > 0)    meta << QDateTime::fromSecsSinceEpoch(ts).toString("MMM d, yyyy");
+
+                CommentEntry e;
+                e.authorHtml = c["author"].toString().toHtmlEscaped();
+                e.isUploader = c["author_is_uploader"].toBool();
+                e.metaText   = meta.join(" &middot; "); // digits/dates only — safe unescaped
+                e.textHtml   = c["text"].toString().toHtmlEscaped();
+                return e;
+            };
+
+            // Group into top-level threads with their replies (yt-dlp lists a parent before
+            // its replies, so the parent is always indexed first). Dedupe by id so the
+            // "load more" re-fetch (a bigger window) merges cleanly.
+            const int prevThreadCount = m_commentThreads.size();
+            bool existingThreadGrew = false; // a reply landed on an already-rendered thread
+            int added = 0;
+            for (const QJsonValue& v : comments) {
+                const QJsonObject c = v.toObject();
+                const QString id = c["id"].toString();
+                if (id.isEmpty() || m_commentSeenIds.contains(id)) continue;
+                m_commentSeenIds.insert(id);
+                ++added;
+
+                const QString parent = c["parent"].toString();
+                const bool reply = !parent.isEmpty() && parent != QStringLiteral("root");
+                auto it = reply ? m_commentThreadIndex.find(parent) : m_commentThreadIndex.end();
+                if (reply && it != m_commentThreadIndex.end()) {
+                    m_commentThreads[it.value()].replies << makeEntry(c);
+                    if (it.value() < prevThreadCount) existingThreadGrew = true;
+                } else {
+                    // A top-level comment, or a reply whose parent fell outside the window
+                    // (render it as its own thread so it isn't lost).
+                    m_commentThreads.append({ id, makeEntry(c), {}, false });
+                    m_commentThreadIndex.insert(id, m_commentThreads.size() - 1);
+                }
+            }
+
+            // Got fewer than we asked for, or nothing new -> there's no more to load.
+            if (comments.size() < m_commentsRequested || (!firstBatch && added == 0))
+                m_commentsAllLoaded = true;
+            m_commentsLoadingMore = false;
+            setCommentsStatus("", false); // data is in — retire the loading pill
+
+            // A load-more batch that only added replies to threads already on screen has to
+            // rebuild the list (so their toggle counts/expanded replies update); otherwise
+            // just drip the newly added threads onto the end.
+            if (existingThreadGrew) {
+                rerenderComments();
+            } else {
+                renderCommentBatch();
+                if (m_commentRenderIdx < m_commentThreads.size()) m_commentRenderTimer->start();
+            }
+        });
 
     // When a module wants something played, it tells the window. We remember which
     // source asked, so "play next" later knows whether to walk the library, the
@@ -277,7 +491,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Any worker that hits a bot-check / throttling block warns the user (debounced).
     // Queued so the modal opens from the event loop, not re-entrantly inside the
     // worker's finished-handler while it's mid-emit.
-    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker })
+    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker, commentsWorker })
         connect(w, &SgYtDlp::extractionBlocked, this, &Seagull::onExtractionBlocked, Qt::QueuedConnection);
 
     // Once a queued/streamed video starts, clear the URL bar (the metadata preview
@@ -535,7 +749,11 @@ void Seagull::shutdownUpdater() {
 }
 
 Seagull::~Seagull() {
-    // Stop the updater thread cleanly before anything else goes away.
+    // Stop the worker threads cleanly before anything else goes away.
+    if (commentsThread) {
+        commentsThread->quit();
+        commentsThread->wait();
+    }
     if (updaterThread) {
         updaterThread->quit();
         updaterThread->wait();
@@ -548,6 +766,143 @@ void Seagull::pumpDownloads() {
     m_downloading = true;
     mainWindow->setTabBusy(libraryModule, true); // spin the Library tab while downloading
     downloadWorker->download(m_downloadQueue.first());
+}
+
+bool Seagull::eventFilter(QObject* obj, QEvent* event) {
+    // Comments tab became visible (the user switched to it) — fetch on demand, once.
+    if (obj == commentsContainer && event->type() == QEvent::Show)
+        loadCommentsLazy();
+    // Theme switch: the comment cards are a static HTML document with colours baked in at
+    // render time, so re-render them from the stored (theme-independent) data to pick up
+    // the new palette. Guarded on a non-empty list so it's a no-op the rest of the time.
+    if (obj == commentsView && event->type() == QEvent::PaletteChange && !m_commentThreads.isEmpty())
+        rerenderComments();
+    return QObject::eventFilter(obj, event);
+}
+
+void Seagull::loadCommentsLazy() {
+    if (m_commentsFetched || m_commentCount <= 0 || m_commentsPageUrl.isEmpty()) return;
+    m_commentsFetched = true;     // first fetch issued; reset when the next video resolves
+    m_commentsRequested = 50;     // small initial window for a fast first paint; "load more" widens it
+    setCommentsStatus("Loading comments.", true);
+    requestComments();
+}
+
+void Seagull::requestComments() {
+    // commentsWorker lives on commentsThread — hop the call across so the process I/O
+    // and JSON parse run there, not on the GUI thread.
+    const QString url = m_commentsPageUrl;
+    const int n = m_commentsRequested;
+    QMetaObject::invokeMethod(commentsWorker, [w = commentsWorker, url, n]() { w->fetchComments(url, n); },
+                              Qt::QueuedConnection);
+}
+
+QString Seagull::commentEntryHtml(const CommentEntry& e) const {
+    // Author line (name, optional creator badge, meta) above the comment body. Colours
+    // come from the live palette so the text follows the active theme on every render.
+    const QString accent  = commentsView->palette().color(QPalette::Highlight).name();
+    const QString subtext = commentsView->palette().color(QPalette::PlaceholderText).name();
+
+    QString head = "<b>" + e.authorHtml + "</b>";
+    if (e.isUploader)
+        head += " <span style=\"color:" + accent + ";\">(creator)</span>";
+    if (!e.metaText.isEmpty())
+        head += " <span style=\"color:" + subtext + ";\"> &middot; " + e.metaText + "</span>";
+    return head + "<div style=\"white-space:pre-wrap;margin-top:4px;\">" + e.textHtml + "</div>";
+}
+
+QString Seagull::commentThreadHtml(const CommentThread& t) const {
+    // Card wrapper + reply-toggle colours, resolved fresh so a re-render follows the theme.
+    // (QTextBrowser ignores borders on <div>, so each comment card is a single-cell table.)
+    const QString cardColor   = commentsView->palette().color(QPalette::AlternateBase).name();
+    const QString borderColor = commentsView->palette().color(QPalette::Mid).name();
+    const QString accent      = commentsView->palette().color(QPalette::Highlight).name();
+
+    QString body = commentEntryHtml(t.comment);
+    if (!t.replies.isEmpty()) {
+        const int n = t.replies.size();
+        const QString label = t.expanded
+            ? QStringLiteral("Hide replies")
+            : QStringLiteral("View %1 %2").arg(n).arg(n == 1 ? "reply" : "replies");
+        body += "<div style=\"margin-top:6px;\"><a href=\"toggle:" + t.id
+              + "\" style=\"color:" + accent + ";text-decoration:none;\">" + label + "</a></div>";
+        if (t.expanded)
+            for (const CommentEntry& r : t.replies)
+                body += "<div style=\"margin-left:24px;margin-top:10px;\">" + commentEntryHtml(r) + "</div>";
+    }
+
+    const QString style = "margin-bottom:10px;border-width:1px;border-style:solid;border-color:"
+                        + borderColor + ";background-color:" + cardColor + ";";
+    return "<table width=\"100%\" cellspacing=\"0\" style=\"" + style + "\">"
+           "<tr><td style=\"padding:8px;\">" + body + "</td></tr></table>";
+}
+
+void Seagull::renderCommentBatch() {
+    if (m_commentRenderIdx >= m_commentThreads.size()) {
+        m_commentRenderTimer->stop();
+        return;
+    }
+    constexpr int kBatch = 15;
+    const int end = qMin(m_commentRenderIdx + kBatch, int(m_commentThreads.size()));
+    QString chunk;
+    for (int i = m_commentRenderIdx; i < end; ++i) chunk += commentThreadHtml(m_commentThreads[i]);
+    m_commentRenderIdx = end;
+
+    QTextCursor cur(commentsView->document());
+    cur.movePosition(QTextCursor::End);
+    cur.insertHtml(chunk); // append-only -> small layout pass, not a full re-flow
+    if (m_commentRenderIdx >= m_commentThreads.size()) m_commentRenderTimer->stop();
+}
+
+void Seagull::rerenderComments() {
+    // Rebuild the whole list from m_commentThreads (used when a reply toggle flips, or a
+    // load-more batch grows a thread already on screen). Preserve the scroll offset so the
+    // list doesn't jump under the user — content above the change stays put.
+    m_commentRenderTimer->stop();
+    QScrollBar* sb = commentsView->verticalScrollBar();
+    const int scrollPos = sb ? sb->value() : 0;
+
+    QString html = m_commentsHeaderHtml;
+    for (const CommentThread& t : m_commentThreads) html += commentThreadHtml(t);
+    commentsView->setHtml(html);
+    m_commentRenderIdx = m_commentThreads.size(); // the whole list is on screen now
+
+    if (sb) sb->setValue(qMin(scrollPos, sb->maximum()));
+}
+
+void Seagull::toggleCommentThread(const QString& id) {
+    auto it = m_commentThreadIndex.find(id);
+    if (it == m_commentThreadIndex.end()) return;
+    CommentThread& t = m_commentThreads[it.value()];
+    if (t.replies.isEmpty()) return;
+    t.expanded = !t.expanded;
+    rerenderComments();
+}
+
+void Seagull::resetCommentsState() {
+    if (m_commentRenderTimer) m_commentRenderTimer->stop();
+    m_commentThreads.clear();
+    m_commentThreadIndex.clear();
+    m_commentsHeaderHtml.clear();
+    m_commentRenderIdx = 0;
+    m_commentsPageUrl.clear();
+    m_commentCount = 0;
+    m_commentsFetched = false;
+    m_commentSeenIds.clear();
+    m_commentsRequested = 0;
+    m_commentsLoadingMore = false;
+    m_commentsAllLoaded = false;
+    setCommentsStatus("", false); // drop any leftover loading pill from the prior video
+    // Abort any in-flight fetch on its own thread (non-blocking for the GUI).
+    QMetaObject::invokeMethod(commentsWorker, [w = commentsWorker]() { w->cancel(); }, Qt::QueuedConnection);
+}
+
+void Seagull::setCommentsStatus(const QString& text, bool busy) {
+    if (!m_commentsStatusPill) return; // not built yet (early teardown / construction order)
+    m_commentsStatusLabel->setText(text);
+    m_commentsStatusPill->setVisible(!text.isEmpty());
+    if (busy && !text.isEmpty()) { m_commentsSpinner->show(); m_commentsMovie->start(); }
+    else                         { m_commentsMovie->stop();   m_commentsSpinner->hide(); }
 }
 
 void Seagull::flashLibraryTab() {
