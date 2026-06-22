@@ -740,6 +740,12 @@ bool Seagull::run() {
         openDuplicateTab(kind, false /*switchTo*/);
 
     finishStartupUpdates(); // release thumbnail holds + shut the updater thread
+
+    // Now that the update flow has settled (tool swaps done, yt-dlp.exe stable),
+    // start filling the YouTube home feed in the background so it is ready before
+    // the user opens the Search tab. Only the primary tab warms; duplicates fill
+    // on first show as before.
+    searchModule->warmHomeFeed();
     return true;
 }
 

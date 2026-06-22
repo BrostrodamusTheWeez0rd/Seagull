@@ -58,6 +58,10 @@ public slots:
     // Wipe the search history: completer entries + the persisted history file.
     // Settings' "Clear History Now" and the on-close auto-clear land here.
     void clearSearchHistory();
+    // Kick off the YouTube home feed build at startup so it is ready before the
+    // user ever opens this tab. Idempotent and guarded the same way the first
+    // showEvent is, so it is a no-op once the feed has loaded (or is loading).
+    void warmHomeFeed();
 
 signals:
     void playMediaRequested(const QUrl& rawUrl, const QUrl& cdnVideoUrl,
@@ -158,6 +162,7 @@ private:
     // light flat-playlist request per channel, and built once per session.
     QStringList homeChannels() const;    // resolve the ≤5 channels to feed the home page
     void        loadHomeFeed();          // (re)build the feed for the resolved channels
+    void        maybeBuildHomeFeed();    // build once per session if nothing is loaded yet
     void        handleHomeBatch(const SearchResult& info, const QList<SearchResult>& videos);
     void        pumpHomeFeed();          // fetch the next queued channel, or finalise the feed
     QString     emptyStateText() const;  // landing message (favourites prompt vs "search ...")

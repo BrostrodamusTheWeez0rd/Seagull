@@ -312,6 +312,16 @@ void SgSearch::parseChannelList(const QJsonObject& root, SearchResult& info,
         root.contains("channel_follower_count") && !root["channel_follower_count"].isNull()
             ? static_cast<qint64>(root["channel_follower_count"].toDouble()) : -1;
 
+    // A flat-playlist channel listing omits per-entry uploader fields (every video
+    // belongs to this one channel — the info lives on the root), so video cards from
+    // it would lack the clickable channel name + star "profile" that normal search
+    // cards show. Backfill the channel name/URL from the root onto each entry that
+    // didn't carry its own.
+    auto backfill = [&info](SearchResult& r) {
+        if (r.channel.isEmpty())    r.channel    = info.channel;
+        if (r.channelUrl.isEmpty()) r.channelUrl = info.channelUrl;
+    };
+
     for (const auto& it : root["entries"].toArray()) {
         const QJsonObject e = it.toObject();
         // A channel root can come back as tabs/playlists nesting the videos one
@@ -319,12 +329,12 @@ void SgSearch::parseChannelList(const QJsonObject& root, SearchResult& info,
         if (e.contains("entries")) {
             for (const auto& it2 : e["entries"].toArray()) {
                 SearchResult r;
-                if (parseVideoEntry(it2.toObject(), r)) videos.append(r);
+                if (parseVideoEntry(it2.toObject(), r)) { backfill(r); videos.append(r); }
             }
             continue;
         }
         SearchResult r;
-        if (parseVideoEntry(e, r)) videos.append(r);
+        if (parseVideoEntry(e, r)) { backfill(r); videos.append(r); }
     }
 }
 

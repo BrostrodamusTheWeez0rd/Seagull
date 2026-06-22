@@ -420,7 +420,21 @@ void Search::showEvent(QShowEvent* event) {
     pillHoverTimer->start();
 
     // First open on YouTube with nothing loaded -> build the favourites home feed once
-    // per session. The m_homeBuilt guard keeps re-shows from re-fetching.
+    // per session. startup warming (warmHomeFeed) usually beats this to the punch.
+    maybeBuildHomeFeed();
+}
+
+void Search::warmHomeFeed() {
+    // Called from startup once the update flow has settled, so the landing feed is
+    // already populated by the time the user clicks over to this tab. Shares the
+    // showEvent guard, so it harmlessly does nothing if the feed is already up.
+    maybeBuildHomeFeed();
+}
+
+void Search::maybeBuildHomeFeed() {
+    // Build once per session, and only when this tab is sitting on its empty
+    // YouTube landing view. The m_homeBuilt/m_homeLoading guards keep startup
+    // warming and re-shows from re-fetching.
     if (!m_homeBuilt && !m_homeLoading && currentSite() == SgSearch::Site::YouTube
         && m_navHistory.isEmpty() && m_allResults.isEmpty())
         loadHomeFeed();
