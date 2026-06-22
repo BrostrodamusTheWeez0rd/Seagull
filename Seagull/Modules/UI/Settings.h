@@ -29,6 +29,9 @@ signals:
     void visualizerSettingsChanged(); // Display "Visualizer" -> player re-reads visualizer config
     void checkForUpdatesRequested();  // General "Check Now" -> orchestrator runs the app check
 
+protected:
+    void showEvent(QShowEvent* event) override; // refresh the home-feed picker on open
+
 private slots:
     void saveSettings();
     void loadSettings();
@@ -52,6 +55,8 @@ private:
     void onCookiesBrowserChanged(const QString& text); // warn on enable, then save
     void deleteCookieData(); // clear yt-dlp's cached login/session data
     void applySmartSortState(); // smart sort toggle -> show/hide the Downloads Folder row
+    void rebuildHomeChannels(); // repopulate the home-feed picker + toggle its visibility
+    void saveHomeChannels();    // persist the checked channels to Search/HomeChannels
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
@@ -121,6 +126,9 @@ private:
 
     // Search Tab elements
     QSpinBox* searchResultsSpin;         // how many results a search fetches
+    QListWidget* homeChannelsList = nullptr; // pick up to 5 favourites for the YouTube home feed
+    QWidget*     homeChannelsRow  = nullptr; // the row container, shown only when >5 favourites
+    QFormLayout* searchForm       = nullptr; // the Search page form (show/hide the row on it)
     QPushButton* clearHistoryBtn;        // wipe the search history right now
     QCheckBox* clearHistoryOnCloseCheck; // wipe it automatically on every exit
 

@@ -153,6 +153,19 @@ private:
     void enterFavoritesView();
     void exitFavoritesView();
 
+    // YouTube home feed: the landing view, filled with the newest uploads from the
+    // user's (up to 5) favourited channels. Fetched sequentially through m_search, one
+    // light flat-playlist request per channel, and built once per session.
+    QStringList homeChannels() const;    // resolve the ≤5 channels to feed the home page
+    void        loadHomeFeed();          // (re)build the feed for the resolved channels
+    void        handleHomeBatch(const SearchResult& info, const QList<SearchResult>& videos);
+    void        pumpHomeFeed();          // fetch the next queued channel, or finalise the feed
+    QString     emptyStateText() const;  // landing message (favourites prompt vs "search ...")
+    static constexpr int kHomePerChannel = 5; // newest videos pulled per channel
+    bool        m_homeLoading = false;   // a home-feed build is in progress
+    bool        m_homeBuilt   = false;   // the feed has been built this session
+    QStringList m_homeQueue;             // channels still to fetch in the current build
+
     static constexpr int kPillTopMargin = 8;
 
     // Chrome row

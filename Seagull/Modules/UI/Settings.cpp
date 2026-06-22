@@ -2,6 +2,7 @@
 #include "Theme.h"
 #include "Widgets/PlayerControls.h" // widthForSize: Progress bar size -> px
 #include "../Backend/SgPaths.h"
+#include "../Backend/SgFavorites.h" // home-feed channel picker source
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -341,6 +342,45 @@ void Settings::setupUI() {
     auto* searchWidget = new QWidget();
     auto* searchLayout = new QFormLayout(searchWidget);
     searchLayout->setContentsMargins(20, 20, 20, 20);
+    searchForm = searchLayout; // rebuildHomeChannels shows/hides the picker row on it
+
+    // Home feed channels: pick up to 5 favourites to fill the YouTube home page. Only
+    // shown when there are more than 5 favourites (≤5 are all used automatically). One
+    // tight full-width block (header + list, no form-label column) so it reads cleanly.
+    homeChannelsList = new QListWidget();
+    // Pin the height + drop the default Expanding vertical policy. Otherwise the list's
+    // row greedily soaks up the page's spare height, opening a gap above the box.
+    homeChannelsList->setFixedHeight(150);
+    homeChannelsList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    homeChannelsList->setToolTip("Up to 5 favourite channels feed the YouTube home page. "
+        "Their newest uploads fill it when you open the Search tab.");
+    auto* homeChannelsBox = new QWidget();
+    auto* hcLay = new QVBoxLayout(homeChannelsBox);
+    hcLay->setContentsMargins(0, 0, 0, 0);
+    hcLay->setSpacing(4);
+    auto* hcLabel = new QLabel("Home feed channels (pick up to 5):");
+    hcLay->addWidget(hcLabel);
+    hcLay->addWidget(homeChannelsList);
+    homeChannelsRow = homeChannelsBox;
+    searchLayout->addRow(homeChannelsBox);
+    connect(homeChannelsList, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
+        if (m_loading) return; // populating the list, not a user toggle
+        // Enforce the 5-pick cap: revert a check that would exceed it.
+        if (item->checkState() == Qt::Checked) {
+            int checked = 0;
+            for (int i = 0; i < homeChannelsList->count(); ++i)
+                if (homeChannelsList->item(i)->checkState() == Qt::Checked) ++checked;
+            if (checked > 5) {
+                homeChannelsList->blockSignals(true);
+                item->setCheckState(Qt::Unchecked);
+                homeChannelsList->blockSignals(false);
+            }
+        }
+        saveHomeChannels();
+    });
+    // Favourites changed elsewhere (a star toggled in Search) -> keep the picker current.
+    connect(SgFavorites::instance(), &SgFavorites::changed, this,
+            [this](const QString&, bool) { rebuildHomeChannels(); });
 
     searchResultsSpin = new QSpinBox();
     searchResultsSpin->setRange(5, 100);
@@ -618,6 +658,45 @@ void Settings::applySmartSortState() {
     // The single Downloads Folder only matters when smart sort is OFF — otherwise each
     // download is routed by its media type, so hide the row to avoid implying otherwise.
     if (dlForm) dlForm->setRowVisible(dlFolderRow, !smartSortCheck->isChecked());
+}
+
+void Settings::rebuildHomeChannels() {
+    if (!homeChannelsList || !searchForm) return;
+
+    const auto favs = SgFavorites::instance()->favorites();
+    // The picker only matters past 5 favourites; ≤5 are all used automatically.
+    const bool show = favs.size() > 5;
+    searchForm->setRowVisible(homeChannelsRow, show);
+    if (!show) return;
+
+    const QStringList picked = iniSettings->value("Search/HomeChannels").toStringList();
+
+    // Repopulate without the itemChanged handler firing on each programmatic check.
+    homeChannelsList->blockSignals(true);
+    homeChannelsList->clear();
+    for (const auto& f : favs) {
+        auto* item = new QListWidgetItem(f.name.isEmpty() ? f.url : f.name, homeChannelsList);
+        item->setData(Qt::UserRole, f.url);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(picked.contains(f.url) ? Qt::Checked : Qt::Unchecked);
+    }
+    homeChannelsList->blockSignals(false);
+}
+
+void Settings::saveHomeChannels() {
+    if (!homeChannelsList) return;
+    QStringList checked;
+    for (int i = 0; i < homeChannelsList->count(); ++i) {
+        QListWidgetItem* it = homeChannelsList->item(i);
+        if (it->checkState() == Qt::Checked) checked << it->data(Qt::UserRole).toString();
+    }
+    iniSettings->setValue("Search/HomeChannels", checked);
+    iniSettings->sync();
+}
+
+void Settings::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    rebuildHomeChannels(); // favourites may have changed since the page was built
 }
 
 void Settings::loadSettings() {

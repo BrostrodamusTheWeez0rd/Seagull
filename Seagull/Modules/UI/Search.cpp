@@ -305,7 +305,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     statusSpinner->setMovie(statusMovie);
     statusSpinner->hide();
 
-    statusLabel = new QLabel("Search YouTube to see results.");
+    statusLabel = new QLabel(emptyStateText());
     statusLabel->setObjectName("searchStatus");
 
     statusPill = new QFrame();
@@ -356,6 +356,12 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     });
 
     connect(refreshBtn, &QPushButton::clicked, this, [this]() {
+        // Home feed view (no nav entry): rebuild it from the favourite channels.
+        if (m_homeBuilt && m_navIndex < 0 && m_viewMode == ViewMode::Search
+            && currentSite() == SgSearch::Site::YouTube) {
+            loadHomeFeed();
+            return;
+        }
         if (m_navIndex < 0 || m_navIndex >= m_navHistory.size()) return;
         for (const SearchResult& r : m_allResults)
             if (!r.thumbnail.isEmpty()) QPixmapCache::remove(r.thumbnail);
@@ -387,7 +393,13 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     // so the grid stays in sync without the user having to exit and re-enter.
     connect(SgFavorites::instance(), &SgFavorites::changed, this,
             [this](const QString&, bool) {
-                if (m_favoritesActive) enterFavoritesView();
+                if (m_favoritesActive) { enterFavoritesView(); return; }
+                // Curating favourites while sitting on the home/landing view -> reflect
+                // the new set (populates after starring the first channel; also updates
+                // the empty-state prompt). Bounded: one light rebuild per star toggle.
+                if (!m_homeLoading && m_navIndex < 0 && m_viewMode == ViewMode::Search
+                    && currentSite() == SgSearch::Site::YouTube && m_currentQuery.isEmpty())
+                    loadHomeFeed();
             });
 
     if (m_search) {
@@ -406,6 +418,12 @@ void Search::showEvent(QShowEvent* event) {
     positionFilterPill();
     updateFilterPillVisibility();
     pillHoverTimer->start();
+
+    // First open on YouTube with nothing loaded -> build the favourites home feed once
+    // per session. The m_homeBuilt guard keeps re-shows from re-fetching.
+    if (!m_homeBuilt && !m_homeLoading && currentSite() == SgSearch::Site::YouTube
+        && m_navHistory.isEmpty() && m_allResults.isEmpty())
+        loadHomeFeed();
 }
 
 void Search::hideEvent(QHideEvent* event) {
@@ -600,11 +618,99 @@ void Search::exitFavoritesView() {
     rebuildCards();
 
     if (m_allResults.isEmpty())
-        setStatus("Search YouTube to see results.", false);
+        setStatus(emptyStateText(), false);
     else
         setStatus("", false);
 
     tintFavoritesIcon();
+}
+
+QString Search::emptyStateText() const {
+    // On YouTube the landing view is the favourites home feed, so when there are no
+    // favourites yet, nudge the user to add some instead of prompting a search.
+    if (currentSite() == SgSearch::Site::YouTube
+        && SgFavorites::instance()->favorites().isEmpty())
+        return QStringLiteral("Favorite some channels to fill your homepage.");
+    return "Search " + siteName() + " to see results.";
+}
+
+QStringList Search::homeChannels() const {
+    // ≤5 favourites: use them all. >5: use the user's saved picks (still-favourited,
+    // capped at 5); if they've not chosen yet, fall back to the first 5.
+    const auto favs = SgFavorites::instance()->favorites();
+    QStringList all;
+    for (const auto& f : favs) all << f.url;
+    if (all.size() <= 5) return all;
+
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    const QStringList picked = cfg.value("Search/HomeChannels").toStringList();
+    QStringList out;
+    for (const QString& u : picked)
+        if (all.contains(u) && out.size() < 5) out << u;
+    if (out.isEmpty()) out = all.mid(0, 5);
+    return out;
+}
+
+void Search::loadHomeFeed() {
+    if (!m_search || currentSite() != SgSearch::Site::YouTube) return;
+
+    const QStringList channels = homeChannels();
+    if (channels.isEmpty()) {            // no favourites yet — leave the prompt up
+        setStatus(emptyStateText(), false);
+        return;
+    }
+
+    if (m_favoritesActive) { m_favoritesActive = false; tintFavoritesIcon(); }
+    setViewMode(ViewMode::Search);
+    clearResults();
+    m_currentQuery.clear();
+    m_currentSite = SgSearch::Site::YouTube;
+    m_shownCount  = 0;
+    m_loadingMore = false;
+    m_endReached  = true;                // the home feed doesn't scroll-paginate
+    m_homeQueue   = channels;
+    m_homeLoading = true;
+
+    setStatus("Loading your channels.", true);
+    pumpHomeFeed();
+}
+
+void Search::pumpHomeFeed() {
+    // More channels queued -> fetch the next one. Drained -> finalise the feed.
+    if (!m_homeQueue.isEmpty()) {
+        m_search->fetchChannelVideos(m_homeQueue.takeFirst(), kHomePerChannel);
+        return;
+    }
+    m_homeLoading = false;
+    m_homeBuilt   = true;
+    m_shownCount  = m_allResults.size();
+    applySort();                          // default Newest mixes channels by recency
+    rebuildCards();
+    setStatus(m_allResults.isEmpty() ? emptyStateText() : QString(), false);
+}
+
+void Search::handleHomeBatch(const SearchResult& /*info*/, const QList<SearchResult>& videos) {
+    // A site switch (or any other change) during the build abandons it.
+    if (currentSite() != SgSearch::Site::YouTube) {
+        m_homeLoading = false; m_homeQueue.clear(); return;
+    }
+
+    int added = 0;
+    for (const SearchResult& v : videos) {
+        if (added >= kHomePerChannel) break;
+        if (v.isChannel) continue;
+        if (!v.url.isEmpty()) {
+            if (m_seenUrls.contains(v.url)) continue;
+            m_seenUrls.insert(v.url);
+        }
+        SearchResult r = v;
+        r.seq = m_seqCounter++;
+        m_allResults.append(r);
+        ++added;
+    }
+
+    if (!m_homeQueue.isEmpty()) rebuildCards(); // show progress as each channel lands
+    pumpHomeFeed();
 }
 
 void Search::showResultSortMenu() {
@@ -628,6 +734,7 @@ void Search::pushNavEntry(const NavEntry& entry) {
 
 void Search::navigateTo(int index) {
     if (index < 0 || index >= m_navHistory.size()) return;
+    m_homeLoading = false; m_homeQueue.clear(); // navigating supersedes a home build
 
     // Snapshot the current entry's results before leaving it (only when actually
     // changing entries; refresh calls navigateTo with the same index and must not
@@ -809,6 +916,7 @@ void Search::performSearch() {
 }
 
 void Search::startSearch(const QString& query) {
+    m_homeLoading = false; m_homeQueue.clear(); // a real search supersedes a home build
     // Exit favourites view before a real search so the grid is clean.
     if (m_favoritesActive) {
         m_favoritesActive = false;
@@ -937,6 +1045,7 @@ void Search::onResultsReady(const QList<SearchResult>& results) {
 
 void Search::onChannelVideosReady(const SearchResult& channelInfo,
                                   const QList<SearchResult>& videos) {
+    if (m_homeLoading) { handleHomeBatch(channelInfo, videos); return; } // home feed build
     if (m_viewMode != ViewMode::Channel) return; // late reply after navigating away
     if (m_shownCount == 0) {
         updateChannelHeader(channelInfo); // first page fills the header
@@ -1010,6 +1119,8 @@ void Search::ingestResults(const QList<SearchResult>& results) {
 }
 
 void Search::onSearchFailed(const QString& message) {
+    // A channel fetch failed mid home-build — skip it and continue with the rest.
+    if (m_homeLoading) { pumpHomeFeed(); return; }
     m_loadingMore = false;
     m_advancePending = false;
     if (m_shownCount > 0) {
@@ -1163,6 +1274,7 @@ void Search::openChannel(const QString& channelUrl, const QString& name) {
 
 void Search::openChannelUrl(const QString& channelUrl, const QString& label) {
     if (!m_search) return;
+    m_homeLoading = false; m_homeQueue.clear(); // opening a channel supersedes a home build
     setViewMode(ViewMode::Channel);
     queryBar->setCurrentText(label); // address-bar shows where you are
     clearResults();
@@ -1304,7 +1416,7 @@ void Search::updateQueryPlaceholder() {
         queryBar->lineEdit()->setPlaceholderText("Search " + siteName());
     // Reflect the site in the idle prompt at the bottom (only while nothing's loaded).
     if (m_viewMode == ViewMode::Search && m_allResults.isEmpty())
-        setStatus("Search " + siteName() + " to see results.", false);
+        setStatus(emptyStateText(), false);
 }
 
 void Search::clearResults() {
