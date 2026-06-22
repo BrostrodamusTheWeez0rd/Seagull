@@ -10,7 +10,7 @@
 #include <QInputDialog>
 #include <QUrlQuery>
 #include <QNetworkRequest>
-#include <QGraphicsOpacityEffect>
+#include <QPainter>
 #include <QMovie>
 #include <QFileInfo>
 #include <QDir>
@@ -53,20 +53,13 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     QPixmap bannerImg(":/Assets/Banner.png");
     banner->setPixmap(bannerImg.scaled(800, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
-    // Hero thumbnail: takes the banner's spot once metadata loads. The banner is
-    // shrunk into a watermark pinned to the thumbnail's bottom-left corner.
+    // Hero thumbnail: takes the banner's spot once metadata loads. The Seagull banner
+    // is stamped onto the thumbnail's bottom-right corner as a small watermark (see
+    // applyHeroPixmap) so it always sits ON the image, whatever its aspect ratio.
     heroThumb = new QLabel();
     heroThumb->setFixedSize(480, 270);
     heroThumb->setAlignment(Qt::AlignCenter);
     heroThumb->hide();
-
-    bannerWatermark = new QLabel(heroThumb);
-    bannerWatermark->setPixmap(QPixmap(":/Assets/Banner.png").scaledToHeight(26, Qt::SmoothTransformation));
-    bannerWatermark->adjustSize();
-    bannerWatermark->move(8, heroThumb->height() - bannerWatermark->height() - 8);
-    auto* wmOpacity = new QGraphicsOpacityEffect(bannerWatermark);
-    wmOpacity->setOpacity(0.85);
-    bannerWatermark->setGraphicsEffect(wmOpacity);
 
     loadingLabel = new QLabel("Fetching metadata...");
     loadingLabel->setAlignment(Qt::AlignCenter);
@@ -931,15 +924,31 @@ void Queue::handleMetadataReady(const QString& t, const QString& u, const QStrin
 }
 
 void Queue::applyHeroPixmap(const QPixmap& pm) {
-    heroThumb->setPixmap(pm.scaled(heroThumb->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    // Scale the thumbnail to fit the hero box, then stamp the Seagull banner as a small
+    // semi-transparent watermark into the scaled image's bottom-right corner. Painting it
+    // onto the pixmap (rather than overlaying a child widget on the fixed-size label) keeps
+    // it pinned to the actual image corner, never floating in the letterbox margin.
+    QPixmap scaled = pm.scaled(heroThumb->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    static const QPixmap watermark =
+        QPixmap(":/Assets/Banner.png").scaledToHeight(26, Qt::SmoothTransformation);
+    if (!watermark.isNull() && scaled.width() > watermark.width() + 16
+                            && scaled.height() > watermark.height() + 16) {
+        const int margin = 8;
+        QPainter p(&scaled);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        p.setOpacity(0.85);
+        p.drawPixmap(scaled.width()  - watermark.width()  - margin,
+                     scaled.height() - watermark.height() - margin, watermark);
+    }
+
+    heroThumb->setPixmap(scaled);
     banner->hide();
     heroThumb->show();
-    bannerWatermark->show();
 }
 
 void Queue::resetHeroToBanner() {
     if (heroThumb) heroThumb->hide();
-    if (bannerWatermark) bannerWatermark->hide();
     if (banner) banner->show();
 }
 
