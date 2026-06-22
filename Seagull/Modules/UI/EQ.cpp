@@ -614,14 +614,15 @@ QVector<EQ::Preset> EQ::stockPresets() const {
             P("Jazz",       0, {  4,  4,  3,  2, -1, -3, -1,  1,  3,  4 }),
             // Concert hall: cut sub, deeply recessed mids, heavy string/brass shimmer
             P("Classical",  4, { -2, -2, -1, -3, -5, -5, -2,  1,  6,  8 }),
-            // Hard 808 sub with preamp pullback so it doesn't clip
-            P("Hip-Hop",   -4, {  9,  8,  5, -1, -2,  1,  3,  2, -1, -2 }),
-            // Deep sub, wide mid scoop, synth sparkle — the hollow EDM shape
-            P("Electronic", -3, {  8,  6,  0, -5, -6, -3,  0,  4,  7,  8 }),
+            // Hard 808 sub; preamp loudness-matched to bypass (mids ~unity, sub rides +8)
+            P("Hip-Hop",   -1, {  9,  8,  5, -1, -2,  1,  3,  2, -1, -2 }),
+            // Deep sub, wide mid scoop, synth sparkle — the hollow EDM shape (preamp
+            // makeup capped at +1: mid-neutral wants +2 but that drives the +8 ends to +10)
+            P("Electronic",  1, {  8,  6,  0, -5, -6, -3,  0,  4,  7,  8 }),
             // Cut sub rumble and 250Hz boxiness, push 1-4kHz presence window hard
             P("Vocal",      4, { -6, -5, -2, -5,  0,  4,  7,  7,  4, -1 }),
-            // Clean low shelf with preamp compensation so it doesn't clip
-            P("Bass Boost", -4, {  9,  8,  6,  3,  1,  0,  0,  0,  0,  0 }),
+            // Clean low shelf; preamp loudness-matched to bypass (mids ~unity, sub rides +8)
+            P("Bass Boost", -1, {  9,  8,  6,  3,  1,  0,  0,  0,  0,  0 }),
             // Boosted low-mids, heavy high roll-off — vinyl and tape warmth
             P("Lo-Fi",      3, { -3,  2,  7,  8,  5,  1, -3, -7,-11,-14 }),
         };
@@ -633,19 +634,22 @@ QVector<EQ::Preset> EQ::stockPresets() const {
         P("Movie",        0, {  3,  3,  0, -2,  1,  4,  5,  3,  2,  3 }),
         // Cut sub rumble, heavily push speech range — voice clarity without waking anyone
         P("Night Mode",   3, { -7, -6, -2,  0,  3,  7,  7,  4,  0, -2 }),
-        // Maximum LFE impact: huge sub, punchy score, dramatic highs
-        P("Action",      -4, {  9,  7,  3, -1,  0,  2,  4,  5,  6,  5 }),
+        // Maximum LFE impact: huge sub, punchy score, dramatic highs (preamp
+        // loudness-matched to bypass; forward 1-4kHz at unity, LFE rides +7)
+        P("Action",      -2, {  9,  7,  3, -1,  0,  2,  4,  5,  6,  5 }),
         // Hard bass cut, extreme presence push — maximum intelligibility for dialogue
         P("Dialog",       5, { -9, -8, -4, -2,  2,  6,  9,  7,  2, -4 }),
         // Near-flat with a minimal narration nudge — least colored after Flat
         P("Documentary",  0, {  1,  1,  0, -1,  0,  2,  3,  2,  1,  1 }),
         // Pop-tuned for music content: punchy bass, cut mud, bright presence
         P("Music Video",  0, {  4,  3,  0, -4, -2,  1,  4,  6,  5,  4 }),
-        // Heavy sub and dense low-mids, muffled highs — dark and oppressive
-        P("Horror",      -3, {  8,  7,  6,  4,  1, -2, -5, -7, -6, -4 }),
+        // Heavy sub and dense low-mids, muffled highs — dark and oppressive (preamp
+        // makeup capped at +1: the dark curve stays a touch under bypass on purpose)
+        P("Horror",       1, {  8,  7,  6,  4,  1, -2, -5, -7, -6, -4 }),
         // Cut low-mid mud, very forward 2-4kHz voice acting, OST sparkle
         P("Anime",        1, {  0, -1, -2, -4, -1,  2,  5,  7,  6,  5 }),
         // Fletcher-Munson curve: bass + treble lift, scooped mids, for low-volume listening
-        P("Loudness",    -2, {  7,  5,  2, -1, -3, -2,  0,  2,  5,  8 }),
+        // (preamp loudness-matched to bypass so the smile doesn't read as a volume drop)
+        P("Loudness",     1, {  7,  5,  2, -1, -3, -2,  0,  2,  5,  8 }),
     };
 }

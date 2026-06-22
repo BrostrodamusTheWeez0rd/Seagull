@@ -221,10 +221,19 @@ void PlaybackEngine::disableEqualizer() {
 }
 
 
+// libVLC's equalizer filter has a large, fixed insertion loss: the instant it's
+// engaged the signal drops ~10 dB beyond any preamp/band setting, on BOTH the
+// audio-tap and VLC's native video output. We cancel it with a constant makeup
+// folded into the preamp, so toggling the EQ changes tone, not loudness — EQ-on
+// sits at the same level as EQ-off (bypass). Tune by ear: if the power button
+// still jumps the level, nudge this until on/off match (up = louder EQ-on).
+static constexpr float kEqMakeupDb = 10.0f;
+
 void PlaybackEngine::applyEqualizerToPlayer() {
     if (!m_player || !m_eqEnabled || m_eqGains.isEmpty()) return;
     VLC::Equalizer eq;                 // default ctor: all bands zeroed
-    eq.setPreamp(m_eqPreamp);
+    // +makeup cancels the filter's insertion loss; clamp to VLC's ±20 dB preamp range.
+    eq.setPreamp(qBound(-20.0f, m_eqPreamp + kEqMakeupDb, 20.0f));
     const unsigned bands = VLC::Equalizer::bandCount();
     for (unsigned b = 0; b < bands && static_cast<int>(b) < m_eqGains.size(); ++b)
         eq.setAmp(m_eqGains[static_cast<int>(b)], b);
