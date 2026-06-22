@@ -79,7 +79,8 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     backBtn    = new QPushButton(QStringLiteral("‹"));
     forwardBtn = new QPushButton(QStringLiteral("›"));
     refreshBtn = new QPushButton(QStringLiteral("⟳"));
-    for (QPushButton* b : { backBtn, forwardBtn, refreshBtn }) {
+    homeBtn    = new QPushButton(QStringLiteral("⌂"));
+    for (QPushButton* b : { backBtn, forwardBtn, refreshBtn, homeBtn }) {
         b->setObjectName("searchNavButton");
         b->setFixedWidth(34);
         b->setCursor(Qt::PointingHandCursor);
@@ -87,6 +88,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     backBtn->setEnabled(false);
     forwardBtn->setEnabled(false);
     refreshBtn->setEnabled(false);
+    homeBtn->setToolTip("Home");
 
     siteBar = new QComboBox();
     siteBar->setObjectName("searchSiteBar");
@@ -104,6 +106,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     navRow->addWidget(backBtn);
     navRow->addWidget(forwardBtn);
     navRow->addWidget(refreshBtn);
+    navRow->addWidget(homeBtn);
     navRow->addWidget(siteBar, 1);
     navRow->addWidget(goBtn);
     chromeLay->addLayout(navRow);
@@ -241,12 +244,13 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     m_resultSortBtn->setToolTip("Sort these results");
     connect(m_resultSortBtn, &QPushButton::clicked, this, &Search::showResultSortMenu);
 
-    // Favourites chip — YouTube only. Toggles a view that lists all starred channels.
+    // Favourites chip (YouTube + PornHub). Toggles a view that lists all starred
+    // channels/models for the current site.
     m_favoritesBtn = new QPushButton(resultsArea);
     m_favoritesBtn->setObjectName("librarySearchButton");
     m_favoritesBtn->setCursor(Qt::PointingHandCursor);
     m_favoritesBtn->setFixedSize(34, 34);
-    m_favoritesBtn->setToolTip("Show favourite channels");
+    m_favoritesBtn->setToolTip("Show favourites");
     connect(m_favoritesBtn, &QPushButton::clicked, this, [this]() {
         if (m_favoritesActive) exitFavoritesView();
         else                   enterFavoritesView();
@@ -330,7 +334,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     // Picking a history entry from the arrow dropdown searches it right away.
     connect(queryBar, &QComboBox::textActivated, this, &Search::performSearch);
     // Switching site swaps the per-site history + updates the prompt/idle label.
-    // The favourites chip is YouTube-only: show it only when on YouTube.
+    // The favourites chip shows on favouritable sites (YouTube + PornHub).
     connect(siteBar, &QComboBox::currentTextChanged, this, [this](const QString&) {
         const SgSearch::Site s = currentSite();
         if (s == m_uiSite) return; // typing within the same site -> nothing to swap
@@ -339,26 +343,30 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
         m_uiSite = s;
         updateQueryPlaceholder();
         applyHistoryToUi();
-        // Show the star chip only on YouTube.
         if (m_favoritesBtn)
-            m_favoritesBtn->setVisible(s == SgSearch::Site::YouTube);
+            m_favoritesBtn->setVisible(isFavouritableSite(s));
+        // On the empty landing, switching to a favouritable site swaps in its home feed.
+        maybeBuildHomeFeed();
     });
     // Enter in the site box jumps to the query so you can just type and search.
     connect(siteBar->lineEdit(), &QLineEdit::returnPressed, this, [this]() { queryBar->setFocus(); });
     updateQueryPlaceholder(); // initial prompt ("Search YouTube")
 
     connect(backBtn, &QPushButton::clicked, this, [this]() {
-        if (m_navIndex > 0) navigateTo(m_navIndex - 1);
+        if (m_navIndex > 0)       navigateTo(m_navIndex - 1);
+        else if (m_navIndex == 0) goHome(); // back from the first search returns to the home feed
     });
 
     connect(forwardBtn, &QPushButton::clicked, this, [this]() {
         if (m_navIndex < m_navHistory.size() - 1) navigateTo(m_navIndex + 1);
     });
 
+    connect(homeBtn, &QPushButton::clicked, this, [this]() { goHome(); });
+
     connect(refreshBtn, &QPushButton::clicked, this, [this]() {
-        // Home feed view (no nav entry): rebuild it from the favourite channels.
+        // Home feed view (no nav entry): rebuild it from the favourite channels/models.
         if (m_homeBuilt && m_navIndex < 0 && m_viewMode == ViewMode::Search
-            && currentSite() == SgSearch::Site::YouTube) {
+            && isFavouritableSite(currentSite())) {
             loadHomeFeed();
             return;
         }
@@ -389,18 +397,26 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
             loadMore();
     });
 
-    // When a channel is starred or unstarred, refresh the favourites view if it is open
-    // so the grid stays in sync without the user having to exit and re-enter.
-    connect(SgFavorites::instance(), &SgFavorites::changed, this,
-            [this](const QString&, bool) {
-                if (m_favoritesActive) { enterFavoritesView(); return; }
-                // Curating favourites while sitting on the home/landing view -> reflect
-                // the new set (populates after starring the first channel; also updates
-                // the empty-state prompt). Bounded: one light rebuild per star toggle.
-                if (!m_homeLoading && m_navIndex < 0 && m_viewMode == ViewMode::Search
-                    && currentSite() == SgSearch::Site::YouTube && m_currentQuery.isEmpty())
-                    loadHomeFeed();
-            });
+    // When a channel/model is starred or unstarred, refresh the favourites view (if open)
+    // or the landing home feed — but only when the change is for the site on screen, so a
+    // YouTube toggle doesn't disturb a PornHub view and vice versa. Each store is wired to
+    // its own site.
+    auto wireFavStore = [this](SgFavorites* store, SgSearch::Site site) {
+        connect(store, &SgFavorites::changed, this, [this, site](const QString&, bool) {
+            if (currentSite() != site) return; // change is for a site not currently shown
+            // This site's home feed is now stale -> force a rebuild next time it's shown
+            // (e.g. starring from a results page, then hitting Home/back).
+            if (m_homeFeedSite == site) { m_homeBuilt = false; m_homeCache.clear(); }
+            if (m_favoritesActive) { enterFavoritesView(); return; }
+            // Curating favourites on the home/landing view -> reflect the new set.
+            // Bounded: one light rebuild per star toggle.
+            if (!m_homeLoading && m_navIndex < 0 && m_viewMode == ViewMode::Search
+                && m_currentQuery.isEmpty())
+                loadHomeFeed();
+        });
+    };
+    wireFavStore(SgFavorites::instance(),   SgSearch::Site::YouTube);
+    wireFavStore(SgFavorites::phInstance(), SgSearch::Site::PornHub);
 
     if (m_search) {
         connect(m_search, &SgSearch::resultsReady,       this, &Search::onResultsReady);
@@ -432,12 +448,15 @@ void Search::warmHomeFeed() {
 }
 
 void Search::maybeBuildHomeFeed() {
-    // Build once per session, and only when this tab is sitting on its empty
-    // YouTube landing view. The m_homeBuilt/m_homeLoading guards keep startup
-    // warming and re-shows from re-fetching.
-    if (!m_homeBuilt && !m_homeLoading && currentSite() == SgSearch::Site::YouTube
-        && m_navHistory.isEmpty() && m_allResults.isEmpty())
-        loadHomeFeed();
+    // Build only when this tab is sitting on its landing view (navIndex -1, not on a
+    // search/channel page) on a favouritable site, and that site's feed isn't already up.
+    // This also fires when switching between YouTube and PornHub on the landing, swapping
+    // the home feed (and showing the "favourite some …" prompt when there are none).
+    const SgSearch::Site site = currentSite();
+    if (m_homeLoading || !isFavouritableSite(site)) return;
+    if (m_navIndex >= 0) return;                          // on a search/channel, not the landing
+    if (m_homeBuilt && m_homeFeedSite == site) return;    // this site's feed already shown
+    loadHomeFeed();
 }
 
 void Search::hideEvent(QHideEvent* event) {
@@ -470,8 +489,8 @@ void Search::positionTopControls() {
     // Layout from right to left: [favorites] [sort] [search / expanding bar]
     int nextRight = rightEdge;
 
-    // The favourites chip is YouTube-only; leave space for it only on that site.
-    if (m_favoritesBtn && currentSite() == SgSearch::Site::YouTube) {
+    // The favourites chip is on favouritable sites; leave space for it only there.
+    if (m_favoritesBtn && isFavouritableSite(currentSite())) {
         m_favoritesBtn->move(nextRight - m_favoritesBtn->width(), kPillTopMargin);
         m_favoritesBtn->raise();
         nextRight -= m_favoritesBtn->width() + gap;
@@ -496,12 +515,12 @@ void Search::updateFilterPillVisibility() {
     const QRect zone(0, 0, resultsArea->width(), stripH + 2 * kPillTopMargin);
     const bool hovered = zone.contains(resultsArea->mapFromGlobal(QCursor::pos()));
     const bool show = atTop || hovered;
-    // The Videos/Shorts pill and the favourites chip are YouTube-only.
+    // The Videos/Shorts pill is YouTube-only; the favourites chip is on favouritable sites.
     const bool isYouTube = (currentSite() == SgSearch::Site::YouTube);
     m_filterPill->setVisible(show && isYouTube);
     m_resultSortBtn->setVisible(show);
     if (m_favoritesBtn) {
-        const bool favShow = show && isYouTube;
+        const bool favShow = show && isFavouritableSite(currentSite());
         if (m_favoritesBtn->isVisible() != favShow) {
             m_favoritesBtn->setVisible(favShow);
             positionTopControls(); // reflow the chip row when the star appears/disappears
@@ -599,7 +618,8 @@ void Search::enterFavoritesView() {
         delete item;
     }
 
-    const auto favs = SgFavorites::instance()->favorites();
+    SgFavorites* store = favStore();
+    const auto favs = store ? store->favorites() : QList<SgFavorites::FavoriteChannel>{};
     for (const auto& fav : favs) {
         SearchResult r;
         r.isChannel  = true;
@@ -617,7 +637,9 @@ void Search::enterFavoritesView() {
     applyCardWidth();
 
     if (favs.isEmpty())
-        setStatus("No favourite channels yet. Star a channel to add it.", false);
+        setStatus(currentSite() == SgSearch::Site::PornHub
+            ? "No favourite models yet. Star a model to add it."
+            : "No favourite channels yet. Star a channel to add it.", false);
     else
         setStatus("", false);
 
@@ -639,52 +661,80 @@ void Search::exitFavoritesView() {
     tintFavoritesIcon();
 }
 
+bool Search::isFavouritableSite(SgSearch::Site s) {
+    return s == SgSearch::Site::YouTube || s == SgSearch::Site::PornHub;
+}
+
+SgFavorites* Search::favStore() const {
+    switch (currentSite()) {
+    case SgSearch::Site::YouTube: return SgFavorites::instance();
+    case SgSearch::Site::PornHub: return SgFavorites::phInstance();
+    default:                      return nullptr; // Chaturbate: no favourites
+    }
+}
+
 QString Search::emptyStateText() const {
-    // On YouTube the landing view is the favourites home feed, so when there are no
-    // favourites yet, nudge the user to add some instead of prompting a search.
-    if (currentSite() == SgSearch::Site::YouTube
-        && SgFavorites::instance()->favorites().isEmpty())
-        return QStringLiteral("Favorite some channels to fill your homepage.");
+    // On a favouritable site the landing view is the favourites home feed, so when there
+    // are no favourites yet, nudge the user to add some instead of prompting a search.
+    if (SgFavorites* store = favStore(); store && store->favorites().isEmpty())
+        return currentSite() == SgSearch::Site::PornHub
+            ? QStringLiteral("Favorite some models to fill your homepage.")
+            : QStringLiteral("Favorite some channels to fill your homepage.");
     return "Search " + siteName() + " to see results.";
 }
 
 QStringList Search::homeChannels() const {
-    // ≤5 favourites: use them all. >5: use the user's saved picks (still-favourited,
-    // capped at 5); if they've not chosen yet, fall back to the first 5.
-    const auto favs = SgFavorites::instance()->favorites();
+    SgFavorites* store = favStore();
+    if (!store) return {};
+    const auto favs = store->favorites();
     QStringList all;
     for (const auto& f : favs) all << f.url;
     if (all.size() <= 5) return all;
 
-    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    const QStringList picked = cfg.value("Search/HomeChannels").toStringList();
-    QStringList out;
-    for (const QString& u : picked)
-        if (all.contains(u) && out.size() < 5) out << u;
-    if (out.isEmpty()) out = all.mid(0, 5);
-    return out;
+    // >5 favourites: the Settings "pick up to 5" picker is YouTube-only; PornHub just
+    // uses the first 5. (≤5: all are used automatically, above.)
+    if (currentSite() == SgSearch::Site::YouTube) {
+        QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+        const QStringList picked = cfg.value("Search/HomeChannels").toStringList();
+        QStringList out;
+        for (const QString& u : picked)
+            if (all.contains(u) && out.size() < 5) out << u;
+        if (!out.isEmpty()) return out;
+    }
+    return all.mid(0, 5);
 }
 
 void Search::loadHomeFeed() {
-    if (!m_search || currentSite() != SgSearch::Site::YouTube) return;
+    const SgSearch::Site site = currentSite();
+    if (!m_search || !isFavouritableSite(site)) return;
 
-    const QStringList channels = homeChannels();
-    if (channels.isEmpty()) {            // no favourites yet — leave the prompt up
-        setStatus(emptyStateText(), false);
-        return;
-    }
-
+    // The home feed IS the landing view: clear the grid and sit at navIndex -1 so the
+    // page is empty before results arrive (and stays empty, with the prompt, when there
+    // are no favourites — that's the empty-page-on-switch behaviour).
     if (m_favoritesActive) { m_favoritesActive = false; tintFavoritesIcon(); }
     setViewMode(ViewMode::Search);
     clearResults();
     m_currentQuery.clear();
-    m_currentSite = SgSearch::Site::YouTube;
+    m_currentSite  = site;
+    m_homeFeedSite = site;               // remember the site so a mid-build switch aborts
+    m_navIndex     = -1;                 // home/landing
     m_shownCount  = 0;
     m_loadingMore = false;
     m_endReached  = true;                // the home feed doesn't scroll-paginate
+    refreshBtn->setEnabled(true);        // refresh rebuilds the home feed
+    updateNavButtons();
+
+    const QStringList channels = homeChannels();
+    if (channels.isEmpty()) {            // no favourites yet — empty page + the prompt
+        m_homeBuilt = true;             // this site's (empty) landing is "built"
+        m_homeCache.clear();
+        rebuildCards();                  // grid is now empty
+        setStatus(emptyStateText(), false);
+        return;
+    }
+
     m_homeQueue   = channels;
     m_homeLoading = true;
-
     setStatus("Loading your channels.", true);
     pumpHomeFeed();
 }
@@ -699,13 +749,53 @@ void Search::pumpHomeFeed() {
     m_homeBuilt   = true;
     m_shownCount  = m_allResults.size();
     applySort();                          // default Newest mixes channels by recency
+    m_homeCache   = m_allResults;         // cache the built feed so back/Home restore it
     rebuildCards();
     setStatus(m_allResults.isEmpty() ? emptyStateText() : QString(), false);
 }
 
+void Search::goHome() {
+    // Snapshot the page we're leaving so forward can restore it, then drop to the
+    // landing (navIndex -1) and show the current site's home feed.
+    if (m_navIndex >= 0 && m_navIndex < m_navHistory.size())
+        m_navHistory[m_navIndex].results = m_allResults;
+    if (m_favoritesActive) { m_favoritesActive = false; tintFavoritesIcon(); }
+
+    const SgSearch::Site site = currentSite();
+
+    // Sites without favourites (Chaturbate) have no home feed — just clear to the prompt.
+    // Otherwise restore the cached feed instantly when it's for this site; else rebuild.
+    if (isFavouritableSite(site) && m_homeBuilt && m_homeFeedSite == site) {
+        m_homeLoading = false; m_homeQueue.clear();
+        m_navIndex = -1;
+        setViewMode(ViewMode::Search);
+        clearResults();
+        m_currentQuery.clear();
+        m_currentSite = site;
+        m_allResults  = m_homeCache;
+        m_shownCount  = m_homeCache.size();
+        m_endReached  = true;
+        refreshBtn->setEnabled(true);
+        for (const SearchResult& r : m_allResults)
+            if (!r.url.isEmpty()) m_seenUrls.insert(r.url);
+        rebuildCards();
+        setStatus(m_allResults.isEmpty() ? emptyStateText() : QString(), false);
+        updateNavButtons();
+    } else if (isFavouritableSite(site)) {
+        loadHomeFeed(); // first time on this site's home, or a different site — build it
+    } else {
+        m_navIndex = -1;
+        setViewMode(ViewMode::Search);
+        clearResults();
+        m_currentQuery.clear();
+        setStatus(emptyStateText(), false);
+        updateNavButtons();
+    }
+}
+
 void Search::handleHomeBatch(const SearchResult& /*info*/, const QList<SearchResult>& videos) {
     // A site switch (or any other change) during the build abandons it.
-    if (currentSite() != SgSearch::Site::YouTube) {
+    if (currentSite() != m_homeFeedSite) {
         m_homeLoading = false; m_homeQueue.clear(); return;
     }
 
@@ -815,7 +905,10 @@ void Search::navigateTo(int index) {
 }
 
 void Search::updateNavButtons() {
-    backBtn->setEnabled(m_navIndex > 0);
+    // Back is enabled on any nav entry (index >= 0): from the first one it returns to
+    // the home feed (navIndex -1). Forward walks toward the newest entry; from the home
+    // feed it re-enters the first entry.
+    backBtn->setEnabled(m_navIndex >= 0);
     forwardBtn->setEnabled(m_navIndex < m_navHistory.size() - 1);
 }
 

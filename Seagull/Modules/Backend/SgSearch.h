@@ -109,6 +109,13 @@ private:
     void handlePornHubReply();
     QList<SearchResult> parsePornHubHtml(const QString& html) const;
 
+    // PornHub model/channel listing: the uploader's /videos tab, scraped the same way
+    // as search (its tiles use the same markup, so parsePornHubHtml is reused).
+    // Answers on channelVideosReady, so the home feed + channel view consume it like
+    // the YouTube path. Reached from fetchChannelVideos() when the URL is a PornHub one.
+    void fetchPornHubModel(const QString& modelUrl, int limit);
+    void handlePornHubModelReply();
+
     // Chaturbate search (live cam rooms via their JSON room-list API; query = tag).
     void startChaturbateSearch(const QString& query, int limit);
     void fetchChaturbatePage();
@@ -147,6 +154,11 @@ private:
     int                    m_phPage = 0;            // last results page fetched (1-based)
     int                    m_phLimit = 20;
     bool                   m_phExhausted = false;
+
+    // PornHub model/channel listing state (single page, scraped on demand).
+    QNetworkReply*         m_phModelReply = nullptr;
+    QString                m_phModelUrl;            // the model/channel page being listed
+    QString                m_phModelName;           // slug-derived fallback display name
 
     // Chaturbate search state (JSON room-list API; offset paging, per query).
     QNetworkReply*         m_cbReply = nullptr;

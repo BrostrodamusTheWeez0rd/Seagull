@@ -1005,10 +1005,12 @@ bool Seagull::run() {
     // the native windows under an active modal block, leaving the app input-dead.
     // With it gone, nothing touches winId() while a pre-window modal is up.
 
-    // Eagerly construct the favorites singleton so it loads its JSON before any
-    // VideoCard is built (the singleton is safe to call before this, but this
-    // guarantees the load happens on the main thread before modules are shown).
+    // Eagerly construct the favorites singletons so they load their JSON before any
+    // VideoCard is built (safe to call before this, but this guarantees the load
+    // happens on the main thread before modules are shown). Two contained stores:
+    // YouTube channels and PornHub models.
     SgFavorites::instance();
+    SgFavorites::phInstance();
 
     // First-run Terms of Use: must be accepted before the app is usable. Shown
     // modally BEFORE the window (safe now that the player's deferred winId hookup

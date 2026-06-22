@@ -24,6 +24,7 @@ class QTimer;
 class FlowLayout;
 class VideoCard;
 class SgSearch;
+class SgFavorites;
 class SgSpellCheck;
 class SpellCheckLineEdit;
 
@@ -122,6 +123,7 @@ private:
     void playResultAt(int index);
     void pushNavEntry(const NavEntry& entry);
     void navigateTo(int index); // replay history entry `index` (search or channel)
+    void goHome();              // return to the current site's home feed (landing, navIndex -1)
     void updateNavButtons();
 
     // Channel pages
@@ -157,19 +159,26 @@ private:
     void enterFavoritesView();
     void exitFavoritesView();
 
-    // YouTube home feed: the landing view, filled with the newest uploads from the
-    // user's (up to 5) favourited channels. Fetched sequentially through m_search, one
-    // light flat-playlist request per channel, and built once per session.
+    // Home feed: the landing view, filled with the newest uploads from the user's
+    // (up to 5) favourited channels/models. Works on YouTube and PornHub, each off its
+    // own favourites store (see favStore). Fetched sequentially through m_search, one
+    // light request per channel, and rebuilt when switching to another favouritable site.
     QStringList homeChannels() const;    // resolve the ≤5 channels to feed the home page
     void        loadHomeFeed();          // (re)build the feed for the resolved channels
-    void        maybeBuildHomeFeed();    // build once per session if nothing is loaded yet
+    void        maybeBuildHomeFeed();    // build for the current site's landing if needed
     void        handleHomeBatch(const SearchResult& info, const QList<SearchResult>& videos);
     void        pumpHomeFeed();          // fetch the next queued channel, or finalise the feed
     QString     emptyStateText() const;  // landing message (favourites prompt vs "search ...")
+    // The favourites store backing the current site (YouTube vs PornHub), or nullptr
+    // for sites without favourites (Chaturbate).
+    SgFavorites* favStore() const;
+    static bool  isFavouritableSite(SgSearch::Site s); // YouTube or PornHub
     static constexpr int kHomePerChannel = 5; // newest videos pulled per channel
     bool        m_homeLoading = false;   // a home-feed build is in progress
-    bool        m_homeBuilt   = false;   // the feed has been built this session
+    bool        m_homeBuilt   = false;   // a home feed has been built this session
+    SgSearch::Site m_homeFeedSite = SgSearch::Site::YouTube; // site the current feed was built for
     QStringList m_homeQueue;             // channels still to fetch in the current build
+    QList<SearchResult> m_homeCache;     // last-built home feed, so back/Home restore it instantly
 
     static constexpr int kPillTopMargin = 8;
 
@@ -177,6 +186,7 @@ private:
     QPushButton* backBtn;
     QPushButton* forwardBtn;
     QPushButton* refreshBtn;
+    QPushButton* homeBtn;  // jump to the current site's home feed (landing)
     QComboBox*   siteBar; // dropdown of supported search sites (YouTube / PornHub)
     QPushButton* goBtn;
     // Editable combo like the File Explorer address bar: the arrow drops the
@@ -196,7 +206,7 @@ private:
     SpellCheckLineEdit* m_resultSearchBar  = nullptr; // revealed on click; filters loaded results by title
     QPushButton*        m_resultSortBtn    = nullptr;
     QMenu*              m_resultSortMenu   = nullptr;
-    QPushButton*        m_favoritesBtn     = nullptr; // YouTube-only; toggles the favourites view
+    QPushButton*        m_favoritesBtn     = nullptr; // YouTube/PornHub; toggles the favourites view
     bool                m_favoritesActive  = false;
     bool                m_resultSearchOpen = false;
     QElapsedTimer       m_resultSearchOpenedClock; // grace after the click before auto-collapse

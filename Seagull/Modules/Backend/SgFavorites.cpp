@@ -14,11 +14,23 @@
 #include <QProcess>
 
 SgFavorites* SgFavorites::instance() {
-    static SgFavorites* s_instance = new SgFavorites(nullptr);
+    static SgFavorites* s_instance = new SgFavorites("favorites.json", /*fetchAvatars*/true, nullptr);
     return s_instance;
 }
 
-SgFavorites::SgFavorites(QObject* parent) : QObject(parent) {
+SgFavorites* SgFavorites::phInstance() {
+    static SgFavorites* s_instance = new SgFavorites("ph_favorites.json", /*fetchAvatars*/false, nullptr);
+    return s_instance;
+}
+
+SgFavorites* SgFavorites::forUrl(const QString& url) {
+    if (url.contains("pornhub.com", Qt::CaseInsensitive)) return phInstance();
+    if (url.contains("youtube.com", Qt::CaseInsensitive)) return instance();
+    return nullptr; // not a favouritable site
+}
+
+SgFavorites::SgFavorites(const QString& storeFile, bool fetchAvatars, QObject* parent)
+    : QObject(parent), m_storeFile(storeFile), m_fetchAvatars(fetchAvatars) {
     load();
     m_nam = new QNetworkAccessManager(this);
 }
@@ -42,8 +54,8 @@ void SgFavorites::setFavorited(const QString& channelUrl, const QString& channel
         save();
         if (!thumbnailUrl.isEmpty() && !QFile::exists(thumbCachePath(channelUrl)))
             downloadThumbnail(channelUrl, thumbnailUrl);
-        else if (thumbnailUrl.isEmpty() && !alreadyPresent)
-            onAvatarNeeded(channelUrl); // video-card star: fetch avatar via yt-dlp
+        else if (thumbnailUrl.isEmpty() && !alreadyPresent && m_fetchAvatars)
+            onAvatarNeeded(channelUrl); // video-card star: fetch avatar via yt-dlp (YouTube only)
     } else {
         if (!m_favorites.contains(channelUrl))
             return; // not present — no-op
@@ -79,7 +91,7 @@ void SgFavorites::toggle(const QString& channelUrl, const QString& channelName,
 }
 
 void SgFavorites::load() {
-    const QString path = SgPaths::configDir() + "/favorites.json";
+    const QString path = SgPaths::configDir() + "/" + m_storeFile;
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) return; // no file yet — start empty
 
@@ -101,7 +113,7 @@ void SgFavorites::load() {
 
 void SgFavorites::save() const {
     const QString dir  = SgPaths::configDir();
-    const QString path = dir + "/favorites.json";
+    const QString path = dir + "/" + m_storeFile;
 
     QDir().mkpath(dir); // ensure Config/ exists (matches SgPaths::configFile() callers)
 

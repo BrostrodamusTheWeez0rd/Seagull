@@ -8,12 +8,14 @@
 class QNetworkAccessManager;
 class QProcess;
 
-// Singleton that persists a set of favorited YouTube channels to
-// Config/favorites.json. Keyed by channelUrl; stores the display name and
-// thumbnail URL too.
+// Singleton that persists a set of favorited channels to a JSON file under
+// Config/. Keyed by channelUrl; stores the display name and thumbnail URL too.
 //
-// Access via SgFavorites::instance(). The first call creates the singleton
-// and loads the JSON from disk. Every toggle writes back immediately.
+// There are two independent, contained stores backed by the SAME class:
+//   - instance()   -> YouTube favourites  (Config/favorites.json, avatars via yt-dlp)
+//   - phInstance() -> PornHub favourites  (Config/ph_favorites.json, no yt-dlp)
+// The first call to each creates that singleton and loads its JSON; every toggle
+// writes back immediately. Use forUrl() to route a card's channel URL to its store.
 class SgFavorites : public QObject {
     Q_OBJECT
 public:
@@ -24,7 +26,12 @@ public:
         QString cachedThumbPath; // local file path if downloaded, else empty
     };
 
-    static SgFavorites* instance();
+    static SgFavorites* instance();   // YouTube store
+    static SgFavorites* phInstance(); // PornHub store
+
+    // Routes a channel/model URL to the store that owns it (YouTube vs PornHub),
+    // or nullptr if the URL belongs to no favouritable site.
+    static SgFavorites* forUrl(const QString& url);
 
     bool isFavorited(const QString& channelUrl) const;
     void setFavorited(const QString& channelUrl, const QString& channelName,
@@ -39,7 +46,10 @@ signals:
     void changed(const QString& channelUrl, bool isFavorited);
 
 private:
-    explicit SgFavorites(QObject* parent = nullptr);
+    // storeFile: filename under Config/ (e.g. "favorites.json").
+    // fetchAvatars: if true, a video-card star with no avatar URL triggers a
+    // yt-dlp avatar fetch (YouTube only); PornHub leaves it off.
+    explicit SgFavorites(const QString& storeFile, bool fetchAvatars, QObject* parent = nullptr);
 
     void load();
     void save() const;
@@ -62,4 +72,7 @@ private:
     // Tracks in-flight avatar-fetch processes so we don't double-fetch.
     // Key: QProcess*, Value: channel URL being fetched.
     QHash<QProcess*, QString>      m_avatarProcesses;
+
+    QString m_storeFile;          // JSON filename under Config/
+    bool    m_fetchAvatars = true;// gate the yt-dlp avatar fetch (YouTube only)
 };

@@ -159,14 +159,15 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
     // label it always was — just wrapped in a QHBoxLayout so the chrome height
     // calculation stays correct.
     m_channelUrl = m_result.channelUrl;
-    const bool isYouTube = !m_channelUrl.isEmpty()
-                           && m_channelUrl.contains("youtube.com", Qt::CaseInsensitive);
+    // The star routes to the favourites store that owns this URL (YouTube or PornHub);
+    // null means the URL belongs to no favouritable site, so no star is shown.
+    SgFavorites* const favStore = SgFavorites::forUrl(m_channelUrl);
 
     auto* metaRow = new QHBoxLayout();
     metaRow->setContentsMargins(0, 0, 0, 0);
     metaRow->setSpacing(2);
 
-    if (isYouTube) {
+    if (favStore) {
         // Star button — flat, icon-only, sits to the right of the channel name.
         // Constructed here, but added to metaRow after the channel label below.
         m_starBtn = new QToolButton(this);
@@ -174,19 +175,18 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
         m_starBtn->setAutoRaise(true);        // flat / no border
         m_starBtn->setCursor(Qt::PointingHandCursor);
         m_starBtn->setToolTip("Favorite channel");
-        updateStarIcon(SgFavorites::instance()->isFavorited(m_channelUrl));
-        connect(m_starBtn, &QToolButton::clicked, this, [this]() {
+        updateStarIcon(favStore->isFavorited(m_channelUrl));
+        connect(m_starBtn, &QToolButton::clicked, this, [this, favStore]() {
             // Only pass the thumbnail URL when this is a channel card; video cards
-            // carry a video frame thumbnail, not the channel avatar. SgFavorites will
-            // emit avatarNeeded for entries with an empty URL so the avatar can be
-            // fetched asynchronously via yt-dlp.
-            SgFavorites::instance()->toggle(
+            // carry a video frame thumbnail, not the channel avatar. The YouTube store
+            // fetches a missing avatar via yt-dlp; the PornHub store leaves it empty.
+            favStore->toggle(
                 m_channelUrl,
                 m_result.channel,
                 m_result.isChannel ? m_result.thumbnail : QString());
         });
         // When another card (or any other caller) toggles the same channel, sync up.
-        connect(SgFavorites::instance(), &SgFavorites::changed, this,
+        connect(favStore, &SgFavorites::changed, this,
                 [this](const QString& url, bool fav) {
                     if (url == m_channelUrl) updateStarIcon(fav);
                 });
@@ -329,7 +329,8 @@ void VideoCard::mousePressEvent(QMouseEvent* event) {
 
 void VideoCard::changeEvent(QEvent* event) {
     if (event->type() == QEvent::PaletteChange && m_starBtn) {
-        updateStarIcon(SgFavorites::instance()->isFavorited(m_channelUrl));
+        if (SgFavorites* favStore = SgFavorites::forUrl(m_channelUrl))
+            updateStarIcon(favStore->isFavorited(m_channelUrl));
     }
     QWidget::changeEvent(event);
 }

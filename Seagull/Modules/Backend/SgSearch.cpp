@@ -77,6 +77,13 @@ void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit) {
 
     cancel(); // a channel open supersedes any in-flight query
 
+    // PornHub models/channels have no yt-dlp listing; scrape their /videos tab instead
+    // (same tiles as search). YouTube falls through to the yt-dlp path below.
+    if (channelUrl.contains("pornhub.com", Qt::CaseInsensitive)) {
+        fetchPornHubModel(channelUrl.trimmed(), limit);
+        return;
+    }
+
     m_site = Site::YouTube;
     m_mode = Mode::ChannelList;
     m_buffer.clear();
@@ -122,6 +129,12 @@ void SgSearch::cancel() {
         m_phReply->abort();
         m_phReply->deleteLater();
         m_phReply = nullptr;
+    }
+    if (m_phModelReply) {
+        m_phModelReply->disconnect(this);
+        m_phModelReply->abort();
+        m_phModelReply->deleteLater();
+        m_phModelReply = nullptr;
     }
     if (m_cbReply) {
         m_cbReply->disconnect(this);
@@ -601,6 +614,33 @@ qint64 phParseDuration(const QString& s) {
     }
     return parts.isEmpty() ? -1 : secs;
 }
+// Derive a readable display name from a PornHub model URL's slug, e.g.
+// ".../model/aria-skye/videos" -> "Aria Skye". Used as a fallback channel-header
+// name when the page name can't be scraped.
+QString phNameFromUrl(const QString& url) {
+    QString u = url;
+    while (u.endsWith('/')) u.chop(1);
+    if (u.endsWith("/videos")) { u.chop(7); while (u.endsWith('/')) u.chop(1); }
+    QString slug = u.section('/', -1);
+    const int q = slug.indexOf('?'); if (q >= 0) slug = slug.left(q);
+    slug.replace('-', ' ').replace('_', ' ');
+    QStringList words = slug.split(' ', Qt::SkipEmptyParts);
+    for (QString& w : words) w[0] = w[0].toUpper();
+    return words.join(' ');
+}
+// Best-effort model display name from the page's first <h1>. Empty if not found
+// or implausibly long (so the caller can fall back to the slug-derived name).
+QString phModelName(const QString& html) {
+    static const QRegularExpression h1Re(QStringLiteral("<h1[^>]*>(.*?)</h1>"),
+                                         QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression tagRe(QStringLiteral("<[^>]*>"));
+    const auto m = h1Re.match(html);
+    if (!m.hasMatch()) return QString();
+    QString name = m.captured(1);
+    name.remove(tagRe);
+    name = phUnescape(name).simplified();
+    return name.size() > 60 ? QString() : name;
+}
 }
 
 void SgSearch::startPornHubSearch(const QString& query, int limit) {
@@ -688,6 +728,16 @@ QList<SearchResult> SgSearch::parsePornHubHtml(const QString& html) const {
     static const QRegularExpression thumbAlt(QStringLiteral("data-image=\"([^\"]+)\""));
     static const QRegularExpression durRe  (QStringLiteral("<var class=\"duration\">([^<]+)</var>"));
     static const QRegularExpression viewsRe(QStringLiteral("class=\"views\">\\s*<var>([^<]+)</var>"));
+    // Uploader/channel: the tile's usernameWrap block holds an <a> to the model/
+    // channel/user page; we want its visible name (the anchor may also wrap a
+    // verified badge, so strip any inner tags) and its href (the model page URL).
+    // DotMatchesEverything spans newlines.
+    static const QRegularExpression userRe(
+        QStringLiteral("usernameWrap[^>]*>\\s*<a\\b[^>]*>(.*?)</a>"),
+        QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression userHrefRe(
+        QStringLiteral("usernameWrap[^>]*>\\s*<a\\b[^>]*href=\"([^\"]+)\""));
+    static const QRegularExpression tagRe(QStringLiteral("<[^>]*>"));
 
     struct Hit { QString vkey; qsizetype pos; };
     QList<Hit> hits;
@@ -733,9 +783,68 @@ QList<SearchResult> SgSearch::parsePornHubHtml(const QString& html) const {
         if (const auto mv = viewsRe.match(chunk); mv.hasMatch())
             r.viewCount = phParseCount(mv.captured(1));
 
+        // Uploader/model name (strip inner badge tags, unescape, collapse space) and
+        // the model page URL, so the card shows a clickable, favouritable uploader.
+        if (const auto mu = userRe.match(chunk); mu.hasMatch()) {
+            QString name = mu.captured(1);
+            name.remove(tagRe);
+            name = phUnescape(name).simplified();
+            if (!name.isEmpty()) r.channel = name;
+        }
+        if (const auto mh = userHrefRe.match(chunk); mh.hasMatch()) {
+            QString href = phUnescape(mh.captured(1)).trimmed();
+            if (href.startsWith('/')) href = "https://www.pornhub.com" + href;
+            if (href.startsWith("http")) r.channelUrl = href;
+        }
+
         out.append(r);
     }
     return out;
+}
+
+void SgSearch::fetchPornHubModel(const QString& modelUrl, int /*limit*/) {
+    if (!m_nam) m_nam = new QNetworkAccessManager(this);
+    m_site = Site::PornHub;
+    m_phModelUrl  = modelUrl;
+    m_phModelName = phNameFromUrl(modelUrl); // slug fallback; page name preferred below
+
+    // Target the model/channel's uploads tab, like the YouTube path appends /videos.
+    QString url = modelUrl;
+    while (url.endsWith('/')) url.chop(1);
+    if (!url.endsWith("/videos")) url += "/videos";
+
+    QNetworkRequest req((QUrl(url)));
+    req.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    req.setRawHeader("Cookie", "age_verified=1; platform=pc; accessAgeDisclaimerPH=1; accessPH=1");
+    req.setRawHeader("Accept-Language", "en-US,en;q=0.9");
+
+    emit logMessage("Opening PornHub model: " + url);
+    m_phModelReply = m_nam->get(req);
+    connect(m_phModelReply, &QNetworkReply::finished, this, &SgSearch::handlePornHubModelReply);
+}
+
+void SgSearch::handlePornHubModelReply() {
+    QNetworkReply* reply = m_phModelReply;
+    m_phModelReply = nullptr;
+    reply->deleteLater();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        emit failed("PornHub model page failed: " + reply->errorString());
+        return;
+    }
+
+    const QString html = QString::fromUtf8(reply->readAll());
+    const QList<SearchResult> videos = parsePornHubHtml(html); // same tiles as search
+
+    SearchResult info;
+    info.isChannel  = true;
+    info.channelUrl = m_phModelUrl;
+    const QString scraped = phModelName(html);
+    info.channel = !scraped.isEmpty() ? scraped : m_phModelName;
+    info.title   = info.channel;
+
+    emit logMessage(QString("PornHub model: %1 video(s).").arg(videos.size()));
+    emit channelVideosReady(info, videos);
 }
 
 // ---------------------------------------------------------------------------
