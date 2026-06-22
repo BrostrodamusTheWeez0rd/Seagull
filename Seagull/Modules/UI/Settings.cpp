@@ -105,14 +105,15 @@ void Settings::setupUI() {
     generalLayout->addRow("", checkUpdatesBtn);
     connect(checkUpdatesBtn, &QPushButton::clicked, this, &Settings::checkForUpdatesRequested);
 
-    defenderExclusionBtn = new QPushButton("Speed Up Startup");
+    defenderExclusionBtn = new QPushButton("Add Exclusion");
     defenderExclusionBtn->setToolTip("Add Seagull to Windows Defender's exclusion list so it "
         "stops rescanning the app's files on every launch. This is the main cause of a slow "
-        "first start after a restart. Windows will ask for permission.");
-    generalLayout->addRow("Startup:", defenderExclusionBtn);
-    connect(defenderExclusionBtn, &QPushButton::clicked, this, []() {
-        SgMediaControls::addDefenderExclusion();
-    });
+        "first start after a restart. Windows will ask for permission. If the exclusion is "
+        "already set, this button removes it instead.");
+    generalLayout->addRow("Defender:", defenderExclusionBtn);
+    connect(defenderExclusionBtn, &QPushButton::clicked, this, &Settings::onDefenderExclusionClicked);
+    // The label's Add/Remove state is resolved lazily in showEvent (the query is slow
+    // to start, so we keep it off the cold-start path).
 
     stackedWidget->addWidget(generalWidget);
 
@@ -704,9 +705,44 @@ void Settings::saveHomeChannels() {
     iniSettings->sync();
 }
 
+void Settings::onDefenderExclusionClicked() {
+    // Toggle: remove the exclusion if it's set, otherwise add it. Both raise UAC and
+    // block briefly while the elevated step runs; the returned bool is the real result
+    // (the user may have declined), so we re-query afterwards rather than assuming.
+    defenderExclusionBtn->setEnabled(false);
+    if (defenderExcluded) SgMediaControls::removeDefenderExclusion();
+    else                  SgMediaControls::addDefenderExclusion();
+    refreshDefenderButton();
+}
+
+void Settings::refreshDefenderButton() {
+    // Query Defender's exclusion list off the GUI thread (Get-MpPreference is slow to
+    // start), then flip the button between "Add Exclusion" and "Remove Exclusion".
+    defenderExclusionBtn->setEnabled(false);
+    defenderExclusionBtn->setText("Checking...");
+
+    auto* ps = new QProcess(this);
+    connect(ps, &QProcess::finished, this,
+        [this, ps](int, QProcess::ExitStatus) {
+            defenderExcluded = ps->readAllStandardOutput().trimmed() == "YES";
+            defenderExclusionBtn->setText(defenderExcluded ? "Remove Exclusion" : "Add Exclusion");
+            defenderExclusionBtn->setEnabled(true);
+            ps->deleteLater();
+        });
+    connect(ps, &QProcess::errorOccurred, this, [this, ps](QProcess::ProcessError) {
+        // Couldn't read state — leave a usable default (Add) rather than a stuck label.
+        defenderExclusionBtn->setText("Add Exclusion");
+        defenderExclusionBtn->setEnabled(true);
+        ps->deleteLater();
+    });
+    ps->start("powershell.exe", { "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+                                  SgMediaControls::defenderExclusionQueryCommand() });
+}
+
 void Settings::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
-    rebuildHomeChannels(); // favourites may have changed since the page was built
+    rebuildHomeChannels();   // favourites may have changed since the page was built
+    refreshDefenderButton(); // re-check in case the exclusion changed outside the app
 }
 
 void Settings::loadSettings() {

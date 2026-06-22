@@ -136,18 +136,59 @@ void SgMediaControls::createStartMenuShortcut() {
     writeShortcut(QDir::toNativeSeparators(lnk), exe, dir);
 }
 
-void SgMediaControls::addDefenderExclusion() {
-    // Escape any single quote so it can't break out of the PowerShell string literal.
+namespace {
+// This app's install folder, with any single quote escaped so it can't break out
+// of a PowerShell single-quoted string literal.
+QString defenderExclusionDir() {
     QString dir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
     dir.replace(QLatin1Char('\''), QLatin1String("''"));
+    return dir;
+}
 
-    // Elevate (UAC) and add the folder exclusion in a hidden PowerShell. "runas"
-    // shows the consent prompt; declining or any failure just leaves Defender as-is.
+// Run a one-line Defender PowerShell command elevated (UAC). "runas" shows the
+// consent prompt; we wait for the hidden PowerShell to exit so the caller can
+// trust the result. Returns true only if it launched and exited cleanly (0) —
+// declining UAC or any failure returns false and leaves Defender unchanged.
+bool runDefenderCommandElevated(const QString& innerCommand) {
     const QString args = QStringLiteral(
-        "-NoProfile -WindowStyle Hidden -Command \"Add-MpPreference -ExclusionPath '%1'\"")
-        .arg(dir);
-    ShellExecuteW(nullptr, L"runas", L"powershell.exe",
-                  reinterpret_cast<LPCWSTR>(args.utf16()), nullptr, SW_HIDE);
+        "-NoProfile -WindowStyle Hidden -Command \"%1\"").arg(innerCommand);
+    const std::wstring wargs = args.toStdWString();
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize       = sizeof(sei);
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS; // keep the handle so we can wait on it
+    sei.lpVerb       = L"runas";
+    sei.lpFile       = L"powershell.exe";
+    sei.lpParameters = wargs.c_str();
+    sei.nShow        = SW_HIDE;
+
+    if (!ShellExecuteExW(&sei) || !sei.hProcess) return false; // declined / failed to launch
+    WaitForSingleObject(sei.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(sei.hProcess, &code);
+    CloseHandle(sei.hProcess);
+    return code == 0;
+}
+} // namespace
+
+bool SgMediaControls::addDefenderExclusion() {
+    return runDefenderCommandElevated(
+        QStringLiteral("Add-MpPreference -ExclusionPath '%1'").arg(defenderExclusionDir()));
+}
+
+bool SgMediaControls::removeDefenderExclusion() {
+    return runDefenderCommandElevated(
+        QStringLiteral("Remove-MpPreference -ExclusionPath '%1'").arg(defenderExclusionDir()));
+}
+
+QString SgMediaControls::defenderExclusionQueryCommand() {
+    // No elevation needed to read the exclusion list. -contains is case-insensitive,
+    // and we added the path exactly as defenderExclusionDir() produces it, so a plain
+    // membership test matches. Prints YES / NO on stdout.
+    return QStringLiteral(
+        "$d='%1'; $e=(Get-MpPreference).ExclusionPath; "
+        "if ($e -and ($e -contains $d)) { 'YES' } else { 'NO' }")
+        .arg(defenderExclusionDir());
 }
 
 SgMediaControls::SgMediaControls(QObject* parent) : QObject(parent), d(new Impl) {}

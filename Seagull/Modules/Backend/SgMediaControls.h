@@ -38,8 +38,20 @@ public:
     // rescans Seagull's many DLLs and VLC plugins on a cold launch (after a reboot or
     // long idle), which is the main cause of the slow-then-fast first start; excluding
     // the folder skips that rescan. Adding an exclusion needs admin, so this raises a
-    // UAC prompt; if the user declines, nothing changes. Best-effort; failures silent.
-    static void addDefenderExclusion();
+    // UAC prompt; if the user declines, nothing changes. Waits for the elevated step
+    // to finish and returns true if the exclusion was applied. Best-effort.
+    static bool addDefenderExclusion();
+
+    // Remove this app's install folder from the Defender exclusion list (the inverse
+    // of addDefenderExclusion). Also needs admin -> UAC prompt; returns true if the
+    // exclusion was actually removed.
+    static bool removeDefenderExclusion();
+
+    // The PowerShell one-liner that prints "YES" / "NO" depending on whether this
+    // app's install folder is in Defender's exclusion list. Reading needs no
+    // elevation; callers run it (e.g. via QProcess) off the GUI thread since
+    // Get-MpPreference can take a second or two. Pass as the argument to -Command.
+    static QString defenderExclusionQueryCommand();
 
     bool isAvailable() const;        // SMTC bound OK?
     void attachToWindow(void* hwnd); // bind to the app's top-level HWND (once)

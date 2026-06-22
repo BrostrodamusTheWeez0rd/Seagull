@@ -57,6 +57,8 @@ private:
     void applySmartSortState(); // smart sort toggle -> show/hide the Downloads Folder row
     void rebuildHomeChannels(); // repopulate the home-feed picker + toggle its visibility
     void saveHomeChannels();    // persist the checked channels to Search/HomeChannels
+    void onDefenderExclusionClicked(); // toggle the Defender exclusion (elevated), then refresh
+    void refreshDefenderButton();      // query Defender state -> set Add/Remove Exclusion label
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
@@ -74,7 +76,8 @@ private:
     // General Tab elements
     QCheckBox* autoUpdateCheck;  // install tool updates silently vs ask first
     QPushButton* checkUpdatesBtn; // General "Check Now" -> manual app update check
-    QPushButton* defenderExclusionBtn; // add app folder to Defender exclusions (faster cold start)
+    QPushButton* defenderExclusionBtn; // add/remove app folder in Defender exclusions (faster cold start)
+    bool defenderExcluded = false;     // last known state, drives the button's Add/Remove label
 
     // Display Tab elements
     QButtonGroup* appearanceGroup; // Light | Dark — filters the theme list
