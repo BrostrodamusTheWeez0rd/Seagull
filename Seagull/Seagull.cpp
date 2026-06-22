@@ -737,6 +737,29 @@ bool Seagull::run() {
     videoPlayer->rebindOutputWindow(); // bind VLC now the render HWND exists
     mediaControls->attachToWindow(reinterpret_cast<void*>(mainWindow->winId()));
 
+    // One-time Defender-exclusion offer for users updating from a build that predates
+    // the first-run checkbox. Asked once, ever (the flag stops it riding along on every
+    // future update). New users already chose it during setup (which sets the same flag),
+    // so this only fires when setup wasn't shown this launch. Settings > General is the
+    // anytime path. Declining still sets the flag — we don't nag; they can opt in later.
+    if (!firstRunTools && !cfg.value("Setup/DefenderExclusionOffered", false).toBool()) {
+        QMessageBox box(mainWindow);
+        box.setWindowTitle("Speed Up Seagull's Startup");
+        box.setIcon(QMessageBox::Question);
+        box.setText("Add Seagull to Windows Defender's exclusion list?");
+        box.setInformativeText(
+            "Windows Defender rescans Seagull's files when you launch it after a restart, "
+            "which can make the first start slow. Excluding the app folder lets Seagull "
+            "start quickly every time. Windows will ask for permission.\n\n"
+            "You can change this anytime from Settings, General.");
+        box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+        box.setDefaultButton(QMessageBox::Yes);
+        if (box.exec() == QMessageBox::Yes)
+            SgMediaControls::addDefenderExclusion();
+        cfg.setValue("Setup/DefenderExclusionOffered", true);
+        cfg.sync();
+    }
+
     for (const QString& kind : cfg.value("Tabs/ExtraTabs").toStringList())
         openDuplicateTab(kind, false /*switchTo*/);
 

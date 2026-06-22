@@ -152,6 +152,9 @@ void SetupDialog::onGetStarted() {
     cfg.setValue("Paths/RecordingFolder", recEdit->text());
     cfg.setValue("Paths/PlaylistFolder", playlistEdit->text());
     cfg.setValue("Setup/Completed", true);
+    // The Defender choice was offered here (the checkbox below), so the one-time
+    // post-update prompt in Seagull::run() should never fire for a fresh install.
+    cfg.setValue("Setup/DefenderExclusionOffered", true);
     cfg.sync();
 
     // The Windows folders already exist, but the defaults that live in a

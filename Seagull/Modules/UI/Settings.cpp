@@ -3,6 +3,7 @@
 #include "Widgets/PlayerControls.h" // widthForSize: Progress bar size -> px
 #include "../Backend/SgPaths.h"
 #include "../Backend/SgFavorites.h" // home-feed channel picker source
+#include "../Backend/SgMediaControls.h" // addDefenderExclusion (startup speed-up)
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -103,6 +104,15 @@ void Settings::setupUI() {
     checkUpdatesBtn->setToolTip("Check now for a newer version of Seagull.");
     generalLayout->addRow("", checkUpdatesBtn);
     connect(checkUpdatesBtn, &QPushButton::clicked, this, &Settings::checkForUpdatesRequested);
+
+    defenderExclusionBtn = new QPushButton("Speed Up Startup");
+    defenderExclusionBtn->setToolTip("Add Seagull to Windows Defender's exclusion list so it "
+        "stops rescanning the app's files on every launch. This is the main cause of a slow "
+        "first start after a restart. Windows will ask for permission.");
+    generalLayout->addRow("Startup:", defenderExclusionBtn);
+    connect(defenderExclusionBtn, &QPushButton::clicked, this, []() {
+        SgMediaControls::addDefenderExclusion();
+    });
 
     stackedWidget->addWidget(generalWidget);
 

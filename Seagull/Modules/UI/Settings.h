@@ -74,6 +74,7 @@ private:
     // General Tab elements
     QCheckBox* autoUpdateCheck;  // install tool updates silently vs ask first
     QPushButton* checkUpdatesBtn; // General "Check Now" -> manual app update check
+    QPushButton* defenderExclusionBtn; // add app folder to Defender exclusions (faster cold start)
 
     // Display Tab elements
     QButtonGroup* appearanceGroup; // Light | Dark — filters the theme list
