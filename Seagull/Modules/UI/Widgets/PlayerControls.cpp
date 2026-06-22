@@ -30,8 +30,6 @@
 namespace {
 // ClickSlider (jump-to-click) now lives in Widgets/ClickSlider.h, shared with the EQ tab.
 
-constexpr int kBaseWidth = 500; // control bar width with the cycle triangles collapsed
-
 // MDI6 volume glyph for the current mute state.
 QString volumeIconPath(bool muted) {
     return muted ? QStringLiteral(":/Assets/icons/volume-off.svg")
@@ -43,18 +41,18 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     : QWidget(parent), m_engine(engine), m_duration(0), isUserSeeking(false),
     m_settings(SgPaths::configFile(), QSettings::IniFormat) {
 
-    auto* windowLayout = new QVBoxLayout(this);
-    windowLayout->setContentsMargins(0, 0, 0, 0);
-
     // Icon tints come from the themed palette (see makeIcon/refreshIconTints).
     // Idle = overlay foreground (BrightText: white on dark themes, dark on light);
     // hover = the inverse window colour so the glyph reads against the fill.
     m_iconIdle  = palette().color(QPalette::BrightText);
     m_iconHover = palette().color(QPalette::Window);
 
-    auto* pillFrame = new QFrame(this);
-    pillFrame->setObjectName("PillFrame"); // styled by Theme::apply's global sheet
-    windowLayout->addWidget(pillFrame);
+    // The pill is NOT in a fill layout — it's positioned manually inside the window
+    // (see layoutBar) so seek growth can slide/stretch it without resizing the
+    // translucent top-level window every frame.
+    m_pillFrame = new QFrame(this);
+    m_pillFrame->setObjectName("PillFrame"); // styled by Theme::apply's global sheet
+    QFrame* pillFrame = m_pillFrame;         // local alias for the setup below
 
     auto* mainLayout = new QHBoxLayout(pillFrame);
     mainLayout->setContentsMargins(20, 5, 20, 5);
@@ -67,6 +65,19 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     positionSlider = new ClickSlider(Qt::Horizontal);
     positionSlider->setObjectName("playerSeekSlider"); // styled by Theme::apply
     positionSlider->setCursor(Qt::PointingHandCursor);
+    positionSlider->installEventFilter(this); // hover grows the bar (see eventFilter)
+    positionSlider->setMouseTracking(true);   // deliver hover moves for the time tooltip
+
+    // Time tooltip — a translucent top-level container (same idiom as the volume /
+    // quality popups) wrapping the styled pill label, so the corners stay clean over
+    // the video. A bare translucent QLabel won't paint its stylesheet background.
+    seekTooltip = new QFrame(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
+    seekTooltip->setAttribute(Qt::WA_TranslucentBackground);
+    seekTooltip->setAttribute(Qt::WA_ShowWithoutActivating);
+    seekTooltipText = new QLabel(seekTooltip);
+    seekTooltipText->setObjectName("seekTooltip"); // styled by Theme::apply
+    seekTooltipText->setAlignment(Qt::AlignCenter);
+    seekTooltip->hide();
 
     prevBtn = new QPushButton();
     playPauseBtn = new QPushButton();
@@ -108,15 +119,9 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
         nextVizBtn->setFixedWidth(w);
         if (m_prevVizFx) m_prevVizFx->setOpacity(o);
         if (m_nextVizFx) m_nextVizFx->setOpacity(o);
-        // Grow the bar SYMMETRICALLY about its centre: widen by both triangles and
-        // shift left by half the growth, so it stretches equally on each side. The
-        // visualizer button stays put, fullscreen rides right, left controls slide
-        // left — no external re-centre needed.
-        const int newW = kBaseWidth + 2 * w;
-        if (newW != width()) {
-            setFixedWidth(newW);
-            move(m_barCenterX - newW / 2, y()); // absolute centre -> no drift, no jitter
-        }
+        // Viz growth widens the bar symmetrically about its centre (see layoutBar).
+        m_vizExtra = w; // each side adds a triangle of this width
+        layoutBar();
     });
     connect(m_vizFade, &QVariantAnimation::finished, this, [this]() {
         if (m_prevVizFx && m_prevVizFx->opacity() <= 0.01) { // fully collapsed -> drop the space
@@ -169,7 +174,13 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
     mainLayout->addWidget(nextVizBtn);
     mainLayout->addWidget(fullscreenBtn);
 
-    setFixedSize(kBaseWidth, 50);
+    // Height fixed; width driven explicitly (m_baseWidth / layoutBar). The pill fills
+    // the window; setBaseWidth re-sizes it for the chosen Progress bar size.
+    setFixedHeight(50);
+    setMinimumWidth(m_baseWidth);
+    setMaximumWidth(QWIDGETSIZE_MAX);
+    resize(m_baseWidth, 50);
+    m_pillFrame->setGeometry(0, 0, m_baseWidth, 50);
 
     // --- Volume popup ---
     volumeFrame = new QFrame();
@@ -261,14 +272,24 @@ PlayerControls::PlayerControls(PlaybackEngine* engine, QWidget* parent)
 
     connect(positionSlider, &QSlider::sliderPressed, this, [this]() {
         isUserSeeking = true;
+        // Pause while scrubbing (resume on release) so the engine isn't fighting
+        // our setTime calls — keeps the timestamp/handle from drifting.
+        if (m_engine && m_engine->isPlaying() && !m_endedMode) {
+            m_resumeAfterSeek = true;
+            m_engine->pause();
+        }
         seek(positionSlider->value()); // jump to a clicked position immediately
+        showSeekTooltipAtHandle(positionSlider->value());
         });
     connect(positionSlider, &QSlider::sliderMoved, this, [this](int value) {
         seek(value); // live scrub while dragging
+        showSeekTooltipAtHandle(value); // pill tracks the handle
         });
     connect(positionSlider, &QSlider::sliderReleased, this, [this]() {
         isUserSeeking = false;
         seek(positionSlider->value());
+        if (m_resumeAfterSeek) { m_resumeAfterSeek = false; if (m_engine) m_engine->play(); }
+        if (seekTooltip) seekTooltip->hide();
         });
     connect(volumeSlider, &QSlider::valueChanged, this, &PlayerControls::setVolume);
 
@@ -345,6 +366,7 @@ void PlayerControls::setVisualizerMode(bool on) {
         prevVizBtn->setFixedWidth(0); nextVizBtn->setFixedWidth(0);
         m_prevVizFx->setOpacity(0.0);  m_nextVizFx->setOpacity(0.0);
         prevVizBtn->setVisible(false); nextVizBtn->setVisible(false);
+        m_vizExtra = 0; layoutBar(); // collapse the triangles' width contribution
     }
 }
 
@@ -356,6 +378,71 @@ void PlayerControls::setVisualizerActive(bool on) {
     } else {
         fadeVizTriangles(false);
     }
+}
+
+void PlayerControls::layoutBar() {
+    // Window == pill. Viz triangles widen it symmetrically about the locked home so
+    // revealing them doesn't drift the controls off-centre.
+    const int pillW = m_baseWidth + 2 * m_vizExtra;
+    if (width() != pillW)
+        setGeometry(m_barCenterX - pillW / 2, y(), pillW, height());
+    m_pillFrame->setGeometry(0, 0, pillW, height());
+}
+
+int PlayerControls::widthForSize(const QString& size) {
+    // Small == the original 500px bar; larger sizes hand the seeker more pixels.
+    if (size == QStringLiteral("Large"))  return 860;
+    if (size == QStringLiteral("Medium")) return 680;
+    return 500; // "Small" / default
+}
+
+void PlayerControls::setBaseWidth(int width) {
+    // The Progress bar size setting (Settings -> Display) maps to a control pill width;
+    // a wider pill gives the seeker more pixels (finer scrubbing). The parent re-centres
+    // the bar over the video (VideoPlayer::repositionOverlays) right after this.
+    if (width <= 0 || width == m_baseWidth) return;
+    m_baseWidth = width;
+    const int pillW = m_baseWidth + 2 * m_vizExtra;
+    setMinimumWidth(m_baseWidth);
+    resize(pillW, height());
+    m_pillFrame->setGeometry(0, 0, pillW, height());
+}
+
+void PlayerControls::moveSeekTooltip(int sliderX, qint64 valueMs) {
+    if (!seekTooltip || !seekTooltipText) return;
+    // On a live stream the right end is the live edge — you can't scrub past it, so
+    // sitting at (or within ~1.5s of) it reads as LIVE rather than a DVR offset.
+    const bool atLiveEdge = m_isLive && (positionSlider->maximum() - valueMs) <= 1500;
+    seekTooltipText->setText(atLiveEdge ? QStringLiteral("● LIVE") : formatTime(valueMs));
+    seekTooltipText->adjustSize();
+    seekTooltip->resize(seekTooltipText->size());   // container hugs the styled pill
+    seekTooltipText->move(0, 0);
+    // sliderX is in the seeker's coordinate space; sit the pill just above the bar,
+    // centred on that x. mapToGlobal keeps it correct docked or popped out.
+    const QPoint g = positionSlider->mapToGlobal(QPoint(sliderX, 0));
+    seekTooltip->move(g.x() - seekTooltip->width() / 2, g.y() - seekTooltip->height() - 8);
+    if (!seekTooltip->isVisible()) seekTooltip->show();
+    seekTooltip->raise();
+}
+
+void PlayerControls::showSeekTooltipAtCursor(int cursorX) {
+    // Hover: show the time a click here would seek to, centred on the cursor.
+    if (!positionSlider || positionSlider->maximum() <= positionSlider->minimum()) return;
+    const int span = positionSlider->width();
+    const int x = qBound(0, cursorX, span);
+    const int v = QStyle::sliderValueFromPosition(
+        positionSlider->minimum(), positionSlider->maximum(), x, span, false);
+    moveSeekTooltip(x, v);
+}
+
+void PlayerControls::showSeekTooltipAtHandle(int value) {
+    // Drag: lock the pill to the handle centre (QSS handle width = 12px -> 6px half).
+    if (!positionSlider || positionSlider->maximum() <= positionSlider->minimum()) return;
+    const int hw = 6;
+    const int travel = positionSlider->width() - 2 * hw;
+    const double t = double(value - positionSlider->minimum()) /
+                     double(positionSlider->maximum() - positionSlider->minimum());
+    moveSeekTooltip(hw + qRound(t * travel), value);
 }
 
 void PlayerControls::fadeVizTriangles(bool in) {
@@ -461,6 +548,7 @@ void PlayerControls::closePopups() {
 void PlayerControls::hideEvent(QHideEvent* event) {
     if (volumeFrame)  volumeFrame->hide();
     if (qualityFrame) qualityFrame->hide();
+    if (seekTooltip)  seekTooltip->hide();
     QWidget::hideEvent(event);
 }
 
@@ -566,6 +654,15 @@ bool PlayerControls::eventFilter(QObject* watched, QEvent* event) {
             return true;
         }
         if (event->type() == QEvent::MouseButtonRelease) return true;
+    }
+
+    if (watched == positionSlider) {
+        if (event->type() == QEvent::Leave && !isUserSeeking) {
+            if (seekTooltip) seekTooltip->hide();
+        }
+        else if (event->type() == QEvent::MouseMove && !isUserSeeking) {
+            showSeekTooltipAtCursor(static_cast<QMouseEvent*>(event)->pos().x());
+        }
     }
 
     QPushButton* btn = qobject_cast<QPushButton*>(watched);

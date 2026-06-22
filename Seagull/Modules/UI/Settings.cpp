@@ -1,5 +1,6 @@
 #include "Settings.h"
 #include "Theme.h"
+#include "Widgets/PlayerControls.h" // widthForSize: Progress bar size -> px
 #include "../Backend/SgPaths.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -109,8 +110,28 @@ void Settings::setupUI() {
     auto* displayLayout = new QFormLayout(displayWidget);
     displayLayout->setContentsMargins(20, 20, 20, 20);
 
+    // Appearance toggle (Light | Dark): filters the Theme list below to just the
+    // themes of that kind, so the menu isn't a mixed bag.
+    lightModeBtn = new QPushButton("Light");
+    darkModeBtn  = new QPushButton("Dark");
+    QString appearanceStyle =
+        "QPushButton { padding: 6px 18px; }"
+        "QPushButton:checked { background-color: palette(highlight); color: palette(highlighted-text); }";
+    for (auto* b : { lightModeBtn, darkModeBtn }) { b->setCheckable(true); b->setStyleSheet(appearanceStyle); }
+    appearanceGroup = new QButtonGroup(this);
+    appearanceGroup->setExclusive(true);
+    appearanceGroup->addButton(lightModeBtn);
+    appearanceGroup->addButton(darkModeBtn);
+    auto* appearanceRow = new QHBoxLayout();
+    appearanceRow->setContentsMargins(0, 0, 0, 0);
+    appearanceRow->addWidget(lightModeBtn);
+    appearanceRow->addWidget(darkModeBtn);
+    appearanceRow->addStretch();
+    displayLayout->addRow("Appearance:", appearanceRow);
+
     themeCombo = new QComboBox();
-    themeCombo->addItems(Theme::names());
+    themeCombo->setToolTip("Colour theme. The Appearance toggle above filters this to "
+        "light or dark themes.");
     displayLayout->addRow("Theme:", themeCombo);
 
     cardSizeCombo = new QComboBox();
@@ -129,6 +150,14 @@ void Settings::setupUI() {
     cardSizeSlider->setTickPosition(QSlider::TicksBelow);
     cardSizeSlider->hide();
     displayLayout->addRow("", cardSizeSlider);
+
+    // Player seek bar width: a static size (no dynamic growth). Larger hands the
+    // seeker more pixels for finer scrubbing; the player re-centres it over the video.
+    seekBarSizeCombo = new QComboBox();
+    seekBarSizeCombo->addItems({ "Small", "Medium", "Large" });
+    seekBarSizeCombo->setToolTip("Width of the player's seek bar. Larger gives finer "
+        "scrubbing control.");
+    displayLayout->addRow("Progress bar size:", seekBarSizeCombo);
 
     // Visualizer picker + its per-visualizer settings, swapped underneath it.
     visualizerCombo = new QComboBox();
@@ -254,7 +283,7 @@ void Settings::setupUI() {
     unifiedFolderRow = makeFolderRow(unifiedFolderEdit, "Select Media Folder",
         "The single folder all media is saved to.");
 
-    auto* dlFolderRow = makeFolderRow(dlFolderEdit, "Select Downloads Folder",
+    dlFolderRow = makeFolderRow(dlFolderEdit, "Select Downloads Folder",
         "Where downloaded files are saved. Independent of the media folders.");
     auto* homeRow = makeFolderRow(homeFolderEdit, "Select Home Folder",
         "Where the File Explorer opens on startup.");
@@ -270,6 +299,15 @@ void Settings::setupUI() {
         "Where queue playlists (.sgpl) are saved.");
     typedFolderRows = { videoFolderRow, audioFolderRow, photoFolderRow, recFolderRow, playlistFolderRow };
 
+    // Smart sort: on (default) routes each download into its media-type folder; off
+    // reveals the single Downloads Folder row below it.
+    smartSortCheck = new QCheckBox("Smart sort downloading");
+    smartSortCheck->setToolTip("On: each download is saved into its media type's folder "
+        "(videos to Videos, audio to Audio). Off: everything is saved to the single "
+        "Downloads Folder you choose below.");
+
+    dlForm = dlLayout; // applySmartSortState shows/hides the Downloads Folder row on it
+    dlLayout->addRow("Smart Sort:", smartSortCheck);
     dlLayout->addRow("Downloads Folder:", dlFolderRow);
     dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
@@ -407,9 +445,13 @@ void Settings::setupUI() {
     connect(resetBtn, &QPushButton::clicked, this, &Settings::resetDefaults);
 
     // Auto-apply: every control change writes config and applies immediately.
+    connect(appearanceGroup, &QButtonGroup::buttonClicked, this, [this](QAbstractButton*) {
+        onAppearanceChanged(); // refilter the theme list for the chosen appearance, then save
+        });
     connect(themeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(cardSizeCombo, &QComboBox::currentTextChanged, this, &Settings::onCardSizeChanged);
     connect(cardSizeSlider, &QSlider::valueChanged, this, &Settings::saveSettings);
+    connect(seekBarSizeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(visualizerCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(behaviorCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(maxGullsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
@@ -432,6 +474,10 @@ void Settings::setupUI() {
         connect(edit, &QLineEdit::textChanged, this, &Settings::saveSettings);
     connect(unifyCheck, &QCheckBox::toggled, this, [this](bool) {
         applyUnifyState();
+        saveSettings();
+        });
+    connect(smartSortCheck, &QCheckBox::toggled, this, [this](bool) {
+        applySmartSortState(); // show/hide the Downloads Folder row
         saveSettings();
         });
     connect(autoUpdateCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
@@ -529,6 +575,29 @@ void Settings::onCardSizeChanged() {
     saveSettings();
 }
 
+void Settings::populateThemeCombo(bool dark, const QString& select) {
+    // Fill the Theme menu with just the themes of the chosen appearance, optionally
+    // selecting one. Signals are blocked so refilling never auto-saves mid-build.
+    themeCombo->blockSignals(true);
+    themeCombo->clear();
+    themeCombo->addItems(Theme::names(dark));
+    if (!select.isEmpty()) {
+        const int idx = themeCombo->findText(select);
+        if (idx >= 0) themeCombo->setCurrentIndex(idx);
+    }
+    themeCombo->blockSignals(false);
+}
+
+void Settings::onAppearanceChanged() {
+    const bool dark = darkModeBtn->isChecked();
+    // Keep the current theme if it already matches the new appearance, otherwise the
+    // first of that appearance becomes selected.
+    const QString cur = themeCombo->currentText();
+    const QString keep = (Theme::isKnown(cur) && Theme::isDark(cur) == dark) ? cur : QString();
+    populateThemeCombo(dark, keep);
+    saveSettings(); // themeCombo now holds the right theme -> apply + persist
+}
+
 void Settings::browseInto(QLineEdit* edit, const QString& title) {
     QString dir = QFileDialog::getExistingDirectory(this, title, edit->text());
     if (!dir.isEmpty())
@@ -545,6 +614,12 @@ void Settings::applyUnifyState() {
         foldersForm->setRowVisible(row, !unified);
 }
 
+void Settings::applySmartSortState() {
+    // The single Downloads Folder only matters when smart sort is OFF — otherwise each
+    // download is routed by its media type, so hide the row to avoid implying otherwise.
+    if (dlForm) dlForm->setRowVisible(dlFolderRow, !smartSortCheck->isChecked());
+}
+
 void Settings::loadSettings() {
     // Populate controls without each change auto-saving back to disk.
     m_loading = true;
@@ -552,16 +627,24 @@ void Settings::loadSettings() {
     autoUpdateCheck->setChecked(iniSettings->value("General/AutoUpdate", true).toBool());
     clearHistoryOnCloseCheck->setChecked(iniSettings->value("Search/ClearHistoryOnExit", false).toBool());
 
-    themeCombo->setCurrentText(iniSettings->value("Display/Theme", "Seagull").toString());
+    // Theme: coerce an unknown name (old/legacy config) back to Seagull, derive the
+    // Light/Dark appearance from it, set the toggle, and fill the menu to match.
+    QString savedTheme = iniSettings->value("Display/Theme", "Seagull").toString();
+    if (!Theme::isKnown(savedTheme)) savedTheme = "Seagull";
+    const bool darkTheme = Theme::isDark(savedTheme);
+    (darkTheme ? darkModeBtn : lightModeBtn)->setChecked(true);
+    populateThemeCombo(darkTheme, savedTheme);
 
     // Card size: stored as a pixel width. Match it to a named preset, else Custom.
-    int cardPx = qBound(kCardMinPx, iniSettings->value("Display/CardWidth", 360).toInt(), kCardMaxPx); // default Extra Large
+    int cardPx = qBound(kCardMinPx, iniSettings->value("Display/CardWidth", 300).toInt(), kCardMaxPx); // default Large
     cardSizeSlider->blockSignals(true);
     cardSizeSlider->setValue(cardPx);
     cardSizeSlider->blockSignals(false);
     const QString cardPreset = presetName(cardPx);
     cardSizeCombo->setCurrentText(cardPreset.isEmpty() ? "Custom" : cardPreset);
     cardSizeSlider->setVisible(cardPreset.isEmpty());
+
+    seekBarSizeCombo->setCurrentText(iniSettings->value("Display/SeekBarSize", "Small").toString());
 
     visualizerCombo->setCurrentText(iniSettings->value("Visualizer/Type", "Seagull Sky").toString());
     // Behaviour is global — one key shared by every visualizer.
@@ -614,10 +697,14 @@ void Settings::loadSettings() {
     unifyCheck->setChecked(SgPaths::unifyMedia());
     applyUnifyState();
 
+    smartSortCheck->setChecked(SgPaths::smartSortDownloads());
+    applySmartSortState();
+
     // Seed the "already applied" trackers so the first unrelated save doesn't trigger
     // a redundant theme re-apply / grid re-flow.
     m_appliedTheme = themeCombo->currentText();
     m_appliedCardWidth = currentCardWidth();
+    m_appliedSeekBarWidth = PlayerControls::widthForSize(seekBarSizeCombo->currentText());
 
     m_loading = false;
 }
@@ -630,6 +717,7 @@ void Settings::saveSettings() {
     iniSettings->setValue("Search/ClearHistoryOnExit", clearHistoryOnCloseCheck->isChecked());
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
     iniSettings->setValue("Display/CardWidth", currentCardWidth());
+    iniSettings->setValue("Display/SeekBarSize", seekBarSizeCombo->currentText());
     iniSettings->setValue("Visualizer/Type", visualizerCombo->currentText());
     // Behaviour is global — one key shared by every visualizer.
     iniSettings->setValue("Visualizer/Behavior", behaviorCombo->currentText());
@@ -651,6 +739,7 @@ void Settings::saveSettings() {
     iniSettings->setValue("Paths/RecordingFolder", recFolderEdit->text());
     iniSettings->setValue("Paths/PlaylistFolder", playlistFolderEdit->text());
     iniSettings->setValue("Paths/UnifyMedia", unifyCheck->isChecked());
+    iniSettings->setValue("Paths/SmartSort", smartSortCheck->isChecked());
     iniSettings->setValue("Paths/UnifiedFolder", unifiedFolderEdit->text());
 
     // Force write to disk immediately rather than waiting for OS garbage collection
@@ -670,6 +759,13 @@ void Settings::saveSettings() {
     if (cardPx != m_appliedCardWidth) {
         emit cardWidthChanged(cardPx);
         m_appliedCardWidth = cardPx;
+    }
+
+    // Only re-size the player seek bar when its width actually changed.
+    const int seekBarPx = PlayerControls::widthForSize(seekBarSizeCombo->currentText());
+    if (seekBarPx != m_appliedSeekBarWidth) {
+        emit seekBarSizeChanged(seekBarPx);
+        m_appliedSeekBarWidth = seekBarPx;
     }
 
     // Cheap to re-apply (the player just re-reads a couple of values).
@@ -739,12 +835,14 @@ void Settings::resetDefaults() {
     m_loading = true;
     autoUpdateCheck->setChecked(true);
     clearHistoryOnCloseCheck->setChecked(false);
-    themeCombo->setCurrentText("Seagull");
+    darkModeBtn->setChecked(true);          // Seagull is a dark theme
+    populateThemeCombo(true, "Seagull");
     cardSizeSlider->blockSignals(true);
-    cardSizeSlider->setValue(360);
+    cardSizeSlider->setValue(300);
     cardSizeSlider->blockSignals(false);
-    cardSizeCombo->setCurrentText("Extra Large");
+    cardSizeCombo->setCurrentText("Large");
     cardSizeSlider->hide();
+    seekBarSizeCombo->setCurrentText("Small");
     visualizerCombo->setCurrentText("Seagull Sky");
     behaviorCombo->setCurrentText("Drift");
     iniSettings->setValue("Visualizer/Behavior", "Drift");
@@ -772,6 +870,8 @@ void Settings::resetDefaults() {
     unifyCheck->setChecked(false);
     unifiedFolderEdit->setText(movies);
     applyUnifyState();
+    smartSortCheck->setChecked(true); // smart sort on by default
+    applySmartSortState();
     m_loading = false;
     saveSettings();
 }

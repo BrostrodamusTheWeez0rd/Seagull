@@ -24,6 +24,7 @@ public:
 
 signals:
     void cardWidthChanged(int width); // Display "Card size" -> Search card width (px)
+    void seekBarSizeChanged(int width); // Display "Progress bar size" -> player seek bar width (px)
     void clearHistoryRequested();     // General "Clear History Now" -> Search wipes its history
     void visualizerSettingsChanged(); // Display "Visualizer" -> player re-reads visualizer config
     void checkForUpdatesRequested();  // General "Check Now" -> orchestrator runs the app check
@@ -33,9 +34,11 @@ private slots:
     void loadSettings();
     void resetDefaults();
     void onCardSizeChanged();            // card-size combo -> show/hide slider + save
+    void onAppearanceChanged();          // Light/Dark toggle -> refilter themes + save
 
 private:
     void setupUI();
+    void populateThemeCombo(bool dark, const QString& select = QString()); // fill themes of one appearance
     void updateDownloadFormatOptions();  // repopulate format list from the Download Type toggle
     void updateDownloadQualityOptions(); // repopulate quality list (resolutions vs bitrates)
     void onDownloadTypeChanged();        // type toggle -> refresh formats + qualities + save
@@ -48,6 +51,7 @@ private:
     void applyUnifyState(); // unify toggle -> enable the one row / grey the typed rows
     void onCookiesBrowserChanged(const QString& text); // warn on enable, then save
     void deleteCookieData(); // clear yt-dlp's cached login/session data
+    void applySmartSortState(); // smart sort toggle -> show/hide the Downloads Folder row
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
@@ -56,6 +60,7 @@ private:
     // or re-flow the search grid.
     QString m_appliedTheme;
     int     m_appliedCardWidth = -1;
+    int     m_appliedSeekBarWidth = -1;
 
     // Side tab layout components
     QListWidget* sidebar;
@@ -66,9 +71,13 @@ private:
     QPushButton* checkUpdatesBtn; // General "Check Now" -> manual app update check
 
     // Display Tab elements
+    QButtonGroup* appearanceGroup; // Light | Dark — filters the theme list
+    QPushButton*  lightModeBtn;
+    QPushButton*  darkModeBtn;
     QComboBox* themeCombo;
     QComboBox* cardSizeCombo;   // Small / Medium / Large / Extra Large / Custom
     QSlider*   cardSizeSlider;  // shown only for Custom; spans Small..Extra Large
+    QComboBox* seekBarSizeCombo; // Small / Medium / Large -> player seek bar width
 
     // Visualizer: a picker + a tight form of global visualizer settings below it.
     QComboBox*      visualizerCombo;      // which visualizer: Seagull Sky / Seagull Waves
@@ -77,6 +86,9 @@ private:
     QCheckBox*      killGullsCheck;       // gulls die (spin + fall) at end of song, else live on
 
     // Download & Streaming Tab elements
+    QCheckBox*   smartSortCheck;  // route downloads into per-type folders vs one folder
+    QWidget*     dlFolderRow;     // the Downloads Folder row, hidden while smart sort is on
+    QFormLayout* dlForm = nullptr; // the Download tab form (show/hide the folder row on it)
     QButtonGroup* typeGroup;     // Video | Audio toggle
     QPushButton* typeVideoBtn;
     QPushButton* typeAudioBtn;

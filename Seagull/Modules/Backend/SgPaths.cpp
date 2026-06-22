@@ -46,6 +46,11 @@ QString SgPaths::downloadFolder() {
         QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
 }
 
+bool SgPaths::smartSortDownloads() {
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    return cfg.value("Paths/SmartSort", true).toBool(); // on by default
+}
+
 bool SgPaths::unifyMedia() {
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     return cfg.value("Paths/UnifyMedia", false).toBool();

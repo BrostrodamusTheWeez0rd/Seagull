@@ -50,6 +50,9 @@ public:
     void setPoppedOut(bool popped);      // swap the pop-out button's glyph/tooltip
     void setVisualizerMode(bool on);     // audio: show the visualizer toggle button
     void setVisualizerActive(bool on);   // visualizer on/off — gates the hover-reveal triangles
+    void setBaseWidth(int width);        // set the control pill width (Small/Medium/Large)
+    // Canonical Progress bar size -> pill width (px) map, shared by Settings + VideoPlayer.
+    static int widthForSize(const QString& size);
 
     // Keyboard volume control: nudge the slider by delta (clamped 0..100), which
     // cascades through setVolume to the engine + the saved setting (same path the
@@ -148,8 +151,28 @@ private:
     QGraphicsOpacityEffect* m_prevVizFx = nullptr;
     QGraphicsOpacityEffect* m_nextVizFx = nullptr;
     QVariantAnimation* m_vizFade = nullptr;
-    int m_barCenterX = 0; // locked screen centre, so symmetric growth has no drift
+    int m_barCenterX = 0; // locked screen centre, so symmetric viz growth has no drift
     void fadeVizTriangles(bool in);
+
+    // --- Bar sizing -------------------------------------------------------------
+    // The control pill's width is a static, user-chosen size (Settings -> Display ->
+    // Progress bar size). A wider bar hands its extra pixels to the seeker (the row's
+    // only stretch item) for finer scrubbing. setBaseWidth resizes the pill; the
+    // parent (VideoPlayer::repositionOverlays) re-centres it over the video.
+    QFrame* m_pillFrame = nullptr;       // the visible bar, positioned inside the window
+    int  m_baseWidth = 500;              // control pill width (Small default); set via setBaseWidth
+    int  m_vizExtra = 0;                 // per-triangle width currently contributed (0..22)
+    bool m_resumeAfterSeek = false;      // was playing when the scrubber was grabbed
+    void layoutBar();                    // place the window + pill (rest / viz width) from state
+
+    // Floating "where will this take me" time tag: follows the cursor while hovering
+    // the bar, locks to the handle while dragging. A translucent container frame
+    // wraps the styled label so the pill's corners stay clean over the video.
+    QFrame* seekTooltip = nullptr;
+    QLabel* seekTooltipText = nullptr;
+    void moveSeekTooltip(int sliderX, qint64 valueMs);  // set text + reposition + show
+    void showSeekTooltipAtCursor(int cursorX);          // hover: time under the cursor
+    void showSeekTooltipAtHandle(int value);            // drag: time at the handle
     double m_pulsePhase = 0.0;        // animates the recording pulse
     QTimer* recordPulseTimer = nullptr;
 

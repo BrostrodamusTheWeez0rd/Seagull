@@ -209,6 +209,8 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // per-tab in wireSearchTab (there can be several Search tabs).
     connect(settingsModule, &Settings::cardWidthChanged, libraryModule, &MediaLibrary::setCardWidth);
     connect(settingsModule, &Settings::visualizerSettingsChanged, videoPlayer, &VideoPlayer::applyVisualizerSettings);
+    // Display "Progress bar size" resizes the player's seek bar live.
+    connect(settingsModule, &Settings::seekBarSizeChanged, videoPlayer, &VideoPlayer::setSeekBarSize);
 
     // EQ tab live edits: apply to the player ONLY when the playing media's kind
     // matches the edited content type. Otherwise the EQ tab has already persisted it

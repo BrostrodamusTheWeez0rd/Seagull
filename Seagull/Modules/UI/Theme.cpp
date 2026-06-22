@@ -116,6 +116,25 @@ QStringList Theme::names() {
     };
 }
 
+bool Theme::isDark(const QString& name) {
+    // Classify by the window colour's perceived luminance, so new themes sort
+    // themselves into Light/Dark without a hand-maintained list.
+    const QColor w = colorsFor(name).window;
+    const double lum = (0.299 * w.red() + 0.587 * w.green() + 0.114 * w.blue()) / 255.0;
+    return lum < 0.5;
+}
+
+QStringList Theme::names(bool dark) {
+    QStringList out;
+    for (const QString& n : names())
+        if (isDark(n) == dark) out << n;
+    return out;
+}
+
+bool Theme::isKnown(const QString& name) {
+    return names().contains(name);
+}
+
 static QPalette buildPalette(const Theme::Colors& c) {
     QPalette p;
     p.setColor(QPalette::Window,          c.window);
@@ -233,6 +252,8 @@ void Theme::apply(const QString& name) {
         "QSlider#playerSeekSlider::groove:horizontal { border:none; height:6px; background:%4; border-radius:3px; }"
         "QSlider#playerSeekSlider::sub-page:horizontal { background:%6; border-radius:3px; }"
         "QSlider#playerSeekSlider::handle:horizontal { background:%6; width:12px; margin:-3px 0; border-radius:6px; border:none; }"
+        // seeker time tooltip (follows the cursor on hover / the handle while dragging)
+        "QLabel#seekTooltip { background-color:%4; color:%2; border:1px solid %6; border-radius:8px; padding:2px 8px; font-size:11px; font-weight:600; }"
         // volume popup
         "QFrame#volumePopup { background:%1; border-radius:20px; border:1px solid %6; }"
         "QSlider#volumeSlider { background:transparent; border:none; }"

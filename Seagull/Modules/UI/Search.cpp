@@ -184,7 +184,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     resultsArea->viewport()->setBackgroundRole(QPalette::Window);
 
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    m_targetWidth = qBound(120, cfg.value("Display/CardWidth", 360).toInt(), 480); // default Extra Large
+    m_targetWidth = qBound(120, cfg.value("Display/CardWidth", 300).toInt(), 480); // default Large
     m_cardWidth = m_targetWidth;
 
     resultsHost = new QWidget();

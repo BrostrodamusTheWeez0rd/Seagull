@@ -104,6 +104,15 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     playerControls = new PlayerControls(engine, this);
     playerControls->setWindowFlags(overlayFlags);
     playerControls->setAttribute(Qt::WA_TranslucentBackground);
+    // Start at the saved Progress bar size (Settings -> Display). Stored as a target;
+    // applySeekBarWidth (here + on every reposition) clamps it to the video frame so
+    // the bar never overhangs. Live changes arrive via setSeekBarSize.
+    {
+        QSettings s(SgPaths::configFile(), QSettings::IniFormat);
+        m_seekBarTargetWidth = PlayerControls::widthForSize(
+            s.value("Display/SeekBarSize", "Small").toString());
+        applySeekBarWidth();
+    }
 
     titleBar = new PlayerTitleBar(this);
     titleBar->setWindowFlags(overlayFlags);
@@ -780,6 +789,7 @@ void VideoPlayer::repositionOverlays() {
         visualizer->setGeometry(globalPos.x(), globalPos.y(), videoWidget->width(), videoWidget->height());
     if (titleBar) { titleBar->setFixedWidth(videoWidget->width()); titleBar->move(globalPos.x(), globalPos.y() + 5); }
     if (playerControls && playerControls->isVisible()) {
+        applySeekBarWidth(); // re-clamp the bar to the current video width — never overhang
         int controlX = globalPos.x() + (videoWidget->width() - playerControls->width()) / 2;
         int controlY = globalPos.y() + videoWidget->height() - playerControls->height() - 5;
         // The chevron slides in underneath; nudge the controls up to clear it.
@@ -1258,8 +1268,9 @@ void VideoPlayer::applyKindChrome() {
     }
     if (m_kind == MediaKind::Audio) {
         // Restore the persisted on/off choice (survives track changes + restarts).
+        // Defaults ON: the audio player leads with the seagull visualizer.
         QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-        m_visualizerActive = cfg.value("Visualizer/Active", false).toBool();
+        m_visualizerActive = cfg.value("Visualizer/Active", true).toBool();
         if (playerControls) playerControls->setVisualizerActive(m_visualizerActive);
         if (m_visualizerActive && visualizer) {
             hidePosterOverlay();
@@ -1315,6 +1326,22 @@ void VideoPlayer::applyVisualizerSettings() {
 
 void VideoPlayer::setVisualizerSuspended(bool on) {
     if (visualizer) visualizer->suspendRendering(on);
+}
+
+void VideoPlayer::setSeekBarSize(int width) {
+    m_seekBarTargetWidth = width;
+    applySeekBarWidth();   // clamp to the video frame, then re-centre
+    repositionOverlays();
+}
+
+void VideoPlayer::applySeekBarWidth() {
+    if (!playerControls || !videoWidget) return;
+    // Keep a clear gap each side so the pill (even with the audio viz triangles out,
+    // ~22px/side) never reaches the video edge. A narrow window shrinks the bar to fit;
+    // a wide one lets it grow up to the chosen target.
+    constexpr int kEdgeGap = 30;
+    const int avail = videoWidget->width() - 2 * kEdgeGap;
+    playerControls->setBaseWidth(qMin(m_seekBarTargetWidth, avail));
 }
 
 void VideoPlayer::cycleVisualizer(int delta) {

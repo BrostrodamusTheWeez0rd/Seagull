@@ -27,6 +27,9 @@ namespace Theme {
 
     Colors      colorsFor(const QString& name);   // any name from names(); unknown -> Seagull
     QStringList names();                          // every selectable theme, in menu order
+    bool        isDark(const QString& name);       // true if the theme's window colour is dark
+    QStringList names(bool dark);                  // selectable themes of one appearance, menu order
+    bool        isKnown(const QString& name);      // is this a current, selectable theme name?
     void        apply(const QString& name);       // sets Fusion style + palette + global QSS on qApp
     QString     currentName();
 

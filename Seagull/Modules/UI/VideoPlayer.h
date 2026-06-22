@@ -46,6 +46,7 @@ public:
     void showOverlaysAfterTransition();    // un-suppress, reposition, and raise overlays after the transition
     void togglePlayPause();    // space-bar / single-click handler entry point
     void applyVisualizerSettings(); // re-read the visualizer config (settings changed)
+    void setSeekBarSize(int width); // Display "Progress bar size" -> control pill width
     void setVisualizerSuspended(bool on); // pause the visualizer's render timer while another module hammers the GUI thread (e.g. Library build)
 
     // Keyboard transport (driven by the host's key handling):
@@ -211,6 +212,12 @@ private:
 
     PlayerControls* playerControls;
     PlayerTitleBar* titleBar;
+
+    // Progress bar size (Settings -> Display) is a TARGET width; the actual bar width
+    // is this clamped to the video frame so the pill never spills past the video edges.
+    // Re-applied on every reposition (resize / move / show), so it tracks the window.
+    int  m_seekBarTargetWidth = 500; // chosen size in px (Small default)
+    void applySeekBarWidth();        // clamp the target to the video width and apply it
 
     // OSD fades: controls and banner ease in/out on the same clock as the
     // splitter chevron (kOverlayFadeInMs/kOverlayFadeOutMs). Event-driven

@@ -21,6 +21,11 @@ namespace SgPaths {
     // system — downloads are incoming files, not the curated media folders.
     QString downloadFolder();
 
+    // "Smart sort downloading": when on (default), a download is routed into its
+    // media-type folder (video -> Videos, audio -> Audio); when off, everything
+    // lands in the single downloadFolder().
+    bool    smartSortDownloads();
+
     QString videoFolder(bool honourUnify = true);     // saved videos
     QString audioFolder(bool honourUnify = true);     // saved audio
     QString photoFolder(bool honourUnify = true);     // saved images
