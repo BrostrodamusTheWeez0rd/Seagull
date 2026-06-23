@@ -452,6 +452,17 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             else         videoPlayer->disableEqualizer();
         });
 
+    // Normalization (peak protection) toggle: apply live only when the playing media's
+    // kind matches the toggled type. Otherwise it's already persisted (Eq/<type>/
+    // NormEnabled) and VideoPlayer honours it on next play of that kind.
+    connect(eqModule, &EQ::normalizationChanged, this,
+        [this](EqContentType type, bool enabled) {
+            const MediaKind k = videoPlayer->currentMediaKind();
+            const bool matches = (type == EqContentType::Audio && k == MediaKind::Audio)
+                              || (type == EqContentType::Video && k == MediaKind::Video);
+            if (matches) videoPlayer->setNormalizationEnabled(enabled);
+        });
+
     // Multiple-instance tabs. The primary Search + File Explorer go through the same
     // per-tab wiring the duplicates use; register them as duplicable so the "+" menu
     // offers "New Search tab" / "New File Explorer tab", and wire the open/close hooks.

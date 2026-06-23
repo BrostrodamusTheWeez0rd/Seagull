@@ -324,6 +324,12 @@ void Theme::apply(const QString& name) {
         "QPushButton#eqSaveButton:disabled { opacity:0.3; }"
         "QPushButton#eqPowerButton { background:transparent; border:none; border-radius:13px; padding:2px; }"
         "QPushButton#eqPowerButton:hover { background-color:%5; }"
+        // Labelled power pills: an "EQ" pill above a "Normalization" pill, top-right.
+        // Same surface idiom as the type pill so they read as a matched control group.
+        "QFrame#eqPowerPill, QFrame#eqNormalizationPill { background-color:%1; border:1px solid %6; border-radius:16px; }"
+        "QLabel#eqControlLabel { color:%2; background:transparent; font-weight:bold; font-size:11px; }"
+        "QPushButton#eqNormalizationButton { background:transparent; border:none; border-radius:13px; padding:2px; }"
+        "QPushButton#eqNormalizationButton:hover { background-color:%5; }"
         "QLabel#eqBandLabel { color:%2; background:transparent; font-size:10px; }"
         // Pilled frame around the band sliders.
         "QFrame#eqBandFrame { background-color:%4; border:1px solid %6; border-radius:14px; }"

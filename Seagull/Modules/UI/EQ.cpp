@@ -181,25 +181,62 @@ void EQ::buildUi() {
     presetRow->addWidget(m_saveBtn);
     topLayout->addLayout(presetRow);
 
-    // --- Power toggle: pinned top-right, turns the current type's EQ on/off ---
-    m_powerBtn = new QPushButton(this);
-    m_powerBtn->setObjectName("eqPowerButton");
-    m_powerBtn->setFixedSize(26, 26);
-    m_powerBtn->setIconSize(QSize(16, 16));
-    m_powerBtn->setToolTip("Turn the equalizer on or off");
-    m_powerBtn->setCursor(Qt::PointingHandCursor);
+    // --- Power toggles, top-right: a labelled "EQ" pill above a "Normalization" pill,
+    //     each with its own power button. Both are per-type (Video/Audio) and persist
+    //     independently — same idiom, so they read as a matched pair of controls. ---
+    auto makePowerPill = [this](const QString& label, const QString& pillObj,
+                                const QString& btnObj, const QString& tip,
+                                QPushButton*& outBtn) -> QFrame* {
+        auto* frame = new QFrame(this);
+        frame->setObjectName(pillObj);
+        frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        auto* lay = new QHBoxLayout(frame);
+        lay->setContentsMargins(10, 3, 6, 3);
+        lay->setSpacing(8);
+        auto* lab = new QLabel(label, frame);
+        lab->setObjectName("eqControlLabel");
+        outBtn = new QPushButton(frame);
+        outBtn->setObjectName(btnObj);
+        outBtn->setFixedSize(26, 26);
+        outBtn->setIconSize(QSize(16, 16));
+        outBtn->setToolTip(tip);
+        outBtn->setCursor(Qt::PointingHandCursor);
+        lay->addWidget(lab);
+        lay->addStretch(1);
+        lay->addWidget(outBtn);
+        return frame;
+    };
+
+    auto* eqPowerPill = makePowerPill("EQ", "eqPowerPill", "eqPowerButton",
+                                      "Turn the equalizer on or off", m_powerBtn);
     connect(m_powerBtn, &QPushButton::clicked, this, [this]() { setEqEnabled(!m_enabled); });
 
-    // Header row: keep the type pill / preset combo centred while the power button
-    // sits at the far right. A left spacer the width of the button balances it.
+    auto* normPill = makePowerPill("Normalization", "eqNormalizationPill", "eqNormalizationButton",
+                                   "Even out loudness and keep audio from peaking", m_normBtn);
+    connect(m_normBtn, &QPushButton::clicked, this, [this]() { setNormEnabled(!m_normEnabled); });
+
+    // Stack the two pills; the QVBoxLayout gives them a shared (widest) width so they
+    // line up as a tidy column.
+    auto* rightStack = new QWidget(this);
+    auto* rightStackLay = new QVBoxLayout(rightStack);
+    rightStackLay->setContentsMargins(0, 0, 0, 0);
+    rightStackLay->setSpacing(6);
+    rightStackLay->addWidget(eqPowerPill);
+    rightStackLay->addWidget(normPill);
+    rightStack->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+    // Header row: keep the type pill / preset combo centred, with the power-pill stack
+    // pinned top-right. A left spacer the width of the stack balances it.
     auto* headerRow = new QHBoxLayout();
     headerRow->setContentsMargins(0, 0, 0, 0);
-    headerRow->setSpacing(0);
-    headerRow->addSpacing(26);
+    headerRow->setSpacing(8);
+    auto* leftBalance = new QWidget(this);
+    leftBalance->setFixedWidth(rightStack->sizeHint().width());
+    headerRow->addWidget(leftBalance, 0, Qt::AlignTop);
     headerRow->addStretch(1);
     headerRow->addWidget(topGroup);
     headerRow->addStretch(1);
-    headerRow->addWidget(m_powerBtn, 0, Qt::AlignTop);
+    headerRow->addWidget(rightStack, 0, Qt::AlignTop);
     root->addLayout(headerRow);
 
     // --- Drag popup: follows the handle, shows live dB value ---
@@ -286,6 +323,7 @@ void EQ::buildUi() {
     root->addWidget(bandFrame, 1);
     retintSaveButton();
     retintPowerButton();
+    retintNormButton();
 }
 
 // --- Type / presets ---------------------------------------------------------
@@ -390,19 +428,22 @@ void EQ::retintSaveButton() {
     m_saveBtn->setIcon(QIcon(pm));
 }
 
-void EQ::retintPowerButton() {
-    if (!m_powerBtn) return;
+void EQ::tintPowerGlyph(QPushButton* btn, bool on) {
+    if (!btn) return;
     // Lit in the accent colour when on; dimmed to a faint outline when off.
-    QColor c = m_enabled ? palette().color(QPalette::Highlight)
-                         : palette().color(QPalette::WindowText);
-    if (!m_enabled) c.setAlphaF(0.40);
+    QColor c = on ? palette().color(QPalette::Highlight)
+                  : palette().color(QPalette::WindowText);
+    if (!on) c.setAlphaF(0.40);
     QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/power.svg")).pixmap(QSize(16, 16));
     QPainter p(&pm);
     p.setCompositionMode(QPainter::CompositionMode_SourceIn);
     p.fillRect(pm.rect(), c);
     p.end();
-    m_powerBtn->setIcon(QIcon(pm));
+    btn->setIcon(QIcon(pm));
 }
+
+void EQ::retintPowerButton() { tintPowerGlyph(m_powerBtn, m_enabled); }
+void EQ::retintNormButton()  { tintPowerGlyph(m_normBtn, m_normEnabled); }
 
 void EQ::setControlsEnabled(bool on) {
     // Grey out the bands + preset picker while the EQ is off; the Video/Audio pill
@@ -427,10 +468,21 @@ void EQ::setEqEnabled(bool on) {
     emit eqEnabledChanged(m_type, on, currentGains(), currentPreamp());
 }
 
+void EQ::setNormEnabled(bool on) {
+    m_normEnabled = on;
+    m_settings.setValue(ns() + "NormEnabled", on); // per-type, persisted immediately
+    m_settings.sync();
+    retintNormButton();
+    // Apply live; the orchestrator gates on whether the playing media's kind matches
+    // this type (otherwise it's already persisted and applied on next play).
+    emit normalizationChanged(m_type, on);
+}
+
 void EQ::changeEvent(QEvent* e) {
     if (e->type() == QEvent::PaletteChange) {
         retintSaveButton();
         retintPowerButton();
+        retintNormButton();
     }
     QWidget::changeEvent(e);
 }
@@ -501,11 +553,13 @@ void EQ::loadActiveIntoSliders() {
     setSliders(gains, preamp);
     if (!selectPresetByGains(gains, preamp))
         setCustomState();
-    // Reflect this type's saved power state (default on). Silent: this is a view
+    // Reflect this type's saved power states (default on). Silent: this is a view
     // load, so it never emits — it must not disturb what's currently playing.
     m_enabled = m_settings.value(n + "Enabled", true).toBool();
     retintPowerButton();
     setControlsEnabled(m_enabled);
+    m_normEnabled = m_settings.value(n + "NormEnabled", true).toBool();
+    retintNormButton();
 }
 
 void EQ::persistActive() {

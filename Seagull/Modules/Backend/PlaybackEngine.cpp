@@ -1,4 +1,5 @@
 #include "PlaybackEngine.h"
+#include "SgDynamics.h"
 #include <QObject>
 #include <QFile>
 #include <QDir>
@@ -53,9 +54,9 @@ private:
 class FifoDevice : public QIODevice {
 public:
     FifoDevice(AudioFifo* fifo, std::function<void(const QByteArray&)> onConsumed,
-               qint64 primeBytes, QObject* parent = nullptr)
+               qint64 primeBytes, SgDynamics* dyn, int channels, QObject* parent = nullptr)
         : QIODevice(parent), m_fifo(fifo), m_onConsumed(std::move(onConsumed)),
-          m_primeBytes(primeBytes) {}
+          m_primeBytes(primeBytes), m_dyn(dyn), m_channels(channels) {}
 
 protected:
     qint64 readData(char* data, qint64 maxlen) override {
@@ -71,15 +72,24 @@ protected:
             }
             m_primed = true;
         }
-        const QByteArray chunk = m_fifo->pop(maxlen);
+        QByteArray chunk = m_fifo->pop(maxlen);
         const qint64 got = chunk.size();
         if (got == 0) {
             // FIFO ran fully dry (track gap / genuine underrun): re-arm priming so
             // the next track / recovery rebuilds the cushion and resumes cleanly,
             // rather than splicing silence into the middle of live audio.
             m_primed = false;
+            if (m_dyn) m_dyn->reset(); // clear the gain ride so it doesn't bleed across tracks
             std::memset(data, 0, size_t(maxlen));
             return maxlen;
+        }
+        // Master-bus normaliser + brickwall limiter, in place on this chunk, BEFORE it
+        // reaches the sink and before the visualizer sees it — so peak protection is
+        // applied to exactly what's heard, and the volume (set on the sink) still scales
+        // the limited signal afterward.
+        if (m_dyn && m_channels > 0) {
+            const int frames = int(got / (2 * m_channels));
+            if (frames > 0) m_dyn->process(reinterpret_cast<int16_t*>(chunk.data()), frames, m_channels);
         }
         std::memcpy(data, chunk.constData(), size_t(got));
         if (got < maxlen) std::memset(data + got, 0, size_t(maxlen - got)); // pad a partial tail
@@ -101,6 +111,8 @@ private:
     AudioFifo* m_fifo;
     std::function<void(const QByteArray&)> m_onConsumed;
     const qint64 m_primeBytes;   // FIFO fill required before the first real pull
+    SgDynamics* m_dyn = nullptr; // normaliser + limiter (owned by the worker); null = bypass
+    int m_channels = 2;
     bool m_primed = false;
 };
 
@@ -116,7 +128,7 @@ public:
         : m_fifo(fifo), m_onConsumed(std::move(onConsumed)) {}
     ~AudioSinkWorker() override { stop(); }
 
-    void start(int rate, int channels, int volume, bool muted) {
+    void start(int rate, int channels, int volume, bool muted, bool normEnabled) {
         stop();
         QAudioFormat fmt;
         fmt.setSampleRate(rate);
@@ -124,10 +136,13 @@ public:
         fmt.setSampleFormat(QAudioFormat::Int16);
         const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
         if (dev.isNull() || !dev.isFormatSupported(fmt)) return;
+        // Size the normaliser/limiter for this format and clear any prior ride.
+        m_dyn.prepare(rate, channels);
+        m_dyn.setEnabled(normEnabled);
         // Buffer a ~150ms cushion before emitting real audio so the track head plays
         // from a filled FIFO (no startup splice glitch); VLC decodes ahead, so the
         // cushion fills near-instantly and adds only a brief, inaudible head delay.
-        m_device = new FifoDevice(m_fifo, m_onConsumed, fmt.bytesForDuration(150000));
+        m_device = new FifoDevice(m_fifo, m_onConsumed, fmt.bytesForDuration(150000), &m_dyn, channels);
         m_device->open(QIODevice::ReadOnly);
         m_sink = new QAudioSink(dev, fmt);
         m_sink->setBufferSize(fmt.bytesForDuration(100000)); // ~100ms: low latency, glitch-safe
@@ -146,12 +161,16 @@ public:
     // ahead) and a resume picks up seamlessly from the buffered samples (no cutout).
     void suspend() { if (m_sink) m_sink->suspend(); }
     void resume()  { if (m_sink) m_sink->resume(); }
+    // Live normalisation toggle — m_dyn's enable is atomic, so this is safe to call
+    // from any thread (the GUI thread pokes it while the audio thread processes).
+    void setNormalization(bool on) { m_dyn.setEnabled(on); }
 
 private:
     AudioFifo* m_fifo;
     std::function<void(const QByteArray&)> m_onConsumed;
     QAudioSink* m_sink = nullptr;
     QIODevice*  m_device = nullptr;
+    SgDynamics  m_dyn;   // master-bus normaliser + brickwall limiter on the pull path
 };
 
 PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
@@ -303,6 +322,7 @@ void PlaybackEngine::loadLocalFile(const QString& path) {
     // pause/unpause. dav1d claims ONLY AV1, so every other codec falls through
     // to "any" and keeps hardware decoding.
     m_lastMedia->addOption(":codec=dav1d,any");
+    addVideoNormalizationOptions(*m_lastMedia); // compressor-as-limiter when video norm is on
     m_player->setMedia(*m_lastMedia);
     applyEqualizerToPlayer(); // re-assert EQ for the new media (before play())
 }
@@ -354,6 +374,7 @@ void PlaybackEngine::loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint
     if (startMs > 0)
         m_lastMedia->addOption(QString(":start-time=%1").arg(startMs / 1000.0).toUtf8().constData());
 
+    addVideoNormalizationOptions(*m_lastMedia); // compressor-as-limiter when video norm is on
     m_player->setMedia(*m_lastMedia);
     applyEqualizerToPlayer(); // re-assert EQ for the new media (before play())
 }
@@ -464,6 +485,54 @@ void PlaybackEngine::applyVolumeToSink() {
                               Qt::QueuedConnection);
 }
 
+// --- Normalization / peak protection ----------------------------------------
+
+void PlaybackEngine::setAudioNormalizationEnabled(bool on) {
+    m_normAudio = on;
+    // Live on the audio tap when audio is the playing path; otherwise the state is
+    // remembered and applied when the sink next starts (see setAudioTap).
+    if (m_tapOn && m_audioWorker)
+        QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker, on]() { w->setNormalization(on); },
+                                  Qt::QueuedConnection);
+}
+
+void PlaybackEngine::setVideoNormalizationEnabled(bool on) {
+    // Pure state set: the compressor binds as a media option at load time, so this just
+    // records the desired state for the next loadLocalFile/loadStream. A live toggle of
+    // a currently-playing video goes through reloadForVideoNormalization().
+    m_normVideo = on;
+}
+
+void PlaybackEngine::reloadForVideoNormalization() {
+    // For a LOCAL video playing right now, reload in place so a normalization toggle is
+    // audible immediately; streams pick it up on their next load (re-fetching a stream
+    // just to toggle a filter risks burning a single-use token, so we don't).
+    if (m_tapOn || m_loadPath.isEmpty() || !m_lastMedia) return;
+    const qint64 t = time();
+    const bool wasPlaying = isPlaying();
+    loadLocalFile(m_loadPath); // fresh Media -> adds/drops the compressor option per m_normVideo
+    if (t > 0)
+        m_lastMedia->addOption(QString(":start-time=%1").arg(t / 1000.0).toUtf8().constData());
+    if (wasPlaying) play();
+}
+
+void PlaybackEngine::addVideoNormalizationOptions(VLC::Media& media) const {
+    // Video path only: audio-only media uses our own SgDynamics on the sink instead.
+    if (!m_normVideo || m_tapOn) return;
+    // libVLC's compressor audio filter, tuned as a brickwall-ish limiter so video audio
+    // can't clip: peak sensing, threshold just under 0 dB, max ratio, fast attack, unity
+    // makeup. Bound per-input so it never reaches the audio-tap path. Volume is applied
+    // by the aout core AFTER this filter, so the user's fader still scales the result.
+    media.addOption(":audio-filter=compressor");
+    media.addOption(":compressor-rms-peak=0.0");
+    media.addOption(":compressor-attack=1.5");
+    media.addOption(":compressor-release=120.0");
+    media.addOption(":compressor-threshold=-1.5");
+    media.addOption(":compressor-ratio=20.0");
+    media.addOption(":compressor-knee=1.0");
+    media.addOption(":compressor-makeup-gain=0.0");
+}
+
 // --- Audio tap (audio-only media) -------------------------------------------
 
 void PlaybackEngine::ensureAudioThread() {
@@ -513,9 +582,9 @@ void PlaybackEngine::setAudioTap(bool on) {
 
         // Start the sink on the audio thread (it owns/creates the sink there).
         const int rate = int(m_tapRate), ch = int(m_tapChannels), vol = m_volume;
-        const bool mu = m_muted;
-        QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker, rate, ch, vol, mu]() {
-            w->start(rate, ch, vol, mu);
+        const bool mu = m_muted; const bool norm = m_normAudio;
+        QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker, rate, ch, vol, mu, norm]() {
+            w->start(rate, ch, vol, mu, norm);
         }, Qt::QueuedConnection);
     } else {
         m_tapOn = false;

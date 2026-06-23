@@ -41,6 +41,11 @@ signals:
     void eqEnabledChanged(EqContentType type, bool enabled,
                           const QVector<float>& gains, float preampDb);
 
+    // The Normalization power button toggled `type` on/off (peak protection: a
+    // limiter/normaliser, independent of the EQ, persisted per type). The orchestrator
+    // applies it live when the playing media's kind matches `type`.
+    void normalizationChanged(EqContentType type, bool enabled);
+
 private:
     struct Preset { QString name; float preamp = 0.0f; QVector<float> gains; };
 
@@ -50,8 +55,11 @@ private:
     void setCustomState();
     void saveCurrentAsPreset();
     void retintSaveButton();
-    void retintPowerButton();                   // tint the power glyph to its on/off state
+    void tintPowerGlyph(QPushButton* btn, bool on); // shared power-icon tint (accent on / dim off)
+    void retintPowerButton();                   // tint the EQ power glyph to its on/off state
+    void retintNormButton();                    // tint the Normalization power glyph
     void setEqEnabled(bool on);                  // power toggle: persist + reflect + live apply/bypass
+    void setNormEnabled(bool on);                // normalization toggle: persist + reflect + live
     void setControlsEnabled(bool on);            // grey out the bands/presets when the EQ is off
     void changeEvent(QEvent* e) override;
     void selectType(EqContentType t);          // pill: switch the viewed/edited type (no emit)
@@ -76,10 +84,12 @@ private:
     EqContentType m_type = EqContentType::Audio;
     int  m_bandCount = 10;
     bool m_loading = false;                      // suppress live-apply while setting sliders
-    bool m_enabled = true;                       // current type's on/off (power button), per-type in config
+    bool m_enabled = true;                       // current type's EQ on/off (power button), per-type
+    bool m_normEnabled = true;                   // current type's normalization on/off, per-type
 
     QButtonGroup*          m_typeGroup  = nullptr;
-    QPushButton*           m_powerBtn = nullptr;     // top-right on/off toggle for the current type
+    QPushButton*           m_powerBtn = nullptr;     // top-right EQ on/off toggle for the current type
+    QPushButton*           m_normBtn  = nullptr;     // Normalization on/off toggle for the current type
     QFrame*                m_bandFrame = nullptr;    // the sliders pill; greyed out while the EQ is off
     QComboBox*             m_presetCombo = nullptr;
     QVector<ClickSlider*>  m_bands;              // one per equalizer band

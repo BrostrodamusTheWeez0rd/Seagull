@@ -74,6 +74,19 @@ public:
     void disableEqualizer();
     bool equalizerEnabled() const { return m_eqEnabled; }
 
+    // --- Output normalization / peak protection -------------------------------
+    // Per-kind, mirroring the EQ. Audio-only media runs through our own look-ahead
+    // brickwall limiter + loudness normaliser on the sink (SgDynamics, applied live).
+    // Video runs through libVLC's compressor audio filter (configured as a limiter),
+    // bound as a media option at load — so the Video toggle takes effect on the next
+    // video load (a currently-playing LOCAL video is reloaded in place; streams apply
+    // on next load). The user's volume is applied after both, so it always wins.
+    void setAudioNormalizationEnabled(bool on);
+    void setVideoNormalizationEnabled(bool on);  // pure set; takes effect on next video load
+    void reloadForVideoNormalization();          // live-reload a local video to apply it now
+    bool audioNormalizationEnabled() const { return m_normAudio; }
+    bool videoNormalizationEnabled() const { return m_normVideo; }
+
     // Static descriptors for building the UI (band labels) + VLC's built-in presets.
     static int          equalizerBandCount();
     static float        equalizerBandFrequency(int band);   // Hz
@@ -138,6 +151,12 @@ private:
     QVector<float> m_eqGains;
     float          m_eqPreamp  = 0.0f;
     bool           m_eqEnabled = false;
+
+    // Normalization state. Audio is forwarded live to the sink worker; video is added
+    // as compressor media options at load (see addVideoNormalizationOptions).
+    void addVideoNormalizationOptions(VLC::Media& media) const; // no-op unless m_normVideo
+    bool m_normAudio = false;
+    bool m_normVideo = false;
 };
 
 #endif // PLAYBACKENGINE_H

@@ -63,6 +63,10 @@ public:
     // applied automatically on play (see applyEqualizerForCurrentKind).
     void applyEqualizer(const QVector<float>& gains, float preampDb);
     void disableEqualizer();
+    // Normalization (peak protection): the EQ tab toggles it per-kind. This forwards a
+    // live edit to the engine when the playing kind matches; the saved per-kind state is
+    // applied automatically on play (see applyNormalizationForCurrentKind).
+    void setNormalizationEnabled(bool on);
     MediaKind currentMediaKind() const { return m_kind; }
     qint64 mediaPosition() const;      // current play position (ms), for the SMTC timeline
     qint64 mediaDuration() const;      // media length (ms), for the SMTC timeline
@@ -188,6 +192,7 @@ private:
     void showStreamFailed(); // pin the "stream failed — replay" message + ended mode
     void closePlayer();
     void applyEqualizerForCurrentKind(); // load + apply Eq/<Audio|Video>/* for m_kind on play
+    void applyNormalizationForCurrentKind(); // load + apply Eq/<kind>/NormEnabled for m_kind on play
 
     // Content kind + its presentation helpers.
     MediaKind m_kind = MediaKind::Video;
