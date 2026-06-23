@@ -25,6 +25,11 @@ public:
     explicit Settings(QWidget* parent = nullptr);
     ~Settings();
 
+    // Host the equalizer as an "Audio" page in the sidebar (the EQ widget is owned by
+    // the orchestrator, which wires its live-edit signals). Call once at startup.
+    void addAudioPage(QWidget* eq);
+    void showAudioPage(); // select the Audio sidebar row (used by the player's EQ button)
+
 signals:
     void cardWidthChanged(int width); // Display "Card size" -> Search card width (px)
     void seekBarSizeChanged(int width); // Display "Progress bar size" -> player seek bar width (px)
@@ -78,6 +83,7 @@ private:
     // Side tab layout components
     QListWidget* sidebar;
     QStackedWidget* stackedWidget;
+    int m_audioRow = -1; // sidebar row of the embedded EQ page (-1 until addAudioPage)
 
     // General Tab elements
     QCheckBox* autoUpdateCheck;  // install tool updates silently vs ask first

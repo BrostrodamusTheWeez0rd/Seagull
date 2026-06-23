@@ -19,7 +19,7 @@ class QFrame;
 // QButtonGroup ids for the Video/Audio pill.
 enum class EqContentType { Video = 0, Audio = 1 };
 
-// The "EQ" tab: a Video/Audio pill, a content-type-aware preset dropdown (stock +
+// The equalizer (the Settings "Audio" page): a Video/Audio pill, a content-type-aware preset dropdown (stock +
 // custom presets, with an "Add custom preset…" action), and a 10-band graphic EQ
 // (libVLC's equalizer) adjusted in real time. Per-type state + custom presets persist
 // to config.ini under Eq/. The tab edits/persists; VideoPlayer reads the saved EQ and

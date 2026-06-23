@@ -88,6 +88,11 @@ public:
     // Floating Share button beside the "+", shown while an online video plays.
     void setShareAvailable(bool on);
 
+    // Reveal a canonical tab: reopen it if it was closed (or raise its window if it
+    // was torn off), then make it the current tab. Used to jump to Settings from the
+    // floating EQ button.
+    void showTab(QWidget* page);
+
     bool autoplayEnabled() const { return m_autoplayEnabled; }
     bool shuffleEnabled()  const { return m_shuffleEnabled; }
     int  photoIntervalSeconds() const { return m_photoIntervalSecs; }
@@ -116,6 +121,7 @@ public:
 
 signals:
     void shareRequested();                      // the floating Share button was clicked
+    void eqRequested();                         // the floating EQ button was clicked
     void autoplayChanged(bool enabled);         // the autoplay toggle was flipped
     void shuffleChanged(bool enabled);          // the shuffle toggle was flipped
     void photoIntervalChanged(int seconds);     // the slideshow interval spin changed
@@ -161,6 +167,7 @@ private:
     void positionPlusButton();      // snug the "+" (and Share) against the last tab
     void schedulePlusReposition();  // ...after the pending layout pass settles
     void tintShareButton();         // recolour the share glyph to the theme's dim text
+    void tintEqButton();            // recolour the EQ glyph to the theme's dim text
     void tintAutoplayButton();      // recolour the autoplay glyph (highlight when on, subtext when off)
     void tintShuffleButton();       // recolour the shuffle glyph (highlight when on, subtext when off)
 
@@ -208,6 +215,7 @@ private:
     QString      m_contextKey;             // settings namespace for the active content type
     QToolButton* m_shareBtn = nullptr;     // floating Share, right of the autoplay button
     bool m_shareAvailable = false;
+    QToolButton* m_eqBtn = nullptr;        // floating EQ, left of Share; shown while audio/video plays
     QMenu* m_plusMenu = nullptr;
     QList<FloatingTab*> m_floating;       // torn-off tabs currently in own windows
     QWidget* m_pressedWrapper = nullptr;  // tab page under the mouse press (tear-off)

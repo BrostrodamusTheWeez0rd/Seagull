@@ -199,8 +199,8 @@ void Theme::apply(const QString& name) {
         // tab (radii match the fixed sizes set in MainWindow).
         "QToolButton#tabCloseButton { background:%4; color:%6; border:1px solid %3; border-radius:7px; font-size:10px; font-weight:bold; padding:0; }"
         "QToolButton#tabCloseButton:hover { background:%5; color:%1; border:1px solid %5; }"
-        "QToolButton#tabPlusButton, QToolButton#tabShareButton { background:transparent; color:%2; border:1px solid %3; border-radius:9px; font-size:13px; font-weight:bold; padding:0; }"
-        "QToolButton#tabPlusButton:hover, QToolButton#tabShareButton:hover { background:%4; }"
+        "QToolButton#tabPlusButton, QToolButton#tabShareButton, QToolButton#tabEqButton { background:transparent; color:%2; border:1px solid %3; border-radius:9px; font-size:13px; font-weight:bold; padding:0; }"
+        "QToolButton#tabPlusButton:hover, QToolButton#tabShareButton:hover, QToolButton#tabEqButton:hover { background:%4; }"
         // Hide the popup arrow; the glyph itself is centred by CircleGlyphButton's
         // own paint (by ink box), so no padding tricks are needed here.
         "QToolButton#tabPlusButton::menu-indicator { image:none; width:0; }"
@@ -324,7 +324,7 @@ void Theme::apply(const QString& name) {
         "QPushButton#eqSaveButton:disabled { opacity:0.3; }"
         "QPushButton#eqPowerButton { background:transparent; border:none; border-radius:13px; padding:2px; }"
         "QPushButton#eqPowerButton:hover { background-color:%5; }"
-        // Labelled power pills: an "EQ" pill above a "Normalization" pill, top-right.
+        // Labelled power pills (Normalization, EQ) in the flat header row.
         // Same surface idiom as the type pill so they read as a matched control group.
         "QFrame#eqPowerPill, QFrame#eqNormalizationPill { background-color:%1; border:1px solid %6; border-radius:16px; }"
         "QLabel#eqControlLabel { color:%2; background:transparent; font-weight:bold; font-size:11px; }"

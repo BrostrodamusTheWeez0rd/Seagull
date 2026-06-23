@@ -118,6 +118,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_shareBtn->hide();
     connect(m_shareBtn, &QToolButton::clicked, this, [this]() { emit shareRequested(); });
 
+    // Floating EQ, left of Share: jumps to the Settings Audio page. Shown while
+    // audio/video plays (an equalizer is meaningless for a photo). Styled like the
+    // other floating chrome (round chip, dim-text glyph).
+    m_eqBtn = new QToolButton(tabs);
+    m_eqBtn->setObjectName("tabEqButton"); // round look comes from the theme sheet
+    m_eqBtn->setFixedSize(18, 18);
+    m_eqBtn->setIconSize(QSize(12, 12));
+    m_eqBtn->setCursor(Qt::PointingHandCursor);
+    m_eqBtn->setToolTip("Equalizer");
+    m_eqBtn->hide();
+    tintEqButton();
+    connect(m_eqBtn, &QToolButton::clicked, this, [this]() { emit eqRequested(); });
+
     // Autoplay toggle: between the "+" and Share. Shown only while media is playing.
     // In photo mode it relabels to "Slideshow" (see setPlaybackContext). Its state
     // is per-content-type, loaded by setPlaybackContext when playback starts.
@@ -197,6 +210,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     layout->addWidget(mainSplitter);
     resize(1000, 700);
+    // Floor the height so the smallest window still clears the Settings page's
+    // bottom bar — otherwise the "Reset to Default" button gets cut off the edge.
+    setMinimumHeight(480);
 
     // The VLC video surface is a native child window, so it renders live at the
     // final size the instant we maximize — it can't ride Windows' smooth DWM
@@ -352,6 +368,19 @@ void MainWindow::tintShareButton() {
     m_shareBtn->setIcon(QIcon(pm));
 }
 
+void MainWindow::tintEqButton() {
+    // Same flat-tint as the share glyph: recolour to the theme's dimmed-text colour
+    // (matching the +/Share chips), re-run on theme change (see changeEvent).
+    if (!m_eqBtn) return;
+    QPixmap pm = QIcon(":/Assets/icons/equalizer.svg").pixmap(QSize(12, 12));
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), Theme::colorsFor(Theme::currentName()).subtext);
+    p.end();
+    m_eqBtn->setIcon(QIcon(pm));
+}
+
 void MainWindow::tintAutoplayButton() {
     if (!m_autoplayBtn) return;
     const QSize sz(12, 12);
@@ -418,12 +447,32 @@ void MainWindow::setShareAvailable(bool on) {
     schedulePlusReposition();
 }
 
+void MainWindow::showTab(QWidget* page) {
+    QWidget* wrapper = m_tabPages.value(page, nullptr);
+    if (!wrapper) return;
+    // Torn off into its own window: just bring that window forward.
+    if (wrapper->window() != this) {
+        wrapper->window()->raise();
+        wrapper->window()->activateWindow();
+        return;
+    }
+    int idx = tabs->indexOf(wrapper);
+    if (idx < 0) { // closed — reopen at its canonical spot
+        for (int i = 0; i < m_tabOrder.size(); ++i) {
+            if (m_tabOrder[i].page == page) { reopenTab(i); break; }
+        }
+        idx = tabs->indexOf(wrapper);
+    }
+    if (idx >= 0) tabs->setCurrentIndex(idx);
+}
+
 void MainWindow::changeEvent(QEvent* event) {
     QMainWindow::changeEvent(event);
     // Keep the glyphs in step with theme switches, like the stroked +/× chips.
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
         tintAutoplayButton();
         tintShuffleButton();
+        tintEqButton();
         if (m_shareAvailable) tintShareButton();
     }
 }
@@ -533,16 +582,18 @@ void MainWindow::positionPlusButton() {
     QTabBar* bar = tabs->tabBar();
     if (bar->count() == 0) {
         m_plusBtn->hide(); m_autoplayBtn->hide(); m_shuffleBtn->hide();
-        m_photoIntervalSpin->hide(); m_shareBtn->hide();
+        m_photoIntervalSpin->hide(); m_eqBtn->hide(); m_shareBtn->hide();
         return;
     }
     const QRect last = bar->tabRect(bar->count() - 1);
 
     // What's visible this pass: autoplay only while media plays; the slideshow
-    // interval only in photo mode; shuffle only when autoplay is on.
+    // interval only in photo mode; shuffle only when autoplay is on; the EQ button
+    // while audio/video plays (an equalizer is meaningless for a photo).
     const bool showAutoplay = m_playbackActive;
     const bool showSpin     = m_playbackActive && m_photoMode;
     const bool showShuffle  = m_playbackActive && m_autoplayEnabled;
+    const bool showEq       = m_playbackActive && !m_photoMode;
 
     // Tab-bar coords -> tab-widget coords; clamp so a crowded bar can't push
     // the buttons out of view.
@@ -550,6 +601,7 @@ void MainWindow::positionPlusButton() {
                        + (showAutoplay ? 4 + m_autoplayBtn->width() : 0)
                        + (showSpin     ? 4 + m_photoIntervalSpin->width() : 0)
                        + (showShuffle  ? 4 + m_shuffleBtn->width() : 0)
+                       + (showEq       ? 4 + m_eqBtn->width() : 0)
                        + (m_shareAvailable ? 4 + m_shareBtn->width() : 0);
     int x = bar->pos().x() + last.right() + 6;
     x = qMin(x, tabs->width() - reserved - 4);
@@ -572,6 +624,7 @@ void MainWindow::positionPlusButton() {
     place(m_autoplayBtn,      showAutoplay, m_autoplayBtn->height());
     place(m_photoIntervalSpin, showSpin,    m_photoIntervalSpin->height());
     place(m_shuffleBtn,        showShuffle, m_shuffleBtn->height());
+    place(m_eqBtn,             showEq,      m_eqBtn->height());
     place(m_shareBtn,          m_shareAvailable, m_shareBtn->height());
 }
 
@@ -924,6 +977,11 @@ void MainWindow::setVideoPlayer(VideoPlayer* player) {
 
 void MainWindow::enterFullScreen() {
     m_wasMaximized = isMaximized(); // remember so we can restore it on exit
+    // Remember the docked split so exiting fullscreen lands exactly back on it.
+    // A manual splitter drag isn't persisted live, so without this the exit restores
+    // a stale ratio and the handle ends up squished far down. Skip when the tabs pane
+    // is already collapsed — that's not a split worth saving over the real one.
+    if (mainSplitter->sizes().value(1) > 0) captureSplit();
     // Hide overlays before the DWM animation so they don't trail the frame.
     if (videoPlayer) videoPlayer->suppressOverlaysForTransition();
     showFullScreen();
@@ -1063,6 +1121,7 @@ void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     tintAutoplayButton(); // palette is themed by now; first tint happens here
     tintShuffleButton();
+    tintEqButton();
     // A hand-edited Tabs/Closed could list every tab; never come up with zero.
     if (tabs->count() == 0 && !m_tabOrder.isEmpty()) reopenTab(0);
     schedulePlusReposition();

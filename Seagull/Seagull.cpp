@@ -153,8 +153,11 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     mainWindow->addTab(explorerModule, "File Explorer");
     mainWindow->addTab(queueModule, "Queue");
     mainWindow->addTab(searchModule, "Search");
-    mainWindow->addTab(eqModule, "EQ");
     mainWindow->addTab(settingsModule, "Settings");
+
+    // The equalizer now lives inside Settings as an "Audio" page (reached either there
+    // or via the player's floating EQ button), rather than as its own tab.
+    settingsModule->addAudioPage(eqModule);
 
     // --- Description tab + Share button (replaced the banner's Info/Share) ---
     // The Description page appears as a dynamic tab whenever the playing video's
@@ -241,6 +244,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         });
     connect(videoPlayer, &VideoPlayer::shareAvailableChanged, mainWindow, &MainWindow::setShareAvailable);
     connect(mainWindow, &MainWindow::shareRequested, videoPlayer, &VideoPlayer::shareLink);
+
+    // The player's floating EQ button jumps to the equalizer's home: reveal the
+    // Settings tab and select its Audio page.
+    connect(mainWindow, &MainWindow::eqRequested, this, [this]() {
+        mainWindow->showTab(settingsModule);
+        settingsModule->showAudioPage();
+    });
 
     // --- Comments tab (lazy) --------------------------------------------------
     // The probe reports comment_count for free, so we can offer a Comments tab

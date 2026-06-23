@@ -95,6 +95,21 @@ Settings::~Settings() {
     // iniSettings is parented to 'this', so it cleans up automatically
 }
 
+void Settings::addAudioPage(QWidget* eq) {
+    if (!eq || !sidebar || !stackedWidget) return;
+    // Slot the equalizer in right after Display — both are presentation settings.
+    // The sidebar row and the stacked page must stay index-aligned (currentRowChanged
+    // drives setCurrentIndex), so insert at the same position in both.
+    const int row = 2;
+    sidebar->insertItem(row, "Audio");
+    stackedWidget->insertWidget(row, eq);
+    m_audioRow = row;
+}
+
+void Settings::showAudioPage() {
+    if (m_audioRow >= 0 && sidebar) sidebar->setCurrentRow(m_audioRow);
+}
+
 void Settings::setupUI() {
     auto* outerLayout = new QVBoxLayout(this);
     auto* mainLayout = new QHBoxLayout();

@@ -114,19 +114,16 @@ void EQ::buildUi() {
     root->setContentsMargins(16, 16, 16, 16);
     root->setSpacing(14);
 
-    // --- 1 + 2. Shared container: type pill and preset combo share the same width ---
-    // Fixed size policy on the container means it sizes to its sizeHint (the wider of
-    // the two children). Both children have Expanding policy so they fill that width.
-    auto* topGroup = new QWidget(this);
-    topGroup->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-    auto* topLayout = new QVBoxLayout(topGroup);
-    topLayout->setContentsMargins(0, 0, 0, 0);
-    topLayout->setSpacing(8);
+    // --- Header: one flat row, left to right ---
+    //   Video/Audio selector | Preset box | Normalization | EQ
+    // The selector and power pills size to their content; the preset box absorbs the
+    // slack so the row stays tidy at any width. All pills are per-type (Video/Audio)
+    // and persist independently.
 
-    // --- 1. Video / Audio pill (same idiom as the Library type pill) ---
-    auto* pill = new QFrame(topGroup);
+    // 1. Video / Audio pill (same idiom as the Library type pill).
+    auto* pill = new QFrame(this);
     pill->setObjectName("eqTypePill");
-    pill->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pill->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto* pillLay = new QHBoxLayout(pill);
     pillLay->setContentsMargins(8, 5, 8, 5);
     pillLay->setSpacing(4);
@@ -147,10 +144,9 @@ void EQ::buildUi() {
     }
     connect(m_typeGroup, &QButtonGroup::idClicked, this,
             [this](int id) { selectType(static_cast<EqContentType>(id)); });
-    topLayout->addWidget(pill);
 
-    // --- 2. Preset dropdown + save button ---
-    m_presetCombo = new QComboBox(topGroup);
+    // 2. Preset dropdown + save button (the save button surfaces for a custom curve).
+    m_presetCombo = new QComboBox(this);
     m_presetCombo->setObjectName("eqPresetCombo");
     m_presetCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_presetCombo->setEditable(true);
@@ -162,7 +158,7 @@ void EQ::buildUi() {
     m_presetCombo->lineEdit()->installEventFilter(this);
     connect(m_presetCombo, &QComboBox::activated, this, &EQ::onPresetActivated);
 
-    m_saveBtn = new QPushButton(topGroup);
+    m_saveBtn = new QPushButton(this);
     m_saveBtn->setObjectName("eqSaveButton");
     m_saveBtn->setFixedSize(26, 26);
     m_saveBtn->setIconSize(QSize(15, 15));
@@ -174,22 +170,13 @@ void EQ::buildUi() {
         m_saveBtn->setVisible(idx < 0);
     });
 
-    auto* presetRow = new QHBoxLayout();
-    presetRow->setSpacing(4);
-    presetRow->setContentsMargins(0, 0, 0, 0);
-    presetRow->addWidget(m_presetCombo);
-    presetRow->addWidget(m_saveBtn);
-    topLayout->addLayout(presetRow);
-
-    // --- Power toggles, top-right: a labelled "EQ" pill above a "Normalization" pill,
-    //     each with its own power button. Both are per-type (Video/Audio) and persist
-    //     independently — same idiom, so they read as a matched pair of controls. ---
+    // 3 + 4. Power pills: a labelled control with its own power button.
     auto makePowerPill = [this](const QString& label, const QString& pillObj,
                                 const QString& btnObj, const QString& tip,
                                 QPushButton*& outBtn) -> QFrame* {
         auto* frame = new QFrame(this);
         frame->setObjectName(pillObj);
-        frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        frame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         auto* lay = new QHBoxLayout(frame);
         lay->setContentsMargins(10, 3, 6, 3);
         lay->setSpacing(8);
@@ -207,36 +194,23 @@ void EQ::buildUi() {
         return frame;
     };
 
-    auto* eqPowerPill = makePowerPill("EQ", "eqPowerPill", "eqPowerButton",
-                                      "Turn the equalizer on or off", m_powerBtn);
-    connect(m_powerBtn, &QPushButton::clicked, this, [this]() { setEqEnabled(!m_enabled); });
-
     auto* normPill = makePowerPill("Normalization", "eqNormalizationPill", "eqNormalizationButton",
                                    "Even out loudness and keep audio from peaking", m_normBtn);
     connect(m_normBtn, &QPushButton::clicked, this, [this]() { setNormEnabled(!m_normEnabled); });
 
-    // Stack the two pills; the QVBoxLayout gives them a shared (widest) width so they
-    // line up as a tidy column.
-    auto* rightStack = new QWidget(this);
-    auto* rightStackLay = new QVBoxLayout(rightStack);
-    rightStackLay->setContentsMargins(0, 0, 0, 0);
-    rightStackLay->setSpacing(6);
-    rightStackLay->addWidget(eqPowerPill);
-    rightStackLay->addWidget(normPill);
-    rightStack->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto* eqPowerPill = makePowerPill("EQ", "eqPowerPill", "eqPowerButton",
+                                      "Turn the equalizer on or off", m_powerBtn);
+    connect(m_powerBtn, &QPushButton::clicked, this, [this]() { setEqEnabled(!m_enabled); });
 
-    // Header row: keep the type pill / preset combo centred, with the power-pill stack
-    // pinned top-right. A left spacer the width of the stack balances it.
+    // One flat row: selector | preset (absorbs slack) | normalization | EQ.
     auto* headerRow = new QHBoxLayout();
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->setSpacing(8);
-    auto* leftBalance = new QWidget(this);
-    leftBalance->setFixedWidth(rightStack->sizeHint().width());
-    headerRow->addWidget(leftBalance, 0, Qt::AlignTop);
-    headerRow->addStretch(1);
-    headerRow->addWidget(topGroup);
-    headerRow->addStretch(1);
-    headerRow->addWidget(rightStack, 0, Qt::AlignTop);
+    headerRow->addWidget(pill, 0);
+    headerRow->addWidget(m_presetCombo, 1);
+    headerRow->addWidget(m_saveBtn, 0);
+    headerRow->addWidget(normPill, 0);
+    headerRow->addWidget(eqPowerPill, 0);
     root->addLayout(headerRow);
 
     // --- Drag popup: follows the handle, shows live dB value ---

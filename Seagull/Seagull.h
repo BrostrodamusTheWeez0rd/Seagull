@@ -72,7 +72,7 @@ private:
     FileExplorer* explorerModule;  // the file-manager tab (was "Library")
     Search* searchModule;
     Settings* settingsModule;
-    EQ* eqModule;                  // the EQ tab (10-band equalizer, per-kind presets)
+    EQ* eqModule;                  // 10-band equalizer (per-kind presets); embedded as the Settings "Audio" page
     QTextBrowser* descriptionView; // the dynamic "Description" tab's page
     QTextBrowser* commentsView;    // the dynamic "Comments" tab's page (opens right of Description)
     QWidget* commentsContainer = nullptr; // wraps commentsView + a bottom "loading" pill (the dynamic tab)
