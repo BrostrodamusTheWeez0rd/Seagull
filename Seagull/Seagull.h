@@ -204,7 +204,9 @@ private:
     // Self-update: download + stage the new build (progress dialog), then launch a
     // helper that swaps the files once we exit and relaunches us.
     QProgressDialog* m_updateProgress = nullptr;
-    void startSelfUpdate();
+    void ensureUpdater();          // (re)create the updater worker+thread if shut down
+    void startSelfUpdate();        // bring tools current, THEN download/stage Seagull
+    void beginSeagullDownload();   // second half of startSelfUpdate, after the tool pass
     void onUpdateReadyToApply(const QString& stagedAppDir);
 
     // Answers the player's local-file poster requests (frame grab / cover art).

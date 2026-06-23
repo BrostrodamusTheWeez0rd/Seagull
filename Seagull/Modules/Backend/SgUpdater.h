@@ -6,7 +6,7 @@
 class QNetworkAccessManager;
 class QNetworkReply;
 
-// Keeps the bundled tools current: yt-dlp, Deno, ffmpeg. Two-phase:
+// Keeps the bundled tools current: yt-dlp, Deno, ffmpeg, AtomicParsley. Two-phase:
 //
 //   1. checkForUpdates() — resolves the latest version of each tool (GitHub
 //      "latest" redirects + gyan.dev) and compares with the local exes. Emits
@@ -53,12 +53,15 @@ private:
     QString localYtDlpVersion() const;
     QString localDenoVersion() const;
     QString localFfmpegVersion() const;
+    QString localAtomicParsleyVersion() const;
 
     void downloadNewExe(const QString& exeUrl);
     void downloadNewDeno(const QString& zipUrl);
-    bool extractDenoZip(const QString& zipPath, const QString& targetDir);
+    void downloadNewAtomicParsley(const QString& zipUrl);
+    void onAtomicParsleyDownloadFinished(QNetworkReply* reply);
+    bool extractZip(const QString& zipPath, const QString& targetDir);
 
     QNetworkAccessManager* m_nam = nullptr;
-    QStringList m_applyQueue;   // subset of {"yt-dlp","deno","ffmpeg"}, from the check
+    QStringList m_applyQueue;   // subset of {"yt-dlp","deno","ffmpeg","atomicparsley"}, from the check
     bool m_applyOk = true;
 };

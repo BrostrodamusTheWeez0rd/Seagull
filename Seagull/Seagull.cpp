@@ -735,6 +735,21 @@ void Seagull::releaseThumbnailHolds() {
     playerThumbnailer->setHeld(false);
 }
 
+void Seagull::ensureUpdater() {
+    // The startup flow shuts the updater down once it's done (shutdownUpdater),
+    // so the manual "Check for Updates" self-update path can arrive with no worker.
+    // Recreate it on demand, mirroring the original construction. Parented to its
+    // QThread's owner (this), so it tears down with the app; a self-update that
+    // proceeds quits us anyway.
+    if (updaterThread) return;
+    updaterThread = new QThread(this);
+    updaterWorker = new SgUpdater(nullptr);
+    updaterWorker->moveToThread(updaterThread);
+    connect(updaterWorker, &SgUpdater::updateStatus, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+    connect(updaterThread, &QThread::finished, updaterWorker, &QObject::deleteLater);
+    updaterThread->start();
+}
+
 void Seagull::shutdownUpdater() {
     // Safe to call as soon as the setup/update dialog has closed: the dialogs
     // only close after applyFinished (or with nothing started), so the worker
@@ -1043,17 +1058,40 @@ bool Seagull::run() {
     m_autoUpdateStartup = cfg.value("General/AutoUpdate", true).toBool();
     const bool firstRunTools = SetupDialog::isNeeded();
 
+    // A self-update just relaunched us: it already brought Seagull and the tools
+    // current, so the startup check below would be pure redundancy. Honour the flag
+    // once, then clear it so the next ordinary launch checks as usual.
+    const bool justSelfUpdated = cfg.value("Updates/JustSelfUpdated", false).toBool();
+    if (justSelfUpdated) {
+        cfg.remove("Updates/JustSelfUpdated");
+        cfg.sync();
+    }
+
+    // Throttle the automatic startup check to once an hour. The Settings "Check for
+    // Updates" button is the manual override and ignores this entirely. (LastChecked
+    // is also written by the tool check itself; writing it here means even declining
+    // the prompt starts the clock, so a quick relaunch doesn't re-nag.)
+    constexpr qint64 kStartupCheckIntervalSecs = 3600;
+    const qint64 nowSecs   = QDateTime::currentSecsSinceEpoch();
+    const qint64 lastCheck = cfg.value("Updates/LastChecked", 0).toLongLong();
+    const bool   checkCooldown = (nowSecs - lastCheck) < kStartupCheckIntervalSecs;
+
+    const bool runStartupCheck = m_autoUpdateStartup && !justSelfUpdated && !checkCooldown;
+
     // Two-stage updater modal, BEFORE the window (the window stays hidden until it
-    // closes), but ONLY when AutoUpdate is on. AutoUpdate now means "ask on startup,
-    // then run the check on Yes" — it never installs without a prompt. Off skips the
-    // startup check entirely; the Settings "Check for Updates" button is the only
-    // path then. Stage 1 checks Seagull; stage 2 checks the tools — except on first
-    // run, where SetupDialog below is the tool stage (runToolStage=false), which
-    // also sidesteps re-probing freshly-extracted tool exes (they'd misread their
-    // versions and silently re-download). The thumbnail ffmpeg queues stay held
-    // until finishStartupUpdates() so a tool swap can't race a running grab.
+    // closes), but ONLY when the startup check is due. AutoUpdate means "ask on
+    // startup, then run the check on Yes" — it never installs without a prompt. Off
+    // (or within the hourly cooldown, or right after a self-update) skips the startup
+    // check entirely; the Settings "Check for Updates" button is the only path then.
+    // Stage 1 checks Seagull; stage 2 checks the tools — except on first run, where
+    // SetupDialog below is the tool stage (runToolStage=false), which also sidesteps
+    // re-probing freshly-extracted tool exes (they'd misread their versions and
+    // silently re-download). The thumbnail ffmpeg queues stay held until
+    // finishStartupUpdates() so a tool swap can't race a running grab.
     m_selfUpdateChosen = false;
-    if (m_autoUpdateStartup) {
+    if (runStartupCheck) {
+        cfg.setValue("Updates/LastChecked", nowSecs);
+        cfg.sync();
         UpdateDialog dlg(appUpdate, updaterWorker, /*autoInstall=*/true,
                          /*skipAsk=*/false, /*runToolStage=*/!firstRunTools, nullptr);
         connect(&dlg, &UpdateDialog::selfUpdateRequested, this,
@@ -1189,6 +1227,33 @@ void Seagull::startSelfUpdate() {
         if (m_selfUpdateFromStartup) { m_selfUpdateFromStartup = false; finishStartupUpdates(); }
     });
     m_updateProgress->show();
+
+    // Bring the bundled tools current BEFORE we swap Seagull and relaunch. Tools
+    // live in tools/, which the swap helper preserves (robocopy /XD Tools), so
+    // doing it now is equivalent to doing it after — minus the redundant check on
+    // the fresh launch, which onUpdateReadyToApply then marks to be skipped. Force
+    // the check (ignore the cooldown): the user explicitly asked to update.
+    m_updateProgress->setLabelText("Updating tools...");
+    ensureUpdater(); // the manual path may arrive after the startup updater was shut down
+    connect(updaterWorker, &SgUpdater::checkFinished, this,
+        [this](const QStringList& pending) {
+            if (!m_updateProgress) return; // canceled during the tool check
+            if (pending.isEmpty()) { beginSeagullDownload(); return; }
+            // Something to install: run it, then move on to the Seagull download.
+            connect(updaterWorker, &SgUpdater::applyFinished, this,
+                [this](bool /*allOk*/) { beginSeagullDownload(); },
+                Qt::ConnectionType(Qt::QueuedConnection | Qt::SingleShotConnection));
+            QMetaObject::invokeMethod(updaterWorker, &SgUpdater::applyUpdates, Qt::QueuedConnection);
+        },
+        Qt::ConnectionType(Qt::QueuedConnection | Qt::SingleShotConnection));
+    QMetaObject::invokeMethod(updaterWorker, [u = updaterWorker]() { u->checkForUpdates(true); },
+        Qt::QueuedConnection);
+}
+
+void Seagull::beginSeagullDownload() {
+    if (!m_updateProgress) return; // user canceled during the tool pass
+    m_updateProgress->setLabelText("Downloading update...");
+    m_updateProgress->setValue(0);
     appUpdate->downloadAndApply();
 }
 
@@ -1236,6 +1301,17 @@ void Seagull::onUpdateReadyToApply(const QString& stagedAppDir) {
         if (m_updateProgress) { m_updateProgress->deleteLater(); m_updateProgress = nullptr; }
         QMessageBox::warning(mainWindow, "Update Failed", "Could not launch the update helper.");
         return;
+    }
+
+    // Mark this as a fresh self-update so the relaunched instance skips its startup
+    // update check — we just brought both Seagull and the tools current, so checking
+    // again immediately is pure redundancy. The swap helper preserves Config (/XD
+    // Config), so this flag survives into the new launch, which clears it (one-shot).
+    {
+        QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+        cfg.setValue("Updates/JustSelfUpdated", true);
+        cfg.setValue("Updates/LastChecked", QDateTime::currentSecsSinceEpoch());
+        cfg.sync();
     }
 
     // Hand off: quit so the helper can replace our files and relaunch us.

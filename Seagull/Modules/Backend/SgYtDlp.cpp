@@ -76,6 +76,12 @@ void SgYtDlp::download(const QString& url) {
         args << "--impersonate" << "chrome" << u;         // ...put impersonate before it
     }
 
+    // Run with tools/ as the working dir so yt-dlp's thumbnail-embed step can
+    // resolve the bare-named AtomicParsley.exe (used for M4A/MP4 cover art) from
+    // the current directory. Output paths are absolute, so this doesn't affect
+    // where downloaded files land.
+    m_process->setWorkingDirectory(QCoreApplication::applicationDirPath() + "/tools");
+
     emit logMessage("Starting download: " + url);
     m_process->start(exePath, args);
 }

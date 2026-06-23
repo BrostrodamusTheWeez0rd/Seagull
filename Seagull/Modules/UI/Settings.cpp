@@ -22,6 +22,13 @@
 #include <QCheckBox>
 #include <QProcess>
 #include <QSettings>
+#include <QTimer>
+#include <QApplication>
+#include <QPainter>
+#include <QStyledItemDelegate>
+#include <QListWidgetItem>
+#include <QMap>
+#include <QDateTime>
 
 // The build stamps this in (see CMakeLists). Fallback keeps a stray build compiling.
 #ifndef SEAGULL_VERSION
@@ -29,6 +36,28 @@
 #endif
 
 namespace {
+// The ranked-picker item roles: the channel URL, and its 1..5 position (0 = unranked).
+constexpr int kUrlRole  = Qt::UserRole;
+constexpr int kRankRole = Qt::UserRole + 1;
+
+// Paints the home-feed picker rows: the channel name (default) plus, for ranked items,
+// its number drawn in the accent colour at the right edge.
+class RankDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter* p, const QStyleOptionViewItem& opt, const QModelIndex& idx) const override {
+        QStyledItemDelegate::paint(p, opt, idx);
+        const int rank = idx.data(kRankRole).toInt();
+        if (rank <= 0) return;
+        p->save();
+        QFont f = opt.font; f.setBold(true); p->setFont(f);
+        p->setPen(opt.palette.color(QPalette::Highlight));
+        p->drawText(opt.rect.adjusted(0, 0, -10, 0), Qt::AlignRight | Qt::AlignVCenter,
+                    QString::number(rank));
+        p->restore();
+    }
+};
+
 // Load a bundled resource doc as text ("" if missing).
 QString readDoc(const QString& resourcePath) {
     QFile f(resourcePath);
@@ -96,7 +125,7 @@ void Settings::setupUI() {
     generalLayout->setContentsMargins(20, 20, 20, 20);
 
     autoUpdateCheck = new QCheckBox("Keep tools up to date automatically");
-    autoUpdateCheck->setToolTip("Install yt-dlp / ffmpeg / Deno updates in the background "
+    autoUpdateCheck->setToolTip("Install yt-dlp / ffmpeg / Deno / AtomicParsley updates in the background "
         "at startup. When off, Seagull asks before updating.");
     generalLayout->addRow("Auto Update:", autoUpdateCheck);
 
@@ -353,45 +382,16 @@ void Settings::setupUI() {
     auto* searchWidget = new QWidget();
     auto* searchLayout = new QFormLayout(searchWidget);
     searchLayout->setContentsMargins(20, 20, 20, 20);
-    searchForm = searchLayout; // rebuildHomeChannels shows/hides the picker row on it
+    searchForm = searchLayout;
 
-    // Home feed channels: pick up to 5 favourites to fill the YouTube home page. Only
-    // shown when there are more than 5 favourites (≤5 are all used automatically). One
-    // tight full-width block (header + list, no form-label column) so it reads cleanly.
-    homeChannelsList = new QListWidget();
-    // Pin the height + drop the default Expanding vertical policy. Otherwise the list's
-    // row greedily soaks up the page's spare height, opening a gap above the box.
-    homeChannelsList->setFixedHeight(150);
-    homeChannelsList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    homeChannelsList->setToolTip("Up to 5 favourite channels feed the YouTube home page. "
-        "Their newest uploads fill it when you open the Search tab.");
-    auto* homeChannelsBox = new QWidget();
-    auto* hcLay = new QVBoxLayout(homeChannelsBox);
-    hcLay->setContentsMargins(0, 0, 0, 0);
-    hcLay->setSpacing(4);
-    auto* hcLabel = new QLabel("Home feed channels (pick up to 5):");
-    hcLay->addWidget(hcLabel);
-    hcLay->addWidget(homeChannelsList);
-    homeChannelsRow = homeChannelsBox;
-    searchLayout->addRow(homeChannelsBox);
-    connect(homeChannelsList, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
-        if (m_loading) return; // populating the list, not a user toggle
-        // Enforce the 5-pick cap: revert a check that would exceed it.
-        if (item->checkState() == Qt::Checked) {
-            int checked = 0;
-            for (int i = 0; i < homeChannelsList->count(); ++i)
-                if (homeChannelsList->item(i)->checkState() == Qt::Checked) ++checked;
-            if (checked > 5) {
-                homeChannelsList->blockSignals(true);
-                item->setCheckState(Qt::Unchecked);
-                homeChannelsList->blockSignals(false);
-            }
-        }
-        saveHomeChannels();
-    });
-    // Favourites changed elsewhere (a star toggled in Search) -> keep the picker current.
-    connect(SgFavorites::instance(), &SgFavorites::changed, this,
-            [this](const QString&, bool) { rebuildHomeChannels(); });
+    // Homepage section: header + per-site ranked pickers + the channel-count / batch spins.
+    buildHomeSection(searchLayout);
+
+    // Favourites changed elsewhere (a star toggled in Search) -> keep the pickers current.
+    connect(SgFavorites::instance(),   &SgFavorites::changed, this,
+            [this](const QString&, bool) { rebuildHomePickers(); });
+    connect(SgFavorites::phInstance(), &SgFavorites::changed, this,
+            [this](const QString&, bool) { rebuildHomePickers(); });
 
     searchResultsSpin = new QSpinBox();
     searchResultsSpin->setRange(5, 100);
@@ -513,6 +513,8 @@ void Settings::setupUI() {
     connect(formatCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(dlQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(searchResultsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
+    connect(homeChannelAmountSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
+    connect(homeBatchSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
     connect(streamQualityCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(cookiesBrowserCombo, &QComboBox::currentTextChanged, this, &Settings::onCookiesBrowserChanged);
     connect(deleteCookiesBtn, &QPushButton::clicked, this, &Settings::deleteCookieData);
@@ -671,38 +673,156 @@ void Settings::applySmartSortState() {
     if (dlForm) dlForm->setRowVisible(dlFolderRow, !smartSortCheck->isChecked());
 }
 
-void Settings::rebuildHomeChannels() {
-    if (!homeChannelsList || !searchForm) return;
+void Settings::buildHomeSection(QFormLayout* form) {
+    // Header + one-line intro (full-width rows, no label column).
+    auto* header = new QLabel("Home page");
+    QFont hf = header->font(); hf.setBold(true); hf.setPointSize(hf.pointSize() + 1);
+    header->setFont(hf);
+    header->setContentsMargins(0, 2, 0, 0);
+    form->addRow(header);
 
-    const auto favs = SgFavorites::instance()->favorites();
-    // The picker only matters past 5 favourites; ≤5 are all used automatically.
-    const bool show = favs.size() > 5;
-    searchForm->setRowVisible(homeChannelsRow, show);
-    if (!show) return;
+    auto* intro = new QLabel("Click a site to choose and order up to 5 favourites for its home page. "
+        "Click an item to give it the next number; double-click to move it up.");
+    intro->setObjectName("metaStats"); // themed dim text
+    intro->setWordWrap(true);
+    form->addRow(intro);
 
-    const QStringList picked = iniSettings->value("Search/HomeChannels").toStringList();
+    // Disambiguate a single click (assign rank) from a double-click (promote): a click
+    // arms this timer; a double-click cancels it; if it fires, the click was solo.
+    m_homeClickTimer = new QTimer(this);
+    m_homeClickTimer->setSingleShot(true);
+    m_homeClickTimer->setInterval(QApplication::doubleClickInterval());
+    connect(m_homeClickTimer, &QTimer::timeout, this, [this]() {
+        QListWidget* list = m_pendingList;
+        m_pendingList = nullptr;
+        if (!list) return;
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->data(kUrlRole).toString() == m_pendingUrl) {
+                toggleHomeRank(list, list->item(i));
+                break;
+            }
+    });
 
-    // Repopulate without the itemChanged handler firing on each programmatic check.
-    homeChannelsList->blockSignals(true);
-    homeChannelsList->clear();
-    for (const auto& f : favs) {
-        auto* item = new QListWidgetItem(f.name.isEmpty() ? f.url : f.name, homeChannelsList);
-        item->setData(Qt::UserRole, f.url);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(picked.contains(f.url) ? Qt::Checked : Qt::Unchecked);
+    struct SiteDef { SgFavorites* store; const char* label; const char* cfgKey; };
+    const SiteDef sites[] = {
+        { SgFavorites::instance(),   "YouTube", "Search/HomeChannelsYouTube" },
+        { SgFavorites::phInstance(), "PornHub", "Search/HomeChannelsPornHub" },
+    };
+    for (const SiteDef& s : sites) {
+        const QString label = QString::fromLatin1(s.label);
+        auto* toggle = new QPushButton(QStringLiteral("▸  ") + label); // ▸ collapsed
+        toggle->setObjectName("homeSiteToggle");
+        toggle->setCheckable(true);
+        toggle->setCursor(Qt::PointingHandCursor);
+        toggle->setStyleSheet("text-align:left; padding:5px 6px;");
+        form->addRow(toggle);
+
+        auto* list = new QListWidget();
+        list->setFixedHeight(140);
+        list->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        list->setSelectionMode(QAbstractItemView::NoSelection); // we manage rank, not selection
+        list->setItemDelegate(new RankDelegate(list));
+        list->hide(); // collapsed until the site label is clicked
+        form->addRow(list);
+
+        m_homePickers.append({ s.store, QString::fromLatin1(s.cfgKey), list });
+
+        connect(toggle, &QPushButton::toggled, this, [toggle, list, label](bool on) {
+            list->setVisible(on);
+            toggle->setText((on ? QStringLiteral("▾  ") : QStringLiteral("▸  ")) + label); // ▾/▸
+        });
+        connect(list, &QListWidget::itemClicked, this, [this, list](QListWidgetItem* it) {
+            // Swallow the stray click Qt emits on the release after a double-click.
+            if (QDateTime::currentMSecsSinceEpoch() - m_lastPickDblMs < QApplication::doubleClickInterval())
+                return;
+            m_pendingList = list;
+            m_pendingUrl  = it->data(kUrlRole).toString();
+            m_homeClickTimer->start(); // wait to see if a double-click follows
+        });
+        connect(list, &QListWidget::itemDoubleClicked, this, [this, list](QListWidgetItem* it) {
+            m_homeClickTimer->stop(); m_pendingList = nullptr; // the click was a double-click
+            m_lastPickDblMs = QDateTime::currentMSecsSinceEpoch();
+            promoteHomeRank(list, it);
+        });
     }
-    homeChannelsList->blockSignals(false);
+
+    homeChannelAmountSpin = new QSpinBox();
+    homeChannelAmountSpin->setRange(1, 5);
+    homeChannelAmountSpin->setValue(5);
+    homeChannelAmountSpin->setToolTip("How many of your ranked channels appear on the home page.");
+    form->addRow("Channels on home page:", homeChannelAmountSpin);
+
+    homeBatchSpin = new QSpinBox();
+    homeBatchSpin->setRange(1, 20);
+    homeBatchSpin->setValue(5);
+    homeBatchSpin->setToolTip("How many recent videos to pull from each home-page channel.");
+    form->addRow("Videos per channel:", homeBatchSpin);
 }
 
-void Settings::saveHomeChannels() {
-    if (!homeChannelsList) return;
-    QStringList checked;
-    for (int i = 0; i < homeChannelsList->count(); ++i) {
-        QListWidgetItem* it = homeChannelsList->item(i);
-        if (it->checkState() == Qt::Checked) checked << it->data(Qt::UserRole).toString();
+void Settings::rebuildHomePickers() {
+    for (const HomePicker& p : m_homePickers) {
+        const QStringList ranked = iniSettings->value(p.cfgKey).toStringList(); // priority order
+        p.list->blockSignals(true);
+        p.list->clear();
+        for (const auto& f : p.store->favorites()) {
+            auto* item = new QListWidgetItem(f.name.isEmpty() ? f.url : f.name, p.list);
+            item->setData(kUrlRole, f.url);
+            const int idx = ranked.indexOf(f.url);
+            item->setData(kRankRole, (idx >= 0 && idx < 5) ? idx + 1 : 0);
+        }
+        p.list->blockSignals(false);
+        p.list->viewport()->update();
     }
-    iniSettings->setValue("Search/HomeChannels", checked);
+}
+
+void Settings::saveHomePickerFor(QListWidget* list) {
+    QString cfgKey;
+    for (const HomePicker& p : m_homePickers)
+        if (p.list == list) { cfgKey = p.cfgKey; break; }
+    if (cfgKey.isEmpty()) return;
+
+    QMap<int, QString> byRank; // rank (1..5) -> url, sorted ascending
+    for (int i = 0; i < list->count(); ++i) {
+        const int r = list->item(i)->data(kRankRole).toInt();
+        if (r > 0) byRank.insert(r, list->item(i)->data(kUrlRole).toString());
+    }
+    iniSettings->setValue(cfgKey, QStringList(byRank.values()));
     iniSettings->sync();
+}
+
+void Settings::toggleHomeRank(QListWidget* list, QListWidgetItem* item) {
+    const int rank = item->data(kRankRole).toInt();
+    if (rank == 0) {
+        // Unranked -> give it the next number, up to the cap of 5.
+        int maxRank = 0;
+        for (int i = 0; i < list->count(); ++i)
+            maxRank = qMax(maxRank, list->item(i)->data(kRankRole).toInt());
+        if (maxRank >= 5) return; // already five picked
+        item->setData(kRankRole, maxRank + 1);
+    } else {
+        // Ranked -> remove it and close the gap (everything above shifts down by one).
+        item->setData(kRankRole, 0);
+        for (int i = 0; i < list->count(); ++i) {
+            const int r = list->item(i)->data(kRankRole).toInt();
+            if (r > rank) list->item(i)->setData(kRankRole, r - 1);
+        }
+    }
+    list->viewport()->update();
+    saveHomePickerFor(list);
+}
+
+void Settings::promoteHomeRank(QListWidget* list, QListWidgetItem* item) {
+    const int rank = item->data(kRankRole).toInt();
+    if (rank <= 1) return; // unranked, or already number 1
+    for (int i = 0; i < list->count(); ++i) {
+        if (list->item(i)->data(kRankRole).toInt() == rank - 1) {
+            list->item(i)->setData(kRankRole, rank);     // the item above is pushed down
+            item->setData(kRankRole, rank - 1);          // this item moves up
+            break;
+        }
+    }
+    list->viewport()->update();
+    saveHomePickerFor(list);
 }
 
 void Settings::onDefenderExclusionClicked() {
@@ -741,7 +861,7 @@ void Settings::refreshDefenderButton() {
 
 void Settings::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
-    rebuildHomeChannels();   // favourites may have changed since the page was built
+    rebuildHomePickers();    // favourites may have changed since the page was built
     refreshDefenderButton(); // re-check in case the exclusion changed outside the app
 }
 
@@ -806,6 +926,8 @@ void Settings::loadSettings() {
         recType == "Audio" ? QStringLiteral("M4A") : legacyRecFmt).toString());
 
     searchResultsSpin->setValue(iniSettings->value("Search/ResultLimit", 20).toInt());
+    homeChannelAmountSpin->setValue(iniSettings->value("Search/HomeChannelAmount", 5).toInt());
+    homeBatchSpin->setValue(iniSettings->value("Search/HomeVideosPerChannel", 5).toInt());
 
     // SgPaths owns the key/default/legacy-fallback logic, so the UI always shows
     // exactly the folder the downloader/recorder will actually use. The typed
@@ -856,6 +978,8 @@ void Settings::saveSettings() {
     iniSettings->setValue("Recording/Type", currentRecordingType());
     iniSettings->setValue("Recording/Format", recFormatCombo->currentText());
     iniSettings->setValue("Search/ResultLimit", searchResultsSpin->value());
+    iniSettings->setValue("Search/HomeChannelAmount", homeChannelAmountSpin->value());
+    iniSettings->setValue("Search/HomeVideosPerChannel", homeBatchSpin->value());
     iniSettings->setValue("Paths/HomeFolder", homeFolderEdit->text());
     iniSettings->setValue("Paths/DownloadFolder", dlFolderEdit->text());
     iniSettings->setValue("Paths/VideoFolder", videoFolderEdit->text());
@@ -984,6 +1108,8 @@ void Settings::resetDefaults() {
     updateRecordingFormatOptions();
     recFormatCombo->setCurrentText("MP4");
     searchResultsSpin->setValue(20);
+    homeChannelAmountSpin->setValue(5);
+    homeBatchSpin->setValue(5);
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());
     // The user's Windows folders, same as a fresh install's defaults.
     dlFolderEdit->setText(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));

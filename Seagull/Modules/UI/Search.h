@@ -163,7 +163,8 @@ private:
     // (up to 5) favourited channels/models. Works on YouTube and PornHub, each off its
     // own favourites store (see favStore). Fetched sequentially through m_search, one
     // light request per channel, and rebuilt when switching to another favouritable site.
-    QStringList homeChannels() const;    // resolve the ≤5 channels to feed the home page
+    QStringList homeChannels() const;    // resolve the channels to feed the home page (Settings order/amount)
+    int         homeVideosPerChannel() const; // videos pulled per channel (Settings; default kHomePerChannel)
     void        loadHomeFeed();          // (re)build the feed for the resolved channels
     void        maybeBuildHomeFeed();    // build for the current site's landing if needed
     void        handleHomeBatch(const SearchResult& info, const QList<SearchResult>& videos);
@@ -173,7 +174,8 @@ private:
     // for sites without favourites (Chaturbate).
     SgFavorites* favStore() const;
     static bool  isFavouritableSite(SgSearch::Site s); // YouTube or PornHub
-    static constexpr int kHomePerChannel = 5; // newest videos pulled per channel
+    static constexpr int kHomePerChannel = 5; // default newest videos pulled per channel
+    int         m_homePerChannel = kHomePerChannel; // resolved per-channel count for the active build
     bool        m_homeLoading = false;   // a home-feed build is in progress
     bool        m_homeBuilt   = false;   // a home feed has been built this session
     SgSearch::Site m_homeFeedSite = SgSearch::Site::YouTube; // site the current feed was built for

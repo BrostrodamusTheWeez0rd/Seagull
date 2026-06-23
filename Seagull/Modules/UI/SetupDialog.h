@@ -13,8 +13,8 @@ class SgUpdater;
 // First-run welcome modal: shows the default save folders for confirmation or
 // editing, explains that the external tools (yt-dlp / ffmpeg / Deno) will be
 // downloaded if missing, and runs that download with live progress when the
-// user accepts. Shown by the orchestrator modally when isNeeded() —
-// Setup/Completed unset, or any tool exe missing. It runs as stage 2 of the
+// user accepts. Shown by the orchestrator modally on first run only, when
+// isNeeded() reports the Setup/Completed flag is unset. It runs as stage 2 of the
 // startup flow, BEFORE the main window is shown (the input-dead landmine that
 // once forced it after mainWindow->show() is gone now that the player no longer
 // queues a deferred winId()/VLC hookup — see Seagull::run). Declining just
@@ -26,7 +26,7 @@ class SetupDialog : public QDialog {
 public:
     explicit SetupDialog(SgUpdater* updater, QWidget* parent = nullptr);
 
-    static bool isNeeded();       // no Setup/Completed flag, or tools missing
+    static bool isNeeded();       // true only on first run (Setup/Completed unset)
     static bool toolsMissing();   // any of yt-dlp / ffmpeg+ffprobe / deno absent
 
 private:

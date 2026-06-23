@@ -36,6 +36,9 @@ AV1 is decoded in software (dav1d) on purpose - VLC 3's AV1 hardware path is unr
 **How do I change quality?**
 Hover the video, open the gear (quality) menu in the controls bar, and pick a stream. Your default stream/download quality is set in **Settings → Download & Streaming**.
 
+**Is there an equalizer?**
+Yes - the **EQ** tab has a 10-band graphic equalizer that applies in real time. It's set separately for Audio and Video: switch between them with the pill at the top, choose a stock preset or build and save your own, and use the power button in the top-right to bypass or enable the EQ for that type. Your bands, presets, and on/off choice are remembered per type. Engaging the EQ doesn't drop your volume, so boosted bands play at the gain you set.
+
 **What is the pop-out player?**
 The button beside fullscreen detaches the video into its own window so you can keep watching while you use the rest of Seagull (or other apps). Playback continues across the move. **Closing the pop-out window stops playback** and returns the player to the main window.
 
@@ -44,11 +47,23 @@ The button beside fullscreen detaches the video into its own window so you can k
 **How does Shorts mode work?**
 The Videos/Shorts pill on the Search tab switches the source. In Shorts, results come from a short-form vertical feed; a playing short loops at the end, and scrolling the mouse wheel over the video moves to the next/previous short, fetching more as you go.
 
+**What is the home feed?**
+When you have favourited channels, the Search tab can open on a personalized feed of their newest videos instead of a blank page. In **Settings → Search** you can rank which favourites lead the feed, how many of them feed it, and how many videos each one contributes. It works per site - each supported site keeps its own favourites and its own home feed.
+
+**How do I favourite a channel?**
+Click the star on a result card (or a channel page). Favourites drive the home feed and are saved per site next to your config, so they persist between sessions.
+
+**Can I see a video's comments?**
+Yes - when an online video has comments, a **Comments** tab appears next to the player. Comments load when you open the tab (not before), with collapsible reply threads you can expand and fold like on the source site.
+
 **Can I clear my search history?**
 Yes - **Settings → Search** has "Clear History Now" and an option to auto-clear on exit. History is stored next to `config.ini`.
 
 **Why can't I mix local files and online links in the queue?**
 A queue holds one kind at a time (all local or all online) so playback behaves predictably. Adding the other kind prompts you to clear the queue first.
+
+**Can I shuffle playback?**
+Yes - with autoplay on, a shuffle toggle appears in the player controls. Turn it on to play through the current list in random order; auto-advance and skip then follow the shuffled order.
 
 **What are playlists?**
 You can save the current queue as a playlist (`.sgpl` file) and replay it later from the Library tab's Playlists view.
@@ -64,6 +79,12 @@ Press Record once to mark the start (the button pulses), then again to mark the 
 **Where do recordings and downloads go?**
 Set your folders in **Settings → Folders & Recording**. Downloads use a dedicated downloads folder; recordings/clips use the recording folder. You can also unify the media folders (Videos/Audio/Images) into one.
 
+**Can downloads sort themselves by type?**
+Yes - **Smart sort** (Settings → Download & Streaming) saves each download into its media type's folder automatically: audio into Audio, video into Video, and so on. Turn it off to send everything to a single Downloads folder.
+
+**Do audio downloads include album art?**
+Yes. When you download audio, Seagull embeds the video's thumbnail as cover art and writes basic tags (title, artist), so the file shows up properly in music players. Formats that can't hold a cover image (raw AAC, WAV) just skip it. The artwork is embedded with AtomicParsley, one of the helper tools Seagull fetches and keeps updated for you.
+
 ## Tabs & layout
 
 **How do the tabs work?**
@@ -75,10 +96,13 @@ Click the divider between the video and the tabs, or the chevron at the bottom o
 **The search/library results look too small or too large.**
 Change **Settings → Display → Card size** (Small … Extra Large, or Custom). Cards grow to fill the row from your chosen size.
 
+**Can I make the seek bar bigger?**
+Yes - **Settings → Display → Progress bar size** (Small, Medium, Large) sets the width of the player's seek bar. Larger gives finer scrubbing.
+
 ## Tools & updates
 
 **Why is it updating something at startup?**
-Seagull relies on `yt-dlp`, `ffmpeg`/`ffprobe`, and `deno`, and checks for newer versions on launch (these tools change often, especially yt-dlp). Updates are downloaded and verified by SHA-256 before replacing the old files.
+Seagull relies on `yt-dlp`, `ffmpeg`/`ffprobe`, `deno`, and `AtomicParsley` (which lets yt-dlp embed cover art into MP3/M4A audio), and checks for newer versions on launch (these tools change often, especially yt-dlp). Updates are downloaded and verified by SHA-256 before replacing the old files.
 
 **Can I disable auto-update?**
 Yes - turn off **General → Auto-update** in Settings. With it off, the startup dialog asks before checking, and asks again before installing anything.
@@ -86,11 +110,14 @@ Yes - turn off **General → Auto-update** in Settings. With it off, the startup
 **ffmpeg takes a while to update.**
 ffmpeg is by far the largest tool (~100 MB) and comes from a slower host than the others, so its update can take noticeably longer. This only happens when an update is actually available.
 
+**What is the Defender exclusion option?**
+**Settings → General** has a button to add Seagull's folder to Windows Defender's exclusion list (and remove it again). Defender re-scanning the tool exes on every launch can slow a cold start; excluding the folder avoids that. The button reads **Add** or **Remove** depending on the current state, and changing it needs an elevation prompt. It's optional - Seagull works fine either way.
+
 **First run asks me to set up folders / download tools.**
 That's the one-time setup dialog. It confirms your media folders and downloads any tool that's missing. It reappears only if a tool exe goes missing.
 
 **Does Seagull need internet on first run?**
-Yes. The external tools are not bundled; Seagull downloads `yt-dlp`, `ffmpeg`, and the helper runtime during first-run setup. After that, local playback works offline; online features naturally still need a connection.
+Yes. The external tools are not bundled; Seagull downloads `yt-dlp`, `ffmpeg`, `deno`, and `AtomicParsley` during first-run setup. After that, local playback works offline; online features naturally still need a connection.
 
 ## Building
 

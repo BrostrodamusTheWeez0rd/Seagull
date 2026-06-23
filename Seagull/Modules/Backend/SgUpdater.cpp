@@ -14,12 +14,25 @@
 #include <QEventLoop>
 #include <QDateTime>
 
+// Pinned AtomicParsley build (wez/atomicparsley). yt-dlp shells out to this to
+// embed cover art into MP3/M4A audio downloads. Upstream publishes no per-asset
+// hash and ships new releases rarely, so rather than resolving "latest" we pin a
+// known-good build and verify the downloaded zip against the SHA-256 recorded
+// here. To adopt a newer release, bump all three constants together.
+static const char* kAtomicParsleyVersion = "20240608.083822.0";
+static const char* kAtomicParsleyZipUrl =
+    "https://github.com/wez/atomicparsley/releases/download/20240608.083822.1ed9031/AtomicParsleyWindows.zip";
+static const char* kAtomicParsleyZipSha256 =
+    "CC7C5A7DCABA28869F3819E4A57F382DC0FF307B7B013F9BFFD028605AE6F52D";
+
 SgUpdater::SgUpdater(QObject* parent) : QObject(parent) {
     m_nam = new QNetworkAccessManager(this);
     connect(m_nam, &QNetworkAccessManager::finished, this, [this](QNetworkReply* reply) {
         QString type = reply->property("downloadType").toString();
         if (type == "yt-dlp-exe" || type == "deno-zip")
             onExeDownloadFinished(reply);
+        else if (type == "atomicparsley-zip")
+            onAtomicParsleyDownloadFinished(reply);
         else if (type == "ffmpeg-zip-stream")
         {
         } // handled by its own finished lambda in downloadFfmpeg
@@ -64,6 +77,20 @@ QString SgUpdater::localFfmpegVersion() const {
     QString out = QString::fromLocal8Bit(p.readAllStandardOutput());
     QRegularExpression re("ffmpeg version ([^\\s]+)");
     auto m = re.match(out);
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+QString SgUpdater::localAtomicParsleyVersion() const {
+    QString exePath = QCoreApplication::applicationDirPath() + "/tools/AtomicParsley.exe";
+    if (!QFile::exists(exePath)) return QString();
+    QProcess p;
+    p.start(exePath, { "--version" });
+    p.waitForFinished(20000);
+    QString out = QString::fromLocal8Bit(p.readAllStandardOutput());
+    // "AtomicParsley version: 20240608.083822.0 1ed9031..." — date-style token,
+    // so a plain string compare orders releases correctly (same as yt-dlp).
+    QRegularExpression rx("([0-9]{8}\\.[0-9]{6}\\.[0-9]+)");
+    auto m = rx.match(out);
     return m.hasMatch() ? m.captured(1) : QString();
 }
 
@@ -173,6 +200,25 @@ void SgUpdater::checkForUpdates(bool ignoreCooldown) {
         }
     }
 
+    // AtomicParsley — yt-dlp uses it to embed cover art into MP3/M4A audio.
+    // Pinned build (no upstream hash, infrequent releases), so we compare the
+    // local exe's version against the pinned constant rather than resolving it.
+    emit updateStatus("Checking AtomicParsley version...");
+    {
+        const bool present = QFile::exists(toolsDir + "/AtomicParsley.exe");
+        const QString local = localAtomicParsleyVersion();
+        const QString latest = QString::fromLatin1(kAtomicParsleyVersion);
+        if (present && local.isEmpty()) {
+            emit updateStatus("AtomicParsley present, could not read version, keeping.");
+        } else if (present && local >= latest) {
+            emit updateStatus("AtomicParsley up to date (" + local + ").");
+        } else {
+            pending << (!present ? "AtomicParsley:  not installed  →  " + latest
+                                 : "AtomicParsley:  " + local + "  →  " + latest);
+            m_applyQueue << "atomicparsley";
+        }
+    }
+
     if (pending.isEmpty()) emit updateStatus("All tools up to date.");
     emit checkFinished(pending);
 }
@@ -204,6 +250,10 @@ void SgUpdater::applyNext() {
     else if (tool == "deno") {
         emit updateStatus("Downloading Deno...");
         downloadNewDeno("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip");
+    }
+    else if (tool == "atomicparsley") {
+        emit updateStatus("Downloading AtomicParsley...");
+        downloadNewAtomicParsley(kAtomicParsleyZipUrl);
     }
     else {
         downloadFfmpeg();
@@ -370,6 +420,15 @@ void SgUpdater::downloadNewDeno(const QString& zipUrl) {
     connect(reply, &QNetworkReply::downloadProgress, this, &SgUpdater::onDownloadProgress);
 }
 
+void SgUpdater::downloadNewAtomicParsley(const QString& zipUrl) {
+    QNetworkRequest req;
+    req.setUrl(QUrl(zipUrl));
+    req.setRawHeader("User-Agent", "Seagull-Player");
+    QNetworkReply* reply = m_nam->get(req);
+    reply->setProperty("downloadType", "atomicparsley-zip");
+    connect(reply, &QNetworkReply::downloadProgress, this, &SgUpdater::onDownloadProgress);
+}
+
 void SgUpdater::onDownloadProgress(qint64 received, qint64 total) {
     if (total <= 0) return;
     QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
@@ -390,6 +449,7 @@ void SgUpdater::onDownloadProgress(qint64 received, qint64 total) {
     if (type == "yt-dlp-exe")        tool = "yt-dlp";
     if (type == "deno-zip")          tool = "Deno";
     if (type == "ffmpeg-zip-stream") tool = "ffmpeg";
+    if (type == "atomicparsley-zip") tool = "AtomicParsley";
 
     emit applyProgress(tool, pct);
     if (pct % 5 == 0)
@@ -447,7 +507,7 @@ bool SgUpdater::verifyHash(const QString& filePath, const QString& expectedHash,
     return false;
 }
 
-bool SgUpdater::extractDenoZip(const QString& zipPath, const QString& targetDir) {
+bool SgUpdater::extractZip(const QString& zipPath, const QString& targetDir) {
     QProcess process;
     QStringList args;
     args << "-NoProfile" << "-Command"
@@ -560,7 +620,7 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
         if (QFile::exists(exePath))
             QFile::rename(exePath, exePath + ".bak");
 
-        if (extractDenoZip(zipPath, toolsDir)) {
+        if (extractZip(zipPath, toolsDir)) {
             emit updateStatus("Deno updated successfully.");
             QFile::remove(zipPath);
             QFile::remove(exePath + ".bak");
@@ -575,4 +635,73 @@ void SgUpdater::onExeDownloadFinished(QNetworkReply* reply) {
 
         applyNext();
     }
+}
+
+void SgUpdater::onAtomicParsleyDownloadFinished(QNetworkReply* reply) {
+    QByteArray fileData = reply->readAll();
+    const bool netError = reply->error() != QNetworkReply::NoError;
+    const QString errStr = reply->errorString();
+    reply->deleteLater();
+
+    if (netError) {
+        emit updateStatus("AtomicParsley download failed: " + errStr);
+        m_applyOk = false;
+        applyNext();
+        return;
+    }
+
+    // The Windows zip is ~120 KB. Anything tiny is a truncated download or an
+    // HTML error page redirected to us — reject before we trust the bytes.
+    if (fileData.size() < 50000) {
+        emit updateStatus("AtomicParsley download too small — aborting.");
+        m_applyOk = false;
+        applyNext();
+        return;
+    }
+
+    QString toolsDir = QCoreApplication::applicationDirPath() + "/tools";
+    QDir().mkpath(toolsDir);
+    QString zipPath = toolsDir + "/atomicparsley_temp.zip";
+    QString exePath = toolsDir + "/AtomicParsley.exe";
+
+    QFile file(zipPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        emit updateStatus("Failed to write AtomicParsley zip to disk.");
+        m_applyOk = false;
+        applyNext();
+        return;
+    }
+    file.write(fileData);
+    file.close();
+
+    // Upstream publishes no hash file, so verify against the pinned SHA-256.
+    emit updateStatus("Verifying AtomicParsley hash...");
+    if (!verifyHash(zipPath, kAtomicParsleyZipSha256, "AtomicParsley")) {
+        QFile::remove(zipPath);
+        m_applyOk = false;
+        applyNext();
+        return;
+    }
+
+    emit updateStatus("Extracting AtomicParsley.exe...");
+
+    QFile::remove(exePath + ".bak");
+    if (QFile::exists(exePath))
+        QFile::rename(exePath, exePath + ".bak");
+
+    // The zip holds AtomicParsley.exe at its root, so it lands straight in tools/.
+    if (extractZip(zipPath, toolsDir) && QFile::exists(exePath)) {
+        emit updateStatus("AtomicParsley updated successfully.");
+        QFile::remove(zipPath);
+        QFile::remove(exePath + ".bak");
+    }
+    else {
+        emit updateStatus("AtomicParsley extraction failed — rolling back.");
+        QFile::remove(zipPath);
+        if (QFile::exists(exePath + ".bak"))
+            QFile::rename(exePath + ".bak", exePath);
+        m_applyOk = false;
+    }
+
+    applyNext();
 }

@@ -686,22 +686,30 @@ QString Search::emptyStateText() const {
 QStringList Search::homeChannels() const {
     SgFavorites* store = favStore();
     if (!store) return {};
-    const auto favs = store->favorites();
     QStringList all;
-    for (const auto& f : favs) all << f.url;
-    if (all.size() <= 5) return all;
+    for (const auto& f : store->favorites()) all << f.url;
+    if (all.isEmpty()) return {};
 
-    // >5 favourites: the Settings "pick up to 5" picker is YouTube-only; PornHub just
-    // uses the first 5. (≤5: all are used automatically, above.)
-    if (currentSite() == SgSearch::Site::YouTube) {
-        QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-        const QStringList picked = cfg.value("Search/HomeChannels").toStringList();
-        QStringList out;
-        for (const QString& u : picked)
-            if (all.contains(u) && out.size() < 5) out << u;
-        if (!out.isEmpty()) return out;
-    }
-    return all.mid(0, 5);
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    const int amount = qBound(1, cfg.value("Search/HomeChannelAmount", 5).toInt(), 5);
+    const QString key = currentSite() == SgSearch::Site::PornHub
+        ? QStringLiteral("Search/HomeChannelsPornHub")
+        : QStringLiteral("Search/HomeChannelsYouTube");
+
+    // The Settings picker stores the user's chosen channels in priority order. Use them
+    // (still-favourited), capped at `amount`. If they haven't picked any, fall back to the
+    // first `amount` favourites — so the home feed works without ever opening Settings.
+    QStringList out;
+    for (const QString& u : cfg.value(key).toStringList())
+        if (all.contains(u) && out.size() < amount) out << u;
+    if (out.isEmpty())
+        for (const QString& u : all) { if (out.size() >= amount) break; out << u; }
+    return out;
+}
+
+int Search::homeVideosPerChannel() const {
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    return qBound(1, cfg.value("Search/HomeVideosPerChannel", kHomePerChannel).toInt(), 20);
 }
 
 void Search::loadHomeFeed() {
@@ -717,6 +725,7 @@ void Search::loadHomeFeed() {
     m_currentQuery.clear();
     m_currentSite  = site;
     m_homeFeedSite = site;               // remember the site so a mid-build switch aborts
+    m_homePerChannel = homeVideosPerChannel(); // videos per channel for this build (Settings)
     m_navIndex     = -1;                 // home/landing
     m_shownCount  = 0;
     m_loadingMore = false;
@@ -742,7 +751,7 @@ void Search::loadHomeFeed() {
 void Search::pumpHomeFeed() {
     // More channels queued -> fetch the next one. Drained -> finalise the feed.
     if (!m_homeQueue.isEmpty()) {
-        m_search->fetchChannelVideos(m_homeQueue.takeFirst(), kHomePerChannel);
+        m_search->fetchChannelVideos(m_homeQueue.takeFirst(), m_homePerChannel);
         return;
     }
     m_homeLoading = false;
@@ -801,7 +810,7 @@ void Search::handleHomeBatch(const SearchResult& /*info*/, const QList<SearchRes
 
     int added = 0;
     for (const SearchResult& v : videos) {
-        if (added >= kHomePerChannel) break;
+        if (added >= m_homePerChannel) break;
         if (v.isChannel) continue;
         if (!v.url.isEmpty()) {
             if (m_seenUrls.contains(v.url)) continue;

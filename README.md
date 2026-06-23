@@ -2,7 +2,7 @@
 
 Seagull is a Windows media player and downloader that folds local playback, online streaming, search, downloading, recording, and a media library into one app. Local files and online video play through the same libVLC-backed player, and anything `yt-dlp` can resolve can be streamed or saved to disk. No accounts, no telemetry: it only touches the network for what you ask.
 
-The tools it relies on (`yt-dlp`, `ffmpeg`, `deno`) aren't bundled. Seagull fetches and updates them itself, so the first launch needs internet but you never wrangle Python, PATH, or manual updates.
+The tools it relies on (`yt-dlp`, `ffmpeg`, `deno`, `AtomicParsley`) aren't bundled. Seagull fetches and updates them itself, so the first launch needs internet but you never wrangle Python, PATH, or manual updates.
 
 
 ## Screenshots
@@ -44,9 +44,13 @@ The tools it relies on (`yt-dlp`, `ffmpeg`, `deno`) aren't bundled. Seagull fetc
 
 - **One player for everything.** Local files and online streams share the same libVLC engine (adaptive video + audio merged transparently). Fading overlay controls give a seek bar, volume, an on-the-fly quality/format picker, skip, record, share, pop-out, and fullscreen. Paused or finished media shows a poster frame with one-click replay; AV1 decodes in software for stability, and a stale stream URL re-resolves itself once.
 - **Pop-out player.** Detach the video into its own window and keep watching while you work elsewhere; playback never drops moving in or out.
+- **A 10-band equalizer.** Shape the sound in real time with a graphic EQ that's set independently for audio and video. Stock presets per type, save your own, and a power button to bypass or enable it per media type. Engaging it no longer drops the volume, so boosts play at the gain you set.
 - **Three ways to bring media in.** *Paste a link* in the Queue tab to preview, then stream or download. *Search* across multiple sites as cards with one-click Play/Queue/Download, filter & sort, channel pages, and a Shorts feed that loops and wheel-advances. *Browse your disk* in the File Explorer (folder tree, sortable file table, details panel, clipboard ops).
+- **A home feed built from your favourites.** Star channels and models right on their cards, then let Search open on a personalized feed of their newest videos. Rank which favourites lead and how many videos each contributes in Settings. Works per supported site, each off its own favourites list.
+- **Comments while you watch.** Online videos that have comments get a Comments tab beside the player, loaded on demand, with nested, collapsible reply threads.
+- **Audio downloads with artwork.** Saving audio embeds the video thumbnail as album cover art and writes title/artist tags, so files show up properly in any music player.
 - **Live and recording.** Live streams play with a seekable window and a `● LIVE` badge (streams that split audio/video or stitch in ads are reassembled where possible). Record a live stream to disk while it plays, or mark a start and end on any video or local file to save just that range.
-- **Library, queue, playlists.** A card grid of your saved media (Videos, Audio, Images, Recordings, Playlists) with locally cached thumbnails; a queue that holds one kind at a time for predictable playback; save any queue as a reusable playlist. Choose where each media type lands, or unify them into one folder.
+- **Library, queue, playlists.** A card grid of your saved media (Videos, Audio, Images, Recordings, Playlists) with locally cached thumbnails; a queue that holds one kind at a time for predictable playback, with optional shuffle; save any queue as a reusable playlist. Choose where each media type lands (downloads can auto-sort by type), or unify them into one folder.
 - **A real desktop app.** Native Qt and VLC, not a web wrapper. A collapsible video-over-tabs split, remembered between sessions; tabs reorder, close and reopen, or tear off into their own windows; eight full themes across the whole UI; an audio visualizer that reacts to what's playing.
 
 
@@ -85,7 +89,7 @@ Seagull (orchestrator)
  ├─ MainWindow      window shell: chrome, the video/tabs splitter, fullscreen, player pop-out
  ├─ VideoPlayer     the playback feature widget (overlays, OSD, quality, recording UI)
  │   └─ PlaybackEngine   wraps libVLC (neutral transport API, no VLC types leak out)
- ├─ Tabs            Library · File Explorer · Queue · Search · Settings
+ ├─ Tabs            Library · File Explorer · Queue · Search · EQ · Settings
  └─ Backend workers SgYtDlp (download/resolve) · SgSearch (discovery) · SgRecorder (capture)
                     · SgThumbnailer (thumbs) · SgUpdater (tool updates) · SgPaths (folders)
 ```
@@ -95,11 +99,11 @@ Seagull (orchestrator)
 
 ## Tools and documentation
 
-Three external tools live in the app's `Tools/` folder, fetched on first run and updated in place (SHA-256 verified) on later launches; auto-update can be turned off (it then asks before checking or installing). `yt-dlp.exe` resolves and downloads online video, `ffmpeg.exe` / `ffprobe.exe` handle stream processing, recording, and metadata, and `deno.exe` backs some `yt-dlp` extractors.
+Four external tools live in the app's `Tools/` folder, fetched on first run and updated in place (SHA-256 verified) on later launches; auto-update can be turned off (it then asks before checking or installing). `yt-dlp.exe` resolves and downloads online video, `ffmpeg.exe` / `ffprobe.exe` handle stream processing, recording, and metadata, `deno.exe` backs some `yt-dlp` extractors, and `AtomicParsley.exe` lets yt-dlp embed thumbnail cover art into MP3/M4A audio downloads.
 
 Bundled docs: **`FAQ.md`** (troubleshooting, also on the in-app Info page), **`DISCLAIMER.md`** (the Terms of Use accepted on first run), and **`THIRD_PARTY_NOTICES.md`** (component licenses).
 
 
 ## License
 
-GNU GPL v3 - see `LICENSE.txt`. Seagull is provided as-is; how you use it is your own responsibility (see `DISCLAIMER.md`). It is built with Qt, libVLC, `yt-dlp`, FFmpeg, and Deno, each under its own license.
+GNU GPL v3 - see `LICENSE.txt`. Seagull is provided as-is; how you use it is your own responsibility (see `DISCLAIMER.md`). It is built with Qt, libVLC, `yt-dlp`, FFmpeg, Deno, and AtomicParsley, each under its own license.

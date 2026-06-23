@@ -31,6 +31,16 @@ QStringList SgOptions::buildDownloadArgs(const QString& url) {
             args << "--audio-format" << format;
         if (quality.contains("kbps"))
             args << "--audio-quality" << quality.split(" ").first() + "K";
+
+        // Embed the thumbnail as album cover art and write title/artist/etc. tags.
+        // yt-dlp uses ffmpeg for MP3/Opus/FLAC art and AtomicParsley (shipped in
+        // tools/) for M4A/MP4. Convert to jpg first: source thumbnails are usually
+        // webp (YouTube), which won't embed cleanly into ID3/MP4 cover atoms.
+        // SgYtDlp::download runs yt-dlp with tools/ as its working dir so the
+        // bare-named AtomicParsley.exe is found.
+        args << "--embed-thumbnail"
+             << "--embed-metadata"
+             << "--convert-thumbnails" << "jpg";
     }
     else {
         if (quality == "Best Available") {

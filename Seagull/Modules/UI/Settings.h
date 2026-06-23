@@ -14,6 +14,9 @@
 #include <QList>
 
 class QFormLayout;
+class QListWidgetItem;
+class QTimer;
+class SgFavorites;
 
 class Settings : public QWidget {
     Q_OBJECT
@@ -55,8 +58,11 @@ private:
     void onCookiesBrowserChanged(const QString& text); // warn on enable, then save
     void deleteCookieData(); // clear yt-dlp's cached login/session data
     void applySmartSortState(); // smart sort toggle -> show/hide the Downloads Folder row
-    void rebuildHomeChannels(); // repopulate the home-feed picker + toggle its visibility
-    void saveHomeChannels();    // persist the checked channels to Search/HomeChannels
+    void buildHomeSection(QFormLayout* form);  // homepage header + per-site ranked pickers + amount spins
+    void rebuildHomePickers();  // repopulate every site's ranked picker from its favourites + saved order
+    void saveHomePickerFor(QListWidget* list); // persist one site's ranked URL order
+    void toggleHomeRank(QListWidget* list, QListWidgetItem* item);  // click: add next rank / remove + compact
+    void promoteHomeRank(QListWidget* list, QListWidgetItem* item); // double-click: swap up one rank
     void onDefenderExclusionClicked(); // toggle the Defender exclusion (elevated), then refresh
     void refreshDefenderButton();      // query Defender state -> set Add/Remove Exclusion label
 
@@ -130,9 +136,18 @@ private:
 
     // Search Tab elements
     QSpinBox* searchResultsSpin;         // how many results a search fetches
-    QListWidget* homeChannelsList = nullptr; // pick up to 5 favourites for the YouTube home feed
-    QWidget*     homeChannelsRow  = nullptr; // the row container, shown only when >5 favourites
-    QFormLayout* searchForm       = nullptr; // the Search page form (show/hide the row on it)
+    QFormLayout* searchForm       = nullptr; // the Search page form
+
+    // Homepage section: a per-site collapsible ranked picker (click an item to add the
+    // next 1..5 number, double-click to move it up) plus the two amount spins.
+    struct HomePicker { SgFavorites* store; QString cfgKey; QListWidget* list; };
+    QList<HomePicker> m_homePickers;
+    QSpinBox* homeChannelAmountSpin = nullptr; // how many ranked channels feed the home page
+    QSpinBox* homeBatchSpin         = nullptr; // how many videos per channel
+    QTimer*   m_homeClickTimer      = nullptr; // disambiguates single-click (rank) from double-click (promote)
+    QListWidget* m_pendingList      = nullptr; // the list whose click is pending
+    QString   m_pendingUrl;                    // url of the item whose single-click is pending
+    qint64    m_lastPickDblMs       = 0;       // when the last double-click landed (swallow its trailing click)
     QPushButton* clearHistoryBtn;        // wipe the search history right now
     QCheckBox* clearHistoryOnCloseCheck; // wipe it automatically on every exit
 

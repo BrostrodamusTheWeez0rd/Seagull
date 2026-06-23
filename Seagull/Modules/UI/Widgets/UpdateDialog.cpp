@@ -196,8 +196,11 @@ void UpdateDialog::beginCheck() {
     updateBtn->hide();
     laterBtn->hide();
 
-    // Queued invoke so the (blocking) check runs on the updater's thread.
-    QMetaObject::invokeMethod(m_updater, [u = m_updater]() { u->checkForUpdates(); },
+    // Queued invoke so the (blocking) check runs on the updater's thread. Force it
+    // (ignore the updater's own short cooldown): whether this startup check should
+    // run at all is already decided by the once-an-hour gate in Seagull::run(), which
+    // stamps LastChecked just before opening this dialog.
+    QMetaObject::invokeMethod(m_updater, [u = m_updater]() { u->checkForUpdates(true); },
         Qt::QueuedConnection);
 }
 

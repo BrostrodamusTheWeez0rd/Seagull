@@ -46,5 +46,13 @@ Seagull itself is licensed under the GNU GPL v3 (see `LICENSE.txt`).
 - **Project:** https://github.com/denoland/deno
 - **License text:** https://github.com/denoland/deno/blob/main/LICENSE.md
 
+## AtomicParsley
+
+- **Used for:** letting yt-dlp embed thumbnail cover art and metadata into MP3/M4A audio downloads.
+- **License:** GNU General Public License v2 (GPL-2.0).
+- **Notes:** Bundled as a standalone executable and invoked as a separate process (by yt-dlp). Built from the maintained `wez/atomicparsley` fork.
+- **Project:** https://github.com/wez/atomicparsley
+- **License text:** https://github.com/wez/atomicparsley/blob/master/COPYING
+
 ---
 

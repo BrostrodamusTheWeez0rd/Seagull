@@ -27,8 +27,17 @@ bool SetupDialog::toolsMissing() {
 }
 
 bool SetupDialog::isNeeded() {
+    // Setup is the FIRST-RUN experience only — folder confirmation, shortcuts,
+    // the Defender offer, and the initial tool download — so it is gated purely
+    // on the Setup/Completed flag. Missing or outdated tools on an already
+    // set-up install are NOT a setup concern: the startup update stage (and the
+    // Settings "Check for Updates" button) detect and download them through the
+    // small update dialog, which already handles "not installed -> download" for
+    // every managed tool. Folding toolsMissing() in here was the bug — a newly
+    // added tool (e.g. AtomicParsley) threw existing users back into the full
+    // setup flow on every launch instead of just quietly fetching it.
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    return !cfg.value("Setup/Completed", false).toBool() || toolsMissing();
+    return !cfg.value("Setup/Completed", false).toBool();
 }
 
 SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)
@@ -84,8 +93,8 @@ SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)
     if (toolsMissing()) {
         auto* depNote = new QLabel(
             "Seagull also needs a few free tools to stream, download and record: "
-            "yt-dlp, ffmpeg and Deno (about 150 MB). Seagull will not work "
-            "without them.", this);
+            "yt-dlp, ffmpeg, Deno and AtomicParsley (about 150 MB). Seagull will "
+            "not work without them.", this);
         depNote->setWordWrap(true);
         depNote->setObjectName("metaStats"); // theme's dimmed text styling
         lay->addWidget(depNote);
