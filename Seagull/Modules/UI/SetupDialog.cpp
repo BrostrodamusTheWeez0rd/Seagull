@@ -37,7 +37,23 @@ bool SetupDialog::isNeeded() {
     // added tool (e.g. AtomicParsley) threw existing users back into the full
     // setup flow on every launch instead of just quietly fetching it.
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    return !cfg.value("Setup/Completed", false).toBool();
+    if (cfg.value("Setup/Completed", false).toBool())
+        return false;
+
+    // Migration safety-net: a config that predates the Setup/Completed flag (a
+    // pre-v0.9.0 build, or a hand-edited/partially-reset config) is still an
+    // EXISTING install, not a first run — don't drag those users back through
+    // setup. A [Paths] section is written only by completing setup or changing a
+    // folder in Settings; the Terms modal that runs before this check writes only
+    // Setup/*, and SgPaths reads never persist folder keys, so its presence is a
+    // reliable "already set up" signal. Adopt them: stamp the flag (one-time) so
+    // the missing tool gets fetched silently by the update stage, not via setup.
+    if (cfg.childGroups().contains("Paths")) {
+        cfg.setValue("Setup/Completed", true);
+        return false;
+    }
+
+    return true; // genuine first run — no prior config to inherit
 }
 
 SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)

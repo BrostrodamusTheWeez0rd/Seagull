@@ -20,7 +20,7 @@ class SgAppUpdate;
 //      always prompts (Update Now / Not Now); Update Now emits selfUpdateRequested
 //      and closes so the orchestrator drives the download/swap/relaunch. Not Now
 //      (or up-to-date) falls through to stage 2.
-//   2. "Checking tools (yt-dlp, ffmpeg, Deno)" (SgUpdater) — but only when
+//   2. "Checking tools (yt-dlp, ffmpeg, Deno, AtomicParsley)" (SgUpdater) — but only when
 //      runToolStage is true. On first run the orchestrator owns the tool stage via
 //      SetupDialog, so the dialog closes after stage 1.
 //

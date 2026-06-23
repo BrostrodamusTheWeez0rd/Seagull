@@ -11,7 +11,7 @@ class QCheckBox;
 class SgUpdater;
 
 // First-run welcome modal: shows the default save folders for confirmation or
-// editing, explains that the external tools (yt-dlp / ffmpeg / Deno) will be
+// editing, explains that the external tools (yt-dlp / ffmpeg / Deno / AtomicParsley) will be
 // downloaded if missing, and runs that download with live progress when the
 // user accepts. Shown by the orchestrator modally on first run only, when
 // isNeeded() reports the Setup/Completed flag is unset. It runs as stage 2 of the

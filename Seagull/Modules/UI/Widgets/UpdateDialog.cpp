@@ -107,7 +107,7 @@ void UpdateDialog::enterAskStage() {
     m_busy  = false;
     titleLabel->setText("Check for updates?");
     bodyLabel->setText(
-        "Look for a new version of Seagull and its tools (yt-dlp, ffmpeg, Deno) now?\n"
+        "Look for a new version of Seagull and its tools (yt-dlp, ffmpeg, Deno, AtomicParsley) now?\n"
         "Seagull stays locked while a check or install runs, so a tool is "
         "never replaced mid-use.");
     statusLabel->hide();
@@ -188,7 +188,7 @@ void UpdateDialog::beginCheck() {
     notesView->hide();   // leaving the app-update prompt: back to the plain body text
     bodyLabel->show();
     titleLabel->setText("Checking tools");
-    bodyLabel->setText("Checking for new versions of yt-dlp, ffmpeg and Deno.");
+    bodyLabel->setText("Checking for new versions of yt-dlp, ffmpeg, Deno and AtomicParsley.");
     statusLabel->setText("Contacting update servers...");
     statusLabel->show();
     progressBar->setRange(0, 0); // indeterminate
