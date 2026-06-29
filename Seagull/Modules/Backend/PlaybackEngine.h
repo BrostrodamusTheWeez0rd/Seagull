@@ -65,6 +65,11 @@ public:
     void setAudioTap(bool on);
     bool audioTapActive() const { return m_tapOn; }
 
+    // A/V sync trim (milliseconds) for the tap path: compensates the sink's buffering so a
+    // tapped VIDEO's audio stays lip-synced. Negative = advance audio. 0 for audio-only.
+    // Re-applied automatically on each play (VLC clears audio delay per media change).
+    void setTapAudioDelayMs(int ms);
+
     // --- Equalizer (neutral API; no vlcpp type leaks out) ---------------------
     // gains: one dB value per band (size must equal equalizerBandCount(), else the
     // call is ignored). gain/preamp clamp to ±20 dB inside VLC. Applies live + to
@@ -132,6 +137,7 @@ private:
     bool          m_muted       = false;
     unsigned      m_tapRate     = 44100;
     unsigned      m_tapChannels = 2;
+    int           m_tapAudioDelayMs = 0; // A/V sync trim for a tapped video (see setTapAudioDelayMs)
     double        m_energyEma   = 0.0;     // decaying energy average for beat detection
     qint64        m_lastBeatMs  = 0;
     QElapsedTimer m_beatClock;

@@ -328,6 +328,18 @@ void PlaybackEngine::applyEqualizerToPlayer() {
     m_player->setEqualizer(eq);        // VLC keeps no ref; safe to let eq die after
 }
 
+void PlaybackEngine::setTapAudioDelayMs(int ms) {
+    // A/V sync trim for the tap path. Our QAudioSink buffers audio (FIFO cushion + sink
+    // buffer), so when we tap a VIDEO's audio, VLC — which thinks amem consumes instantly —
+    // renders video ahead of the sound by roughly that buffering. A negative VLC audio
+    // delay advances the audio in VLC's timeline to cancel it (0 for audio-only, where
+    // there's no video to sync to). VLC clears the delay on each media change, so we also
+    // re-apply it from the onPlaying handler. Tunable by ear (the right value is ~ the
+    // sink's end-to-end latency).
+    m_tapAudioDelayMs = ms;
+    if (m_player && m_tapOn) m_player->setAudioDelay(qint64(ms) * 1000); // micros
+}
+
 PlaybackEngine::~PlaybackEngine() {
     if (m_player) m_player->stop(); // stop VLC first -> no more onAudioData into the ring
     if (m_audioThread) {
@@ -363,6 +375,10 @@ void PlaybackEngine::hookEvents() {
         if (m_tapOn && m_audioWorker)
             QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker]() { w->resume(); },
                                       Qt::QueuedConnection);
+        // VLC resets audio delay on each media change; re-assert our tap A/V-sync trim
+        // now the input exists (no-op when it's 0, i.e. audio-only).
+        if (m_tapOn && m_player && m_tapAudioDelayMs != 0)
+            m_player->setAudioDelay(qint64(m_tapAudioDelayMs) * 1000);
         QMetaObject::invokeMethod(this, [this]() { emit playing(); }, Qt::QueuedConnection);
         });
     m_player->eventManager().onEncounteredError([this]() {

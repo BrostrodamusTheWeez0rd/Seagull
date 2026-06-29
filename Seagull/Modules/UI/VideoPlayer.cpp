@@ -365,7 +365,7 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     m_stopped = false;
     m_shortsMode = false;  // new media — the orchestrator re-enables for a short
     applyNormalizationForCurrentKind(); // peak protection state, before tap start + load
-    engine->setAudioTap(m_kind == MediaKind::Audio); // tap audio for the visualizer
+    engine->setAudioTap(m_kind != MediaKind::Photo); // tap audio + video so both run our EQ/limiter
     applyEqualizerForCurrentKind(); // this kind's saved EQ, before the media loads
     emit playbackStarted(); // host shows + sizes the video area
 
@@ -419,7 +419,7 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     setMediaKind(rawUrl.host().contains(QStringLiteral("soundcloud.com"), Qt::CaseInsensitive)
                  ? MediaKind::Audio : MediaKind::Video);
     applyNormalizationForCurrentKind(); // peak protection state, before tap start + load
-    engine->setAudioTap(m_kind == MediaKind::Audio); // tap audio for the visualizer
+    engine->setAudioTap(m_kind != MediaKind::Photo); // tap audio + video so both run our EQ/limiter
     applyEqualizerForCurrentKind(); // this kind's saved EQ, before the media loads
 
     // New media — clear the old poster; the probe/resolve brings a fresh thumbnail.
@@ -739,28 +739,30 @@ void VideoPlayer::setNormalizationEnabled(bool on) {
     // applies instantly on the sink's limiter; video reloads a local clip in place
     // (streams take it on next load).
     if (!engine) return;
-    if (m_kind == MediaKind::Audio) {
+    // Both audio and video now run through the tap (our SgEq + limiter), so normalization
+    // is the same live sink-limiter toggle for both — no media reload needed for video.
+    if (m_kind != MediaKind::Photo)
         engine->setAudioNormalizationEnabled(on);
-    } else if (m_kind == MediaKind::Video) {
-        engine->setVideoNormalizationEnabled(on);
-        engine->reloadForVideoNormalization();
-    }
 }
 
 void VideoPlayer::applyNormalizationForCurrentKind() {
     // Apply the saved per-kind normalization state before the media loads. The EQ tab
     // owns the config; we read + push it so a freshly started track gets its kind's
     // peak protection even if the EQ tab was never opened. Must run before setAudioTap
-    // (audio sink reads the state at start) and before the load (the video compressor is
-    // bound as a media option at load). Default on: "audio never peaks" out of the box.
+    // (the sink reads the state at start). Default on: "audio never peaks" out of the box.
+    // Both audio and video go through the tap now, so both apply it on the sink limiter.
     if (!engine) return;
     if (m_kind == MediaKind::Photo) return; // no audio
     const QString ns = (m_kind == MediaKind::Audio) ? QStringLiteral("Eq/Audio/")
                                                     : QStringLiteral("Eq/Video/");
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     const bool on = cfg.value(ns + "NormEnabled", true).toBool();
-    if (m_kind == MediaKind::Audio) engine->setAudioNormalizationEnabled(on);
-    else                            engine->setVideoNormalizationEnabled(on);
+    engine->setAudioNormalizationEnabled(on);
+    // Tapping a video's audio adds the sink's buffering latency, so video would lead the
+    // sound; trim it back with a negative audio delay (audio-only has nothing to sync to,
+    // so 0). Stored now; the engine applies it once the input is playing. Tune by ear.
+    constexpr int kVideoTapAvSyncMs = 0; // set negative (e.g. -200) if video leads audio
+    engine->setTapAudioDelayMs(m_kind == MediaKind::Video ? kVideoTapAvSyncMs : 0);
 }
 
 void VideoPlayer::applyEqualizerForCurrentKind() {
