@@ -11,16 +11,18 @@
 // 32-bit float (±1.0) in place. No Qt deps — it lives on the audio output thread's hot
 // pull path, so it stays allocation-free per call after prepare().
 //
-// We deliberately pull FL32 from VLC (not S16) so the EQ's +10 dB makeup and band
-// boosts can overshoot 0 dBFS without being hard-clipped at a 16-bit conversion BEFORE
-// we ever see them — the limiter has to act on the un-clipped signal to actually
-// prevent clipping. There is no 16-bit conversion anywhere in our chain; the sink
-// plays float.
+// IMPORTANT: this works in float but NEVER pulls float from VLC. The pull path reads
+// clean S16 from VLC's amem, converts it to a float scratch buffer ourselves, runs our
+// own EQ (SgEq) then this stage, and only then quantises back to S16 for the sink.
+// Float-from-VLC amem is a confirmed dead end on this setup (it screams) — so all float
+// here is on buffers we generated, which is safe. Working in float lets SgEq's band
+// boosts overshoot 0 dBFS without being hard-clipped before this limiter can catch them.
 //
 // Order matters: normalise (drive toward target) -> limit (catch anything over the
-// ceiling). The limiter's ceiling is below 0 dBFS, so the output can never clip even
-// when the EQ's +10 dB makeup or hot source material would otherwise overshoot. The
-// user's volume is applied AFTER this (by the QAudioSink), so it always wins.
+// ceiling). The limiter's ceiling is below 0 dBFS, so the S16 conversion that follows
+// this stage can never clip even when SgEq's boost or hot source material would
+// otherwise overshoot. The user's volume is applied AFTER this (by the QAudioSink),
+// so it always wins.
 class SgDynamics {
 public:
     SgDynamics() = default;

@@ -120,6 +120,10 @@ signals:
     void mediaEnded();
     void skipRequested(int delta);
 
+    // The playing content kind changed (Video/Audio/Photo). The orchestrator uses this
+    // to keep the EQ's Video/Audio selector following whatever is currently playing.
+    void mediaKindChanged(MediaKind kind);
+
     // Mirror playback out to the Windows media controls (SMTC). State maps to
     // SgMediaControls::Status: 0 = stopped, 1 = playing, 2 = paused.
     void smtcStateChanged(int state);
@@ -196,6 +200,7 @@ private:
 
     // Content kind + its presentation helpers.
     MediaKind m_kind = MediaKind::Video;
+    void setMediaKind(MediaKind k);  // assign m_kind, emitting mediaKindChanged on a real change
     static MediaKind kindForLocalFile(const QUrl& url);
     void applyKindChrome();          // configure the controls bar for m_kind (visualizer swap)
     void showAudioArt();             // poster up full-time: cover art, or the placeholder

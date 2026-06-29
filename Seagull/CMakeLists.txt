@@ -90,6 +90,8 @@ add_executable(Seagull
     Modules/Backend/PlaybackEngine.cpp
     Modules/Backend/SgDynamics.h
     Modules/Backend/SgDynamics.cpp
+    Modules/Backend/SgEq.h
+    Modules/Backend/SgEq.cpp
     Modules/Backend/SgMediaControls.h
     Modules/Backend/SgMediaControls.cpp
     Modules/Backend/SgAppUpdate.h

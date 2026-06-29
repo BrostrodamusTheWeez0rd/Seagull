@@ -1,5 +1,6 @@
 #include "PlaybackEngine.h"
 #include "SgDynamics.h"
+#include "SgEq.h"
 #include <QObject>
 #include <QFile>
 #include <QDir>
@@ -15,6 +16,20 @@
 #include <cmath>
 #include <cstring>
 #include <cstdint>
+#include <vector>
+#include <xmmintrin.h> // _MM_SET_FLUSH_ZERO_MODE  (FTZ: flush denormal results to zero)
+#include <pmmintrin.h> // _MM_SET_DENORMALS_ZERO_MODE (DAZ: treat denormal inputs as zero)
+
+namespace {
+// Our float EQ/limiter biquads can produce denormal sample values (their IIR feedback
+// decays toward zero). Arithmetic on denormals stalls the CPU ~100x; on the sink's pull
+// thread that starves the buffer and crackles. FTZ+DAZ make the SSE unit treat denormals
+// as zero — per-thread (MXCSR), so arm it at the top of every pull. x64 always has SSE2/3.
+inline void armDenormalFlush() {
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+}
+} // namespace
 
 // Thread-safe PCM ring between VLC's audio thread (push) and the QAudioSink's
 // pull thread (pop). Capped so a stalled consumer can't grow it unbounded.
@@ -24,13 +39,13 @@ public:
     void push(const char* data, qint64 len) {
         QMutexLocker l(&m_mx);
         m_buf.append(data, len);
-        // ~4s of stereo float (~2.8MB). Must comfortably exceed VLC's decode-ahead:
+        // ~4s of stereo S16 (~1.4MB). Must comfortably exceed VLC's decode-ahead:
         // at track start VLC bursts decoded audio into the ring faster than realtime
         // to fill its own caches, and a tighter cap (it used to be ~1s — exactly
         // VLC's file-caching) overflows and evicts unplayed samples from the front,
         // an audible skip/glitch right as the track starts. The sink still plays in
         // order at the hardware rate, so the extra headroom adds no latency.
-        const int cap = 44100 * 2 * int(sizeof(float)) * 4; // rate * ch * bytes/sample * seconds
+        const int cap = 44100 * 2 * 2 * 4;
         if (m_buf.size() > cap) m_buf.remove(0, m_buf.size() - cap);
     }
     QByteArray pop(qint64 maxlen) {
@@ -54,12 +69,18 @@ private:
 class FifoDevice : public QIODevice {
 public:
     FifoDevice(AudioFifo* fifo, std::function<void(const QByteArray&)> onConsumed,
-               qint64 primeBytes, SgDynamics* dyn, int channels, QObject* parent = nullptr)
+               qint64 primeBytes, SgEq* eq, SgDynamics* dyn, int channels, QObject* parent = nullptr)
         : QIODevice(parent), m_fifo(fifo), m_onConsumed(std::move(onConsumed)),
-          m_primeBytes(primeBytes), m_dyn(dyn), m_channels(channels) {}
+          m_primeBytes(primeBytes), m_eq(eq), m_dyn(dyn), m_channels(channels) {}
 
 protected:
     qint64 readData(char* data, qint64 maxlen) override {
+        // The IIR EQ + limiter run in float here and can generate denormals; flush them
+        // on whatever thread the sink pulls on (per-thread MXCSR) so they don't stall us.
+        armDenormalFlush();
+        // The FIFO holds VLC's clean S16; we do all DSP in a float scratch we generate
+        // ourselves (no float ever crosses the VLC boundary — that path screams here),
+        // then quantise back to S16 for the sink. data/maxlen are S16 units throughout.
         // Prime gate: until VLC has buffered a cushion, hand the sink silence
         // (consuming nothing) so the first real samples play out of a filled FIFO
         // instead of being spliced with zero-padding at the head — that splice is
@@ -79,21 +100,36 @@ protected:
             // the next track / recovery rebuilds the cushion and resumes cleanly,
             // rather than splicing silence into the middle of live audio.
             m_primed = false;
+            if (m_eq)  m_eq->reset();  // clear filter ringdown so it doesn't bleed across tracks
             if (m_dyn) m_dyn->reset(); // clear the gain ride so it doesn't bleed across tracks
             std::memset(data, 0, size_t(maxlen));
             return maxlen;
         }
-        // Master-bus normaliser + brickwall limiter, in place on this chunk, BEFORE it
-        // reaches the sink and before the visualizer sees it — so peak protection is
-        // applied to exactly what's heard, and the volume (set on the sink) still scales
-        // the limited signal afterward.
-        if (m_dyn && m_channels > 0) {
-            const int frames = int(got / (qint64(sizeof(float)) * m_channels));
-            if (frames > 0) m_dyn->process(reinterpret_cast<float*>(chunk.data()), frames, m_channels);
+        const int ch = qMax(1, m_channels);
+        const int frames = int(got / (2 * ch));
+        const int nSamples = frames * ch;
+        if (nSamples > 0) {
+            // S16 -> float scratch (±1.0).
+            if (int(m_scratch.size()) < nSamples) m_scratch.resize(nSamples);
+            const int16_t* in = reinterpret_cast<const int16_t*>(chunk.constData());
+            float* fb = m_scratch.data();
+            for (int i = 0; i < nSamples; ++i) fb[i] = in[i] * (1.0f / 32768.0f);
+            // Our own EQ first (its boost may overshoot 0 dBFS), THEN the normaliser +
+            // brickwall limiter holds the result under the ceiling — so the S16 quantise
+            // below can never clip. Both are bypassed (exact passthrough) when disabled.
+            if (m_eq)  m_eq->process(fb, frames, ch);
+            if (m_dyn) m_dyn->process(fb, frames, ch);
+            // float -> S16 with a hard clamp guard (only bites if the limiter is off; it
+            // CLAMPS, never wraps, so a stray over-range sample can't become harsh noise).
+            int16_t* out = reinterpret_cast<int16_t*>(chunk.data()); // reuse chunk as S16 out
+            for (int i = 0; i < nSamples; ++i) {
+                const float v = qBound(-1.0f, fb[i], 1.0f);
+                out[i] = int16_t(std::lround(v * 32767.0f));
+            }
         }
         std::memcpy(data, chunk.constData(), size_t(got));
         if (got < maxlen) std::memset(data + got, 0, size_t(maxlen - got)); // pad a partial tail
-        if (m_onConsumed) m_onConsumed(chunk);
+        if (m_onConsumed) m_onConsumed(chunk); // visualizer sees the processed S16 (what's heard)
         return maxlen; // always full so the sink stays Active across brief gaps
     }
     qint64 writeData(const char*, qint64) override { return -1; }
@@ -111,7 +147,9 @@ private:
     AudioFifo* m_fifo;
     std::function<void(const QByteArray&)> m_onConsumed;
     const qint64 m_primeBytes;   // FIFO fill required before the first real pull
+    SgEq* m_eq = nullptr;        // graphic EQ (owned by the worker); null = bypass
     SgDynamics* m_dyn = nullptr; // normaliser + limiter (owned by the worker); null = bypass
+    std::vector<float> m_scratch; // S16<->float work buffer, grown to the largest block
     int m_channels = 2;
     bool m_primed = false;
 };
@@ -128,21 +166,25 @@ public:
         : m_fifo(fifo), m_onConsumed(std::move(onConsumed)) {}
     ~AudioSinkWorker() override { stop(); }
 
-    void start(int rate, int channels, int volume, bool muted, bool normEnabled) {
+    void start(int rate, int channels, int volume, bool muted, bool normEnabled,
+               bool eqEnabled, const QVector<float>& eqGains, float eqPreamp) {
         stop();
         QAudioFormat fmt;
         fmt.setSampleRate(rate);
         fmt.setChannelCount(channels);
-        fmt.setSampleFormat(QAudioFormat::Float); // float end-to-end: limiter acts before any 16-bit conversion
+        fmt.setSampleFormat(QAudioFormat::Int16);
         const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
         if (dev.isNull() || !dev.isFormatSupported(fmt)) return;
-        // Size the normaliser/limiter for this format and clear any prior ride.
+        // Size the EQ + normaliser/limiter for this format and clear any prior state.
+        m_eq.prepare(rate, channels);
+        if (!eqGains.isEmpty()) m_eq.setParams(eqGains.constData(), eqGains.size(), eqPreamp);
+        m_eq.setEnabled(eqEnabled);
         m_dyn.prepare(rate, channels);
         m_dyn.setEnabled(normEnabled);
         // Buffer a ~150ms cushion before emitting real audio so the track head plays
         // from a filled FIFO (no startup splice glitch); VLC decodes ahead, so the
         // cushion fills near-instantly and adds only a brief, inaudible head delay.
-        m_device = new FifoDevice(m_fifo, m_onConsumed, fmt.bytesForDuration(150000), &m_dyn, channels);
+        m_device = new FifoDevice(m_fifo, m_onConsumed, fmt.bytesForDuration(150000), &m_eq, &m_dyn, channels);
         m_device->open(QIODevice::ReadOnly);
         m_sink = new QAudioSink(dev, fmt);
         m_sink->setBufferSize(fmt.bytesForDuration(100000)); // ~100ms: low latency, glitch-safe
@@ -164,12 +206,19 @@ public:
     // Live normalisation toggle — m_dyn's enable is atomic, so this is safe to call
     // from any thread (the GUI thread pokes it while the audio thread processes).
     void setNormalization(bool on) { m_dyn.setEnabled(on); }
+    // Live EQ updates. setParams locks briefly; setEnabled is atomic. Invoked queued
+    // onto this thread, so they're sequenced with start()/stop() too.
+    void setEqEnabled(bool on) { m_eq.setEnabled(on); }
+    void setEqParams(const QVector<float>& gains, float preamp) {
+        if (!gains.isEmpty()) m_eq.setParams(gains.constData(), gains.size(), preamp);
+    }
 
 private:
     AudioFifo* m_fifo;
     std::function<void(const QByteArray&)> m_onConsumed;
     QAudioSink* m_sink = nullptr;
     QIODevice*  m_device = nullptr;
+    SgEq        m_eq;    // our 10-band graphic EQ on the pull path (replaces libVLC's EQ here)
     SgDynamics  m_dyn;   // master-bus normaliser + brickwall limiter on the pull path
 };
 
@@ -236,19 +285,39 @@ void PlaybackEngine::setEqualizer(const QVector<float>& gains, float preampDb) {
 
 void PlaybackEngine::disableEqualizer() {
     m_eqEnabled = false;
-    if (m_player) m_player->unsetEqualizer();
+    if (m_player) m_player->unsetEqualizer();              // video / VLC-native path
+    if (m_tapOn && m_audioWorker)                          // audio-tap path: bypass our SgEq live
+        QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker]() { w->setEqEnabled(false); },
+                                  Qt::QueuedConnection);
 }
 
 
-// libVLC's equalizer filter has a large, fixed insertion loss: the instant it's
-// engaged the signal drops ~10 dB beyond any preamp/band setting, on BOTH the
-// audio-tap and VLC's native video output. We cancel it with a constant makeup
-// folded into the preamp, so toggling the EQ changes tone, not loudness — EQ-on
-// sits at the same level as EQ-off (bypass). Tune by ear: if the power button
-// still jumps the level, nudge this until on/off match (up = louder EQ-on).
+// libVLC's equalizer filter (used ONLY on the video / VLC-native output path now) has a
+// large, fixed insertion loss: the instant it's engaged the signal drops ~10 dB beyond
+// any preamp/band setting. We cancel it with a constant makeup folded into the preamp, so
+// toggling the EQ changes tone, not loudness. Our own SgEq (the audio-tap path) has NO
+// insertion loss — flat is exact unity — so it needs no makeup. Tune by ear: if the power
+// button jumps the level on VIDEO, nudge this until on/off match (up = louder EQ-on).
 static constexpr float kEqMakeupDb = 10.0f;
 
 void PlaybackEngine::applyEqualizerToPlayer() {
+    if (m_tapOn) {
+        // Audio-tap path: WE do the EQ (SgEq on the pull thread), not libVLC — so the band
+        // boost can be caught by our limiter before the S16 quantise instead of being
+        // hard-clipped inside VLC. Keep libVLC's own EQ OFF here (it would clip upstream of
+        // us) and push the current curve to the worker. No makeup (SgEq is unity at flat).
+        if (m_player) m_player->unsetEqualizer();
+        if (m_audioWorker) {
+            const bool on = m_eqEnabled && !m_eqGains.isEmpty();
+            const QVector<float> g = m_eqGains; const float p = m_eqPreamp;
+            QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker, on, g, p]() {
+                w->setEqParams(g, p);
+                w->setEqEnabled(on);
+            }, Qt::QueuedConnection);
+        }
+        return;
+    }
+    // Video / VLC-native path: use libVLC's equalizer (with the insertion-loss makeup).
     if (!m_player || !m_eqEnabled || m_eqGains.isEmpty()) return;
     VLC::Equalizer eq;                 // default ctor: all bands zeroed
     // +makeup cancels the filter's insertion loss; clamp to VLC's ±20 dB preamp range.
@@ -555,7 +624,7 @@ void PlaybackEngine::setAudioTap(bool on) {
         QAudioFormat fmt;
         fmt.setSampleRate(int(m_tapRate));
         fmt.setChannelCount(int(m_tapChannels));
-        fmt.setSampleFormat(QAudioFormat::Float); // see AudioSinkWorker::start
+        fmt.setSampleFormat(QAudioFormat::Int16);
         const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
         if (dev.isNull() || !dev.isFormatSupported(fmt)) return; // stay on VLC's audio output
 
@@ -570,7 +639,7 @@ void PlaybackEngine::setAudioTap(bool on) {
         m_fifo->clear();
         ensureAudioThread();
 
-        // Custom decoded-audio output: VLC hands us FL32 interleaved samples; the
+        // Custom decoded-audio output: VLC hands us S16 interleaved samples; the
         // worker thread's sink plays them, we analyse them. flush() clears the ring
         // on seek so stale audio isn't replayed.
         m_player->setAudioCallbacks(
@@ -578,14 +647,18 @@ void PlaybackEngine::setAudioTap(bool on) {
             nullptr, nullptr,
             [this](int64_t) { if (m_fifo) m_fifo->clear(); },
             nullptr);
-        m_player->setAudioFormat("FL32", m_tapRate, m_tapChannels);
+        m_player->setAudioFormat("S16N", m_tapRate, m_tapChannels);
 
-        // Start the sink on the audio thread (it owns/creates the sink there).
+        // Start the sink on the audio thread (it owns/creates the sink there). Hand it the
+        // current EQ state too, so our graphic EQ is active from the first block of audio
+        // (the tap does the EQ now, not libVLC — see applyEqualizerToPlayer).
         const int rate = int(m_tapRate), ch = int(m_tapChannels), vol = m_volume;
         const bool mu = m_muted; const bool norm = m_normAudio;
-        QMetaObject::invokeMethod(m_audioWorker, [w = m_audioWorker, rate, ch, vol, mu, norm]() {
-            w->start(rate, ch, vol, mu, norm);
-        }, Qt::QueuedConnection);
+        const bool eqOn = m_eqEnabled; const QVector<float> eqG = m_eqGains; const float eqP = m_eqPreamp;
+        QMetaObject::invokeMethod(m_audioWorker,
+            [w = m_audioWorker, rate, ch, vol, mu, norm, eqOn, eqG, eqP]() {
+                w->start(rate, ch, vol, mu, norm, eqOn, eqG, eqP);
+            }, Qt::QueuedConnection);
     } else {
         m_tapOn = false;
         if (m_audioWorker)
@@ -607,17 +680,17 @@ void PlaybackEngine::setAudioTap(bool on) {
 // the GUI thread, so during a UI freeze the visualizer pauses but audio does not.
 void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
     const int ch = qMax(1, int(m_tapChannels));
-    const qint64 frames = (chunk.size() / qint64(sizeof(float))) / ch;
+    const qint64 frames = (chunk.size() / 2) / ch;
     if (frames <= 0) return;
-    const float* s = reinterpret_cast<const float*>(chunk.constData());
+    const int16_t* s = reinterpret_cast<const int16_t*>(chunk.constData());
 
     // Bass/mid crossover ~330Hz, CASCADED to 12dB/oct so kick energy lands in the
     // bass band instead of bleeding up into mids. Mid/treble split ~2kHz (1-pole).
     const double aLow = 0.046, aMid = 0.250;
     double sumsq = 0.0, eBass = 0.0, eMid = 0.0, eTreb = 0.0;
     for (qint64 f = 0; f < frames; ++f) {
-        const double x = (ch >= 2) ? (double(s[f * ch]) + double(s[f * ch + 1])) * 0.5
-                                   : double(s[f * ch]); // FL32 samples already ±1.0
+        const double x = (ch >= 2) ? (s[f * ch] + s[f * ch + 1]) * (0.5 / 32768.0)
+                                   : s[f * ch] / 32768.0;
         sumsq += x * x;
         m_lpLow  += aLow * (x - m_lpLow);
         m_lpLow2 += aLow * (m_lpLow - m_lpLow2);  // second pole -> steeper bass edge
@@ -670,5 +743,5 @@ void PlaybackEngine::onAudioData(const void* samples, unsigned count, int64_t /*
     // device) so the visualizer stays in sync with what's actually being heard.
     if (!m_fifo) return;
     const qint64 nSamples = qint64(count) * m_tapChannels;
-    m_fifo->push(static_cast<const char*>(samples), nSamples * qint64(sizeof(float))); // FL32 = 4 bytes
+    m_fifo->push(static_cast<const char*>(samples), nSamples * 2); // S16 = 2 bytes
 }

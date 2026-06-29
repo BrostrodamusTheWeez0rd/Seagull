@@ -30,6 +30,14 @@ class EQ : public QWidget {
 public:
     explicit EQ(QWidget* parent = nullptr);
 
+    // Auto-follow the playing media kind. armFollow() re-enables following (called when
+    // the Audio page is shown); followPlayingKind() switches the Video/Audio selector to
+    // match what is playing, but only while still following — a manual pill click pins
+    // the selection until the page is shown again. Both are silent (no live emit): they
+    // only change which type is being viewed/edited, never what is playing.
+    void armFollow();
+    void followPlayingKind(EqContentType type);
+
 signals:
     // A live edit for `type` (a slider moved, or a preset chosen). The orchestrator
     // applies it to playback only when the playing media's kind matches `type`.
@@ -86,6 +94,7 @@ private:
     bool m_loading = false;                      // suppress live-apply while setting sliders
     bool m_enabled = true;                       // current type's EQ on/off (power button), per-type
     bool m_normEnabled = true;                   // current type's normalization on/off, per-type
+    bool m_followPlaying = true;                 // pill tracks the playing kind until a manual click pins it
 
     QButtonGroup*          m_typeGroup  = nullptr;
     QPushButton*           m_powerBtn = nullptr;     // top-right EQ on/off toggle for the current type

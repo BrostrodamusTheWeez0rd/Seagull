@@ -14,6 +14,7 @@
 #include <QList>
 
 class QFormLayout;
+class QVBoxLayout;
 class QListWidgetItem;
 class QTimer;
 class QLabel;
@@ -37,6 +38,7 @@ signals:
     void clearHistoryRequested();     // General "Clear History Now" -> Search wipes its history
     void visualizerSettingsChanged(); // Display "Visualizer" -> player re-reads visualizer config
     void checkForUpdatesRequested();  // General "Check Now" -> orchestrator runs the app check
+    void audioPageShown();            // Audio (EQ) page became visible -> EQ re-arms auto-follow
 
 protected:
     void showEvent(QShowEvent* event) override; // refresh the home-feed picker on open
@@ -85,7 +87,8 @@ private:
     // Side tab layout components
     QListWidget* sidebar;
     QStackedWidget* stackedWidget;
-    int m_audioRow = -1; // sidebar row of the embedded EQ page (-1 until addAudioPage)
+    int m_audioRow = -1; // sidebar row of the Audio page (set in setupUI)
+    QVBoxLayout* m_audioPageLayout = nullptr; // Audio page layout; addAudioPage slots the EQ in at the top
 
     // General Tab elements
     QCheckBox* autoUpdateCheck;  // install tool updates silently vs ask first
@@ -110,8 +113,7 @@ private:
 
     // Download & Streaming Tab elements
     QCheckBox*   smartSortCheck;  // route downloads into per-type folders vs one folder
-    QWidget*     dlFolderRow;     // the Downloads Folder row, hidden while smart sort is on
-    QFormLayout* dlForm = nullptr; // the Download tab form (show/hide the folder row on it)
+    QWidget*     dlFolderRow;     // the Downloads Folder row (on the Folders page), hidden while smart sort is on
     QButtonGroup* typeGroup;     // Video | Audio toggle
     QPushButton* typeVideoBtn;
     QPushButton* typeAudioBtn;

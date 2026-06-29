@@ -353,7 +353,7 @@ void VideoPlayer::onMediaEndReached() {
 }
 
 void VideoPlayer::playLocalFile(const QUrl& url) {
-    m_kind = kindForLocalFile(url);
+    setMediaKind(kindForLocalFile(url));
     if (m_kind == MediaKind::Photo) { openPhoto(url); return; } // still image — no VLC
 
     stopRecordingIfActive(); // switching media — finalise any recording first
@@ -416,8 +416,8 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear(); m_currentLocalUrl.clear();
 
     // SoundCloud is audio-only — show the artwork poster instead of a black frame.
-    m_kind = rawUrl.host().contains(QStringLiteral("soundcloud.com"), Qt::CaseInsensitive)
-                 ? MediaKind::Audio : MediaKind::Video;
+    setMediaKind(rawUrl.host().contains(QStringLiteral("soundcloud.com"), Qt::CaseInsensitive)
+                 ? MediaKind::Audio : MediaKind::Video);
     applyNormalizationForCurrentKind(); // peak protection state, before tap start + load
     engine->setAudioTap(m_kind == MediaKind::Audio); // tap audio for the visualizer
     applyEqualizerForCurrentKind(); // this kind's saved EQ, before the media loads
@@ -736,8 +736,8 @@ void VideoPlayer::disableEqualizer() {
 
 void VideoPlayer::setNormalizationEnabled(bool on) {
     // Live edit from the EQ tab, gated by the orchestrator to the matching kind. Audio
-    // applies instantly on the sink; video reloads a local clip in place (streams take
-    // it on next load).
+    // applies instantly on the sink's limiter; video reloads a local clip in place
+    // (streams take it on next load).
     if (!engine) return;
     if (m_kind == MediaKind::Audio) {
         engine->setAudioNormalizationEnabled(on);
@@ -1299,6 +1299,12 @@ MediaKind VideoPlayer::kindForLocalFile(const QUrl& url) {
     return MediaKind::Video;
 }
 
+void VideoPlayer::setMediaKind(MediaKind k) {
+    if (m_kind == k) return;
+    m_kind = k;
+    emit mediaKindChanged(k); // lets the EQ follow the playing kind while its page is open
+}
+
 void VideoPlayer::applyKindChrome() {
     // Audio has no fullscreen video surface, so its controls show a visualizer
     // button where the fullscreen button sits.
@@ -1428,7 +1434,7 @@ void VideoPlayer::openPhoto(const QUrl& url) {
     stopRecordingIfActive();
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
     m_currentLocalUrl = url;
-    m_kind = MediaKind::Photo;
+    setMediaKind(MediaKind::Photo);
     m_isLive = false; m_isStreaming = false; m_fetching = false; m_stopped = false;
     m_shortsMode = false;
 

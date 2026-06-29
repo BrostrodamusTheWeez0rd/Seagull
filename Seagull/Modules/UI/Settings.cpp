@@ -96,18 +96,17 @@ Settings::~Settings() {
 }
 
 void Settings::addAudioPage(QWidget* eq) {
-    if (!eq || !sidebar || !stackedWidget) return;
-    // Slot the equalizer in right after Display — both are presentation settings.
-    // The sidebar row and the stacked page must stay index-aligned (currentRowChanged
-    // drives setCurrentIndex), so insert at the same position in both.
-    const int row = 2;
-    sidebar->insertItem(row, "Audio");
-    stackedWidget->insertWidget(row, eq);
-    m_audioRow = row;
+    if (!eq || !m_audioPageLayout) return;
+    // The Audio page container is built in setupUI; the EQ is its only content.
+    m_audioPageLayout->addWidget(eq);
 }
 
 void Settings::showAudioPage() {
-    if (m_audioRow >= 0 && sidebar) sidebar->setCurrentRow(m_audioRow);
+    if (m_audioRow < 0 || !sidebar) return;
+    if (sidebar->currentRow() == m_audioRow)
+        emit audioPageShown();                 // already here: setCurrentRow won't re-fire, so arm directly
+    else
+        sidebar->setCurrentRow(m_audioRow);    // row change -> currentRowChanged -> audioPageShown
 }
 
 void Settings::setupUI() {
@@ -119,11 +118,11 @@ void Settings::setupUI() {
     sidebar = new QListWidget(this);
     sidebar->setMaximumWidth(200);
     sidebar->addItem("General");
-    sidebar->addItem("Display");
-    sidebar->addItem("Download & Streaming");
-    sidebar->addItem("Folders & Recording");
-    sidebar->addItem("Search");
-    sidebar->addItem("Home");
+    sidebar->addItem("Appearance");
+    sidebar->addItem("Audio");
+    sidebar->addItem("Downloads & Recording");
+    sidebar->addItem("Folders");
+    sidebar->addItem("Search & Home");
     sidebar->addItem("Info");
     // Simple styling for a flat, modern look
     sidebar->setStyleSheet(
@@ -162,7 +161,7 @@ void Settings::setupUI() {
 
     stackedWidget->addWidget(generalWidget);
 
-    // === Display Tab ===
+    // === Appearance Tab ===
     auto* displayWidget = new QWidget();
     auto* displayLayout = new QFormLayout(displayWidget);
     displayLayout->setContentsMargins(20, 20, 20, 20);
@@ -216,16 +215,15 @@ void Settings::setupUI() {
         "scrubbing control.");
     displayLayout->addRow("Progress bar size:", seekBarSizeCombo);
 
-    // Visualizer picker + its per-visualizer settings, swapped underneath it.
+    // Visualizer picker + its settings. Tied to audio playback, but it's a visual
+    // customization, so it lives here on Appearance rather than on the Audio (EQ) page.
     visualizerCombo = new QComboBox();
     visualizerCombo->addItems({ "Seagull Sky", "Seagull Waves" });
     visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio.");
     displayLayout->addRow("Visualizer:", visualizerCombo);
 
-    // All visualizer settings in one tight form folded under the picker. Behaviour,
-    // the cap, and end-of-song are all global — they apply to whichever visualizer
-    // is selected. (No QStackedWidget — its unstable size hint left a shifting gap
-    // here.)
+    // All visualizer settings in one tight form folded under the picker. Behaviour, the
+    // cap, and end-of-song are all global — they apply to whichever visualizer is selected.
     auto* vizBlock = new QWidget();
     auto* vizForm = new QFormLayout(vizBlock);
     vizForm->setContentsMargins(0, 0, 0, 0);
@@ -251,7 +249,17 @@ void Settings::setupUI() {
 
     stackedWidget->addWidget(displayWidget);
 
-    // === Download & Streaming Tab ===
+    // === Audio Tab ===
+    // Just the equalizer, added at runtime via addAudioPage. The container keeps the
+    // sidebar/stacked index alignment so addAudioPage doesn't have to juggle indices.
+    auto* audioPage = new QWidget();
+    m_audioPageLayout = new QVBoxLayout(audioPage);
+    m_audioPageLayout->setContentsMargins(20, 20, 20, 20);
+
+    m_audioRow = 2; // sidebar row of the Audio page (the EQ is inserted here)
+    stackedWidget->addWidget(audioPage);
+
+    // === Downloads & Recording Tab ===
     auto* dlWidget = new QWidget();
     auto* dlLayout = new QFormLayout(dlWidget);
     dlLayout->setContentsMargins(20, 20, 20, 20);
@@ -363,23 +371,42 @@ void Settings::setupUI() {
         "(videos to Videos, audio to Audio). Off: everything is saved to the single "
         "Downloads Folder you choose below.");
 
-    dlForm = dlLayout; // applySmartSortState shows/hides the Downloads Folder row on it
-    dlLayout->addRow("Smart Sort:", smartSortCheck);
-    dlLayout->addRow("Downloads Folder:", dlFolderRow);
     dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
     dlLayout->addRow("Download Quality:", dlQualityCombo);
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
+    dlLayout->addRow("Recording Type:", recTypeRow);
+    dlLayout->addRow("Recording Format:", recFormatCombo);
+
+    // Browser cookies: the most effective fix for the "confirm you're not a bot" wall.
+    // When set, yt-dlp reuses that browser's logged-in session so the requests look like
+    // a normal viewer. Off by default; turning it on pops a warning about not using your
+    // main account (see onCookiesBrowserChanged).
+    cookiesBrowserCombo = new QComboBox();
+    cookiesBrowserCombo->addItems({ "None", "Firefox", "Chrome", "Edge", "Brave" });
+    cookiesBrowserCombo->setToolTip(
+        "Reuse a browser's YouTube login to cut down on \"confirm you're not a bot\" "
+        "errors. Firefox is the most reliable on Windows. Chrome, Edge, and Brave can "
+        "fail to read cookies while the browser is open or due to their cookie "
+        "encryption. Use a spare account, never your main one.");
+    dlLayout->addRow("Cookies from browser:", cookiesBrowserCombo);
+
+    deleteCookiesBtn = new QPushButton("Delete Cached Cookie Data");
+    deleteCookiesBtn->setMaximumWidth(220);
+    deleteCookiesBtn->setToolTip("Clears yt-dlp's cache, including any login/session tokens it "
+        "derived from your browser cookies. Use this after turning cookies off to leave nothing behind.");
+    dlLayout->addRow("", deleteCookiesBtn);
 
     stackedWidget->addWidget(dlWidget);
 
-    // === Folders & Recording Tab ===
-    // The media folder paths (the unify toggle swaps the four typed rows for the
-    // single Media Folder row) with the recording settings underneath.
+    // === Folders Tab ===
+    // Every save location in one place: the unify toggle swaps the typed rows for the
+    // single Media Folder row, and Smart Sort (a folder-routing rule) reveals the single
+    // Downloads Folder row when off.
     auto* dirsWidget = new QWidget();
     auto* dirsLayout = new QFormLayout(dirsWidget);
     dirsLayout->setContentsMargins(20, 20, 20, 20);
-    foldersForm = dirsLayout; // applyUnifyState shows/hides folder rows on it
+    foldersForm = dirsLayout; // applyUnifyState / applySmartSortState show/hide rows on it
 
     dirsLayout->addRow("Unify Folders:", unifyCheck);
     dirsLayout->addRow("Media Folder:", unifiedFolderRow);
@@ -389,19 +416,19 @@ void Settings::setupUI() {
     dirsLayout->addRow("Recordings Folder:", recFolderRow);
     dirsLayout->addRow("Playlists Folder:", playlistFolderRow);
     dirsLayout->addRow("Home Directory:", homeRow);
-    dirsLayout->addRow("Recording Type:", recTypeRow);
-    dirsLayout->addRow("Recording Format:", recFormatCombo);
+    dirsLayout->addRow("Smart Sort:", smartSortCheck);
+    dirsLayout->addRow("Downloads Folder:", dlFolderRow);
 
     stackedWidget->addWidget(dirsWidget);
 
-    // === Search Tab ===
+    // === Search & Home Tab ===
     auto* searchWidget = new QWidget();
     auto* searchLayout = new QFormLayout(searchWidget);
     searchLayout->setContentsMargins(20, 20, 20, 20);
     searchForm = searchLayout;
 
     // Favourites changed elsewhere (a star toggled in Search) -> keep the home-page pickers
-    // current (the Home settings page below hosts them).
+    // current (the home section is appended to this Search & Home page below).
     connect(SgFavorites::instance(),   &SgFavorites::changed, this,
             [this](const QString&, bool) { rebuildHomePickers(); });
     connect(SgFavorites::phInstance(), &SgFavorites::changed, this,
@@ -425,34 +452,12 @@ void Settings::setupUI() {
     clearHistoryOnCloseCheck->setToolTip("Wipes the saved history file automatically on every exit.");
     searchLayout->addRow("", clearHistoryOnCloseCheck);
 
-    // Browser cookies: the most effective fix for YouTube's "confirm you're not a
-    // bot" wall. When set, yt-dlp reuses that browser's logged-in session so the
-    // requests look like a normal viewer. Off by default; turning it on pops a
-    // warning about not using your main account (see onCookiesBrowserChanged).
-    cookiesBrowserCombo = new QComboBox();
-    cookiesBrowserCombo->addItems({ "None", "Firefox", "Chrome", "Edge", "Brave" });
-    cookiesBrowserCombo->setToolTip(
-        "Reuse a browser's YouTube login to cut down on \"confirm you're not a bot\" "
-        "errors. Firefox is the most reliable on Windows. Chrome, Edge, and Brave can "
-        "fail to read cookies while the browser is open or due to their cookie "
-        "encryption. Use a spare account, never your main one.");
-    searchLayout->addRow("Cookies from browser:", cookiesBrowserCombo);
-
-    deleteCookiesBtn = new QPushButton("Delete Cached Cookie Data");
-    deleteCookiesBtn->setMaximumWidth(220);
-    deleteCookiesBtn->setToolTip("Clears yt-dlp's cache, including any login/session tokens it "
-        "derived from your browser cookies. Use this after turning cookies off to leave nothing behind.");
-    searchLayout->addRow("", deleteCookiesBtn);
+    // Per-site home-page favourites pickers + result/video limits, appended below the
+    // search settings (buildHomeSection emits its own "Home page" header; the site
+    // sections start collapsed).
+    buildHomeSection(searchLayout);
 
     stackedWidget->addWidget(searchWidget);
-
-    // === Home Tab: per-site home-page favourites pickers + result/video limits ===
-    // Its own page, just below Search (the site sections start collapsed, like before).
-    auto* homeWidget = new QWidget();
-    auto* homeLayout = new QFormLayout(homeWidget);
-    homeLayout->setContentsMargins(20, 20, 20, 20);
-    buildHomeSection(homeLayout);
-    stackedWidget->addWidget(homeWidget);
 
     // === Info Tab: bundled docs in a tabbed reader ===
     auto* infoWidget = new QWidget();
@@ -508,6 +513,11 @@ void Settings::setupUI() {
 
     // Change pages when a side tab is clicked
     connect(sidebar, &QListWidget::currentRowChanged, stackedWidget, &QStackedWidget::setCurrentIndex);
+    // When the Audio (EQ) page becomes visible — via the player's EQ button or a direct
+    // sidebar click — tell the EQ to re-arm its auto-follow of the playing media kind.
+    connect(sidebar, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row == m_audioRow) emit audioPageShown();
+    });
 
     // --- Bottom button bar: Reset to Default only (settings auto-apply) ---
     auto* buttonBar = new QHBoxLayout();
@@ -692,7 +702,8 @@ void Settings::applyUnifyState() {
 void Settings::applySmartSortState() {
     // The single Downloads Folder only matters when smart sort is OFF — otherwise each
     // download is routed by its media type, so hide the row to avoid implying otherwise.
-    if (dlForm) dlForm->setRowVisible(dlFolderRow, !smartSortCheck->isChecked());
+    // (The Downloads Folder row lives on the Folders page alongside the other paths.)
+    if (foldersForm) foldersForm->setRowVisible(dlFolderRow, !smartSortCheck->isChecked());
 }
 
 void Settings::buildHomeSection(QFormLayout* form) {

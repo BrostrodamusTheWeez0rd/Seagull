@@ -142,8 +142,10 @@ void EQ::buildUi() {
         m_typeGroup->addButton(b, static_cast<int>(k.type));
         pillLay->addWidget(b);
     }
-    connect(m_typeGroup, &QButtonGroup::idClicked, this,
-            [this](int id) { selectType(static_cast<EqContentType>(id)); });
+    connect(m_typeGroup, &QButtonGroup::idClicked, this, [this](int id) {
+        m_followPlaying = false; // manual choice pins the selection until the page is reshown
+        selectType(static_cast<EqContentType>(id));
+    });
 
     // 2. Preset dropdown + save button (the save button surfaces for a custom curve).
     m_presetCombo = new QComboBox(this);
@@ -307,6 +309,18 @@ void EQ::selectType(EqContentType t) {
     m_type = t;
     populatePresets();
     loadActiveIntoSliders(); // viewing-only: never emit (don't disturb what's playing)
+}
+
+void EQ::armFollow() {
+    m_followPlaying = true; // page shown: resume tracking the playing kind
+}
+
+void EQ::followPlayingKind(EqContentType t) {
+    if (!m_followPlaying || t == m_type) return;
+    // Reflect the switch on the pill (setChecked won't emit idClicked, so it won't pin),
+    // then load that type's curve for viewing. Silent — never disturbs what's playing.
+    if (auto* b = m_typeGroup->button(static_cast<int>(t))) b->setChecked(true);
+    selectType(t);
 }
 
 void EQ::populatePresets() {

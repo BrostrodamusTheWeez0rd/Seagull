@@ -473,6 +473,21 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             if (matches) videoPlayer->setNormalizationEnabled(enabled);
         });
 
+    // Auto-follow: keep the EQ's Video/Audio selector pointed at whatever is playing, so
+    // opening the equalizer lands on the curve actually shaping the sound. Photo has no
+    // audio, so it leaves the selection alone. The EQ re-arms following each time its page
+    // is shown and pins on a manual pill click, so the user can freely flip while editing.
+    auto followEqToKind = [this](MediaKind k) {
+        if (k == MediaKind::Audio)      eqModule->followPlayingKind(EqContentType::Audio);
+        else if (k == MediaKind::Video) eqModule->followPlayingKind(EqContentType::Video);
+    };
+    connect(settingsModule, &Settings::audioPageShown, this, [this, followEqToKind]() {
+        eqModule->armFollow();
+        followEqToKind(videoPlayer->currentMediaKind());
+    });
+    connect(videoPlayer, &VideoPlayer::mediaKindChanged, this,
+        [followEqToKind](MediaKind k) { followEqToKind(k); });
+
     // Multiple-instance tabs. The primary Search + File Explorer go through the same
     // per-tab wiring the duplicates use; register them as duplicable so the "+" menu
     // offers "New Search tab" / "New File Explorer tab", and wire the open/close hooks.
