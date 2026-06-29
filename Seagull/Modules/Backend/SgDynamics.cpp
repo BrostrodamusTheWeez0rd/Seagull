@@ -47,7 +47,7 @@ void SgDynamics::resetState() {
     m_makeup   = 1.0f;
 }
 
-void SgDynamics::process(int16_t* x, int frames, int channels) {
+void SgDynamics::process(float* x, int frames, int channels) {
     const bool on = m_enabled.load(std::memory_order_relaxed);
     if (on != m_wasEnabled) {
         // Toggling clears stale envelope/look-ahead so on->off->on never glitches.
@@ -63,14 +63,14 @@ void SgDynamics::process(int16_t* x, int frames, int channels) {
     const float ceil = m_ceiling;
 
     for (int f = 0; f < frames; ++f) {
-        int16_t* frame = x + size_t(f) * ch;
+        float* frame = x + size_t(f) * ch;
 
-        // --- Read frame to float + measure source loudness (pre-makeup) ---
+        // --- Read frame + measure source loudness (pre-makeup) ---
         float in[8];
         const int nc = std::min(ch, 8);
         float meanSq = 0.0f;
         for (int c = 0; c < nc; ++c) {
-            const float s = frame[c] * (1.0f / 32768.0f);
+            const float s = frame[c]; // already ±1.0 float from VLC's FL32 output
             in[c] = s;
             meanSq += s * s;
         }
@@ -103,10 +103,9 @@ void SgDynamics::process(int16_t* x, int frames, int channels) {
             m_delay[base + c] = in[c];
             float out = delayed * m_limGain;
             // Final hard clamp at the ceiling — the guaranteed brickwall, covering the
-            // last sub-millisecond of attack lag on the fastest transients.
-            out = std::clamp(out, -ceil, ceil);
-            int v = int(std::lround(out * 32768.0f));
-            frame[c] = int16_t(std::clamp(v, -32768, 32767));
+            // last sub-millisecond of attack lag on the fastest transients. Output stays
+            // float (no 16-bit conversion in our chain), so this is the true ceiling.
+            frame[c] = std::clamp(out, -ceil, ceil);
         }
         m_writeIdx = (m_writeIdx + 1) % m_lookahead;
     }

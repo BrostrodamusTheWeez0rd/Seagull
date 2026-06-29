@@ -1170,8 +1170,24 @@ bool Seagull::run() {
             "You can change this anytime from Settings, General.");
         box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
         box.setDefaultButton(QMessageBox::Yes);
-        if (box.exec() == QMessageBox::Yes)
-            SgMediaControls::addDefenderExclusion();
+        if (box.exec() == QMessageBox::Yes) {
+            // The add verifies what actually persisted; if Tamper Protection blocked it,
+            // tell the user how to finish by hand rather than leaving them thinking it worked.
+            const SgMediaControls::DefenderResult result = SgMediaControls::addDefenderExclusion();
+            if (result == SgMediaControls::DefenderResult::Success)
+                cfg.setValue("Setup/DefenderExcluded", true); // Settings reads this back (non-elevated can't)
+            const QString message = SgMediaControls::defenderResultMessage(result);
+            if (!message.isEmpty()) {
+                QMessageBox warn(mainWindow);
+                warn.setIcon(QMessageBox::Warning);
+                warn.setWindowTitle("Defender Exclusion");
+                warn.setText(message);
+                QPushButton* openBtn = warn.addButton("Open Windows Security", QMessageBox::ActionRole);
+                warn.addButton(QMessageBox::Close);
+                warn.exec();
+                if (warn.clickedButton() == openBtn) SgMediaControls::openDefenderSettings();
+            }
+        }
         cfg.setValue("Setup/DefenderExclusionOffered", true);
         cfg.sync();
     }

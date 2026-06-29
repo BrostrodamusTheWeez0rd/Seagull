@@ -24,13 +24,13 @@ public:
     void push(const char* data, qint64 len) {
         QMutexLocker l(&m_mx);
         m_buf.append(data, len);
-        // ~4s of stereo S16 (~1.4MB). Must comfortably exceed VLC's decode-ahead:
+        // ~4s of stereo float (~2.8MB). Must comfortably exceed VLC's decode-ahead:
         // at track start VLC bursts decoded audio into the ring faster than realtime
         // to fill its own caches, and a tighter cap (it used to be ~1s — exactly
         // VLC's file-caching) overflows and evicts unplayed samples from the front,
         // an audible skip/glitch right as the track starts. The sink still plays in
         // order at the hardware rate, so the extra headroom adds no latency.
-        const int cap = 44100 * 2 * 2 * 4;
+        const int cap = 44100 * 2 * int(sizeof(float)) * 4; // rate * ch * bytes/sample * seconds
         if (m_buf.size() > cap) m_buf.remove(0, m_buf.size() - cap);
     }
     QByteArray pop(qint64 maxlen) {
@@ -88,8 +88,8 @@ protected:
         // applied to exactly what's heard, and the volume (set on the sink) still scales
         // the limited signal afterward.
         if (m_dyn && m_channels > 0) {
-            const int frames = int(got / (2 * m_channels));
-            if (frames > 0) m_dyn->process(reinterpret_cast<int16_t*>(chunk.data()), frames, m_channels);
+            const int frames = int(got / (qint64(sizeof(float)) * m_channels));
+            if (frames > 0) m_dyn->process(reinterpret_cast<float*>(chunk.data()), frames, m_channels);
         }
         std::memcpy(data, chunk.constData(), size_t(got));
         if (got < maxlen) std::memset(data + got, 0, size_t(maxlen - got)); // pad a partial tail
@@ -133,7 +133,7 @@ public:
         QAudioFormat fmt;
         fmt.setSampleRate(rate);
         fmt.setChannelCount(channels);
-        fmt.setSampleFormat(QAudioFormat::Int16);
+        fmt.setSampleFormat(QAudioFormat::Float); // float end-to-end: limiter acts before any 16-bit conversion
         const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
         if (dev.isNull() || !dev.isFormatSupported(fmt)) return;
         // Size the normaliser/limiter for this format and clear any prior ride.
@@ -555,7 +555,7 @@ void PlaybackEngine::setAudioTap(bool on) {
         QAudioFormat fmt;
         fmt.setSampleRate(int(m_tapRate));
         fmt.setChannelCount(int(m_tapChannels));
-        fmt.setSampleFormat(QAudioFormat::Int16);
+        fmt.setSampleFormat(QAudioFormat::Float); // see AudioSinkWorker::start
         const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
         if (dev.isNull() || !dev.isFormatSupported(fmt)) return; // stay on VLC's audio output
 
@@ -570,7 +570,7 @@ void PlaybackEngine::setAudioTap(bool on) {
         m_fifo->clear();
         ensureAudioThread();
 
-        // Custom decoded-audio output: VLC hands us S16 interleaved samples; the
+        // Custom decoded-audio output: VLC hands us FL32 interleaved samples; the
         // worker thread's sink plays them, we analyse them. flush() clears the ring
         // on seek so stale audio isn't replayed.
         m_player->setAudioCallbacks(
@@ -578,7 +578,7 @@ void PlaybackEngine::setAudioTap(bool on) {
             nullptr, nullptr,
             [this](int64_t) { if (m_fifo) m_fifo->clear(); },
             nullptr);
-        m_player->setAudioFormat("S16N", m_tapRate, m_tapChannels);
+        m_player->setAudioFormat("FL32", m_tapRate, m_tapChannels);
 
         // Start the sink on the audio thread (it owns/creates the sink there).
         const int rate = int(m_tapRate), ch = int(m_tapChannels), vol = m_volume;
@@ -607,17 +607,17 @@ void PlaybackEngine::setAudioTap(bool on) {
 // the GUI thread, so during a UI freeze the visualizer pauses but audio does not.
 void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
     const int ch = qMax(1, int(m_tapChannels));
-    const qint64 frames = (chunk.size() / 2) / ch;
+    const qint64 frames = (chunk.size() / qint64(sizeof(float))) / ch;
     if (frames <= 0) return;
-    const int16_t* s = reinterpret_cast<const int16_t*>(chunk.constData());
+    const float* s = reinterpret_cast<const float*>(chunk.constData());
 
     // Bass/mid crossover ~330Hz, CASCADED to 12dB/oct so kick energy lands in the
     // bass band instead of bleeding up into mids. Mid/treble split ~2kHz (1-pole).
     const double aLow = 0.046, aMid = 0.250;
     double sumsq = 0.0, eBass = 0.0, eMid = 0.0, eTreb = 0.0;
     for (qint64 f = 0; f < frames; ++f) {
-        const double x = (ch >= 2) ? (s[f * ch] + s[f * ch + 1]) * (0.5 / 32768.0)
-                                   : s[f * ch] / 32768.0;
+        const double x = (ch >= 2) ? (double(s[f * ch]) + double(s[f * ch + 1])) * 0.5
+                                   : double(s[f * ch]); // FL32 samples already ±1.0
         sumsq += x * x;
         m_lpLow  += aLow * (x - m_lpLow);
         m_lpLow2 += aLow * (m_lpLow - m_lpLow2);  // second pole -> steeper bass edge
@@ -670,5 +670,5 @@ void PlaybackEngine::onAudioData(const void* samples, unsigned count, int64_t /*
     // device) so the visualizer stays in sync with what's actually being heard.
     if (!m_fifo) return;
     const qint64 nSamples = qint64(count) * m_tapChannels;
-    m_fifo->push(static_cast<const char*>(samples), nSamples * 2); // S16 = 2 bytes
+    m_fifo->push(static_cast<const char*>(samples), nSamples * qint64(sizeof(float))); // FL32 = 4 bytes
 }

@@ -7,9 +7,15 @@
 
 // Master-bus dynamics for the audio-tap path: a loudness normaliser (slow auto-gain
 // that lifts quiet material toward a target) feeding a look-ahead brickwall limiter
-// (the hard "never peak" guarantee, ceiling default -1 dBFS). Operates in float on
-// interleaved S16 in place. No Qt deps — it lives on the audio output thread's hot
+// (the hard "never peak" guarantee, ceiling default -1 dBFS). Operates on interleaved
+// 32-bit float (±1.0) in place. No Qt deps — it lives on the audio output thread's hot
 // pull path, so it stays allocation-free per call after prepare().
+//
+// We deliberately pull FL32 from VLC (not S16) so the EQ's +10 dB makeup and band
+// boosts can overshoot 0 dBFS without being hard-clipped at a 16-bit conversion BEFORE
+// we ever see them — the limiter has to act on the un-clipped signal to actually
+// prevent clipping. There is no 16-bit conversion anywhere in our chain; the sink
+// plays float.
 //
 // Order matters: normalise (drive toward target) -> limit (catch anything over the
 // ceiling). The limiter's ceiling is below 0 dBFS, so the output can never clip even
@@ -32,8 +38,8 @@ public:
     void setEnabled(bool on) { m_enabled.store(on, std::memory_order_relaxed); }
     bool enabled() const { return m_enabled.load(std::memory_order_relaxed); }
 
-    // Process `frames` interleaved S16 samples (channels per frame) in place.
-    void process(int16_t* interleaved, int frames, int channels);
+    // Process `frames` interleaved float samples (channels per frame) in place.
+    void process(float* interleaved, int frames, int channels);
 
 private:
     void resetState();

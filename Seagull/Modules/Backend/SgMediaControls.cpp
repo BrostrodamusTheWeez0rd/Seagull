@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QUrl>
+#include <QDesktopServices>
 #include <QMetaObject>
 #include <QStandardPaths>
 #include <QCoreApplication>
@@ -145,13 +146,63 @@ QString defenderExclusionDir() {
     return dir;
 }
 
-// Run a one-line Defender PowerShell command elevated (UAC). "runas" shows the
-// consent prompt; we wait for the hidden PowerShell to exit so the caller can
-// trust the result. Returns true only if it launched and exited cleanly (0) —
-// declining UAC or any failure returns false and leaves Defender unchanged.
-bool runDefenderCommandElevated(const QString& innerCommand) {
+// Distinct exit codes the elevated script below uses to report the *verified*
+// outcome back across the process boundary (all we get from a hidden process is
+// its exit code). Anything else (incl. PowerShell's own startup failures) is
+// treated as Error by the caller.
+enum DefenderExitCode {
+    kDefenderApplied = 0, // change made and confirmed present/absent as intended
+    kDefenderBlocked = 2, // command ran without throwing but the list didn't change
+    kDefenderThrew   = 3, // Add/Remove-MpPreference itself threw (access denied, etc.)
+};
+
+// Diagnostic log the elevated script appends to, so we can see what actually
+// happened across the (hidden, elevated) process boundary. Read with the Read
+// tool / shared by the user. Single quote escaped for the PowerShell literal.
+QString defenderLogPath() {
+    QString p = QDir::toNativeSeparators(QDir(QDir::tempPath()).filePath(
+        QStringLiteral("seagull-defender.log")));
+    p.replace(QLatin1Char('\''), QLatin1String("''"));
+    return p;
+}
+
+// Build the elevated PowerShell script for an add or a remove. It runs the
+// cmdlet with terminating errors on, then re-reads the exclusion list and exits
+// with a code that reflects what actually persisted — so a Tamper-Protection
+// silent no-op (which leaves Add-MpPreference's exit code at 0) is caught as
+// kDefenderBlocked instead of being mistaken for success. It also appends a
+// diagnostic record (before/after lists, Tamper-Protection state, any error) to
+// defenderLogPath() so the true cause of a failure is recoverable.
+QString defenderMutationScript(bool add) {
+    const QString cmd = add ? QStringLiteral("Add-MpPreference")
+                            : QStringLiteral("Remove-MpPreference");
+    // After the mutation the path should be present (add) or absent (remove).
+    const QString wantPresent = add ? QStringLiteral("$true") : QStringLiteral("$false");
+    return QStringLiteral(
+        "$ErrorActionPreference='Stop'; $d='%1'; $log='%2'; "
+        "function L($m){ try { Add-Content -LiteralPath $log -Value $m } catch {} } "
+        "L ('=== ' + (Get-Date).ToString('s') + ' op=%3'); "
+        "try { L ('tamper=' + (Get-MpComputerStatus).IsTamperProtected) } catch { L ('tamper=?: ' + $_.Exception.Message) } "
+        "try { %4 -ExclusionPath $d; L 'cmdlet=ok' } catch { L ('cmdlet=throw: ' + $_.Exception.Message); exit %5 } "
+        "$e=(Get-MpPreference).ExclusionPath; "
+        "$has=[bool]($e -and ($e -contains $d)); "
+        "L ('has=' + $has + ' want=%6'); "
+        "if ($has -eq %6) { exit %7 } else { exit %8 }")
+        .arg(defenderExclusionDir(), defenderLogPath(), add ? QStringLiteral("add") : QStringLiteral("remove"), cmd)
+        .arg(kDefenderThrew)
+        .arg(wantPresent)
+        .arg(kDefenderApplied)
+        .arg(kDefenderBlocked);
+}
+
+// Run a Defender PowerShell script elevated (UAC). "runas" shows the consent
+// prompt; we wait for the hidden PowerShell to exit and map its exit code to a
+// result. Declining UAC / failing to launch is Declined; the script's own
+// verified exit codes drive the rest.
+SgMediaControls::DefenderResult runDefenderMutationElevated(bool add) {
+    using DR = SgMediaControls::DefenderResult;
     const QString args = QStringLiteral(
-        "-NoProfile -WindowStyle Hidden -Command \"%1\"").arg(innerCommand);
+        "-NoProfile -WindowStyle Hidden -Command \"%1\"").arg(defenderMutationScript(add));
     const std::wstring wargs = args.toStdWString();
 
     SHELLEXECUTEINFOW sei{};
@@ -162,32 +213,70 @@ bool runDefenderCommandElevated(const QString& innerCommand) {
     sei.lpParameters = wargs.c_str();
     sei.nShow        = SW_HIDE;
 
-    if (!ShellExecuteExW(&sei) || !sei.hProcess) return false; // declined / failed to launch
+    if (!ShellExecuteExW(&sei) || !sei.hProcess) return DR::Declined; // declined / failed to launch
     WaitForSingleObject(sei.hProcess, INFINITE);
-    DWORD code = 1;
+    DWORD code = kDefenderThrew;
     GetExitCodeProcess(sei.hProcess, &code);
     CloseHandle(sei.hProcess);
-    return code == 0;
+
+    switch (code) {
+        case kDefenderApplied: return DR::Success;
+        case kDefenderBlocked: return DR::Blocked;
+        default:               return DR::Error; // kDefenderThrew or any PowerShell failure
+    }
 }
 } // namespace
 
-bool SgMediaControls::addDefenderExclusion() {
-    return runDefenderCommandElevated(
-        QStringLiteral("Add-MpPreference -ExclusionPath '%1'").arg(defenderExclusionDir()));
+SgMediaControls::DefenderResult SgMediaControls::addDefenderExclusion() {
+    return runDefenderMutationElevated(/*add=*/true);
 }
 
-bool SgMediaControls::removeDefenderExclusion() {
-    return runDefenderCommandElevated(
-        QStringLiteral("Remove-MpPreference -ExclusionPath '%1'").arg(defenderExclusionDir()));
+SgMediaControls::DefenderResult SgMediaControls::removeDefenderExclusion() {
+    return runDefenderMutationElevated(/*add=*/false);
+}
+
+QString SgMediaControls::defenderResultMessage(DefenderResult result) {
+    switch (result) {
+        case DefenderResult::Blocked:
+            return QStringLiteral(
+                "Windows blocked the change. This usually means Tamper Protection is on, "
+                "which stops apps from editing Defender's exclusions.\n\n"
+                "To speed up startup, open Windows Security, turn Tamper Protection off "
+                "under Virus & threat protection settings, then try again. Or add this "
+                "folder by hand under Exclusions:\n%1")
+                .arg(QDir::toNativeSeparators(QCoreApplication::applicationDirPath()));
+        case DefenderResult::Error:
+            return QStringLiteral(
+                "Couldn't change Defender's exclusion list. You can add this folder by "
+                "hand in Windows Security under Virus & threat protection settings, "
+                "Exclusions:\n%1")
+                .arg(QDir::toNativeSeparators(QCoreApplication::applicationDirPath()));
+        case DefenderResult::Success:
+        case DefenderResult::Declined:
+            return {}; // nothing worth interrupting the user over
+    }
+    return {};
+}
+
+void SgMediaControls::openDefenderSettings() {
+    // Documented shell URI for the Virus & threat protection settings page, which
+    // hosts both the Tamper Protection toggle and the Exclusions manager.
+    QDesktopServices::openUrl(QUrl(QStringLiteral("windowsdefender://threatsettings")));
 }
 
 QString SgMediaControls::defenderExclusionQueryCommand() {
-    // No elevation needed to read the exclusion list. -contains is case-insensitive,
-    // and we added the path exactly as defenderExclusionDir() produces it, so a plain
-    // membership test matches. Prints YES / NO on stdout.
+    // Prints YES / NO / UNKNOWN. The catch: a NON-elevated Get-MpPreference can't
+    // read the exclusion list at all — instead of the paths it returns the literal
+    // "N/A: Must be an administrator to view exclusions", so a naive membership test
+    // always sees "not excluded". We detect that sentinel and report UNKNOWN so the
+    // caller can fall back to the verified state we persisted at add/remove time,
+    // rather than wrongly flipping the button back to "Add". -contains is
+    // case-insensitive and we add the path exactly as defenderExclusionDir() emits it.
     return QStringLiteral(
         "$d='%1'; $e=(Get-MpPreference).ExclusionPath; "
-        "if ($e -and ($e -contains $d)) { 'YES' } else { 'NO' }")
+        "if (-not $e) { 'NO' } "
+        "elseif ($e -like '*Must be an administrator*') { 'UNKNOWN' } "
+        "elseif ($e -contains $d) { 'YES' } else { 'NO' }")
         .arg(defenderExclusionDir());
 }
 

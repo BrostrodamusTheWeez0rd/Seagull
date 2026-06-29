@@ -34,18 +34,38 @@ public:
     static void createDesktopShortcut();
     static void createStartMenuShortcut();
 
+    // Outcome of an attempt to change Defender's exclusion list. The elevated step
+    // re-reads the list after the change and only reports Success if it actually
+    // stuck, so Blocked is distinguishable from a silent no-op (the usual cause is
+    // Tamper Protection, which refuses programmatic exclusion edits even from admin).
+    enum class DefenderResult {
+        Success,   // the change was applied and verified
+        Declined,  // the UAC prompt was dismissed / elevation never launched
+        Blocked,   // ran but the change didn't take (Tamper Protection most likely)
+        Error      // the cmdlet threw (Defender unavailable / access denied)
+    };
+
     // Add this app's install folder to the Windows Defender exclusion list. Defender
     // rescans Seagull's many DLLs and VLC plugins on a cold launch (after a reboot or
     // long idle), which is the main cause of the slow-then-fast first start; excluding
     // the folder skips that rescan. Adding an exclusion needs admin, so this raises a
-    // UAC prompt; if the user declines, nothing changes. Waits for the elevated step
-    // to finish and returns true if the exclusion was applied. Best-effort.
-    static bool addDefenderExclusion();
+    // UAC prompt. The elevated step verifies the exclusion is really present before
+    // returning, so the result reflects the persisted state, not just "the command ran".
+    static DefenderResult addDefenderExclusion();
 
     // Remove this app's install folder from the Defender exclusion list (the inverse
-    // of addDefenderExclusion). Also needs admin -> UAC prompt; returns true if the
-    // exclusion was actually removed.
-    static bool removeDefenderExclusion();
+    // of addDefenderExclusion). Also needs admin -> UAC prompt; verifies the removal.
+    static DefenderResult removeDefenderExclusion();
+
+    // User-facing guidance for a result, or an empty string for Success/Declined
+    // (nothing worth interrupting the user over). Blocked/Error explain the likely
+    // Tamper Protection cause and point at the Windows Security UI. No trademarks
+    // beyond the Defender/Windows Security names the user needs to find the setting.
+    static QString defenderResultMessage(DefenderResult result);
+
+    // Open the Windows Security "Virus & threat protection settings" page, where the
+    // user can toggle Tamper Protection and manage exclusions by hand. Best-effort.
+    static void openDefenderSettings();
 
     // The PowerShell one-liner that prints "YES" / "NO" depending on whether this
     // app's install folder is in Defender's exclusion list. Reading needs no

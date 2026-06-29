@@ -11,6 +11,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QMessageBox>
 #include <QFileDialog>
 #include <QSettings>
 #include <QCoreApplication>
@@ -193,8 +194,27 @@ void SetupDialog::onGetStarted() {
     if (startMenuShortcutCheck->isChecked()) SgMediaControls::createStartMenuShortcut();
 
     // Best-effort; raises a UAC prompt. Fire it before the tool download so the
-    // consent prompt isn't sprung mid-progress. Declining changes nothing.
-    if (defenderExclusionCheck->isChecked()) SgMediaControls::addDefenderExclusion();
+    // consent prompt isn't sprung mid-progress. Declining changes nothing. If the
+    // add ran but didn't stick (Tamper Protection), tell the user how to finish by
+    // hand so they're not left thinking startup is sped up when it isn't.
+    if (defenderExclusionCheck->isChecked()) {
+        const SgMediaControls::DefenderResult result = SgMediaControls::addDefenderExclusion();
+        if (result == SgMediaControls::DefenderResult::Success) {
+            cfg.setValue("Setup/DefenderExcluded", true); // Settings reads this back (non-elevated can't)
+            cfg.sync();
+        }
+        const QString message = SgMediaControls::defenderResultMessage(result);
+        if (!message.isEmpty()) {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Warning);
+            box.setWindowTitle("Defender Exclusion");
+            box.setText(message);
+            QPushButton* openBtn = box.addButton("Open Windows Security", QMessageBox::ActionRole);
+            box.addButton(QMessageBox::Close);
+            box.exec();
+            if (box.clickedButton() == openBtn) SgMediaControls::openDefenderSettings();
+        }
+    }
 
     if (toolsMissing()) startToolDownload();
     else accept();

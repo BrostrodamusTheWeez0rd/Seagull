@@ -842,31 +842,63 @@ void Settings::promoteHomeRank(QListWidget* list, QListWidgetItem* item) {
 
 void Settings::onDefenderExclusionClicked() {
     // Toggle: remove the exclusion if it's set, otherwise add it. Both raise UAC and
-    // block briefly while the elevated step runs; the returned bool is the real result
-    // (the user may have declined), so we re-query afterwards rather than assuming.
+    // block briefly while the elevated step runs. The result reflects what actually
+    // persisted, so on Blocked/Error we explain why (Tamper Protection usually) and
+    // offer to open Windows Security; we still re-query afterwards to settle the label.
+    const bool wasExcluded = defenderExcluded;
     defenderExclusionBtn->setEnabled(false);
-    if (defenderExcluded) SgMediaControls::removeDefenderExclusion();
-    else                  SgMediaControls::addDefenderExclusion();
+    const SgMediaControls::DefenderResult result =
+        wasExcluded ? SgMediaControls::removeDefenderExclusion()
+                    : SgMediaControls::addDefenderExclusion();
+
+    // The elevated step verified the real state, so on Success persist it ourselves:
+    // a non-elevated read can't see the exclusion list (it returns an admin-only
+    // placeholder), so this stored flag is what keeps the label correct afterwards.
+    if (result == SgMediaControls::DefenderResult::Success) {
+        defenderExcluded = !wasExcluded;
+        iniSettings->setValue("Setup/DefenderExcluded", defenderExcluded);
+        iniSettings->sync();
+    }
+
+    const QString message = SgMediaControls::defenderResultMessage(result);
+    if (!message.isEmpty()) {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle("Defender Exclusion");
+        box.setText(message);
+        QPushButton* openBtn = box.addButton("Open Windows Security", QMessageBox::ActionRole);
+        box.addButton(QMessageBox::Close);
+        box.exec();
+        if (box.clickedButton() == openBtn) SgMediaControls::openDefenderSettings();
+    }
+
     refreshDefenderButton();
 }
 
 void Settings::refreshDefenderButton() {
-    // Query Defender's exclusion list off the GUI thread (Get-MpPreference is slow to
-    // start), then flip the button between "Add Exclusion" and "Remove Exclusion".
+    // Resolve the button label off the GUI thread. The query prints YES / NO / UNKNOWN:
+    // UNKNOWN means a non-elevated Get-MpPreference couldn't read the exclusion list
+    // (the usual case — it needs admin), so we fall back to the flag we persisted when
+    // the verified elevated add/remove last ran, instead of wrongly showing "Add".
     defenderExclusionBtn->setEnabled(false);
     defenderExclusionBtn->setText("Checking...");
 
     auto* ps = new QProcess(this);
     connect(ps, &QProcess::finished, this,
         [this, ps](int, QProcess::ExitStatus) {
-            defenderExcluded = ps->readAllStandardOutput().trimmed() == "YES";
+            const QString out = ps->readAllStandardOutput().trimmed();
+            if (out == "YES")      defenderExcluded = true;
+            else if (out == "NO")  defenderExcluded = false;
+            else /* UNKNOWN */     defenderExcluded =
+                iniSettings->value("Setup/DefenderExcluded", false).toBool();
             defenderExclusionBtn->setText(defenderExcluded ? "Remove Exclusion" : "Add Exclusion");
             defenderExclusionBtn->setEnabled(true);
             ps->deleteLater();
         });
     connect(ps, &QProcess::errorOccurred, this, [this, ps](QProcess::ProcessError) {
-        // Couldn't read state — leave a usable default (Add) rather than a stuck label.
-        defenderExclusionBtn->setText("Add Exclusion");
+        // Couldn't run the query at all — fall back to the persisted flag.
+        defenderExcluded = iniSettings->value("Setup/DefenderExcluded", false).toBool();
+        defenderExclusionBtn->setText(defenderExcluded ? "Remove Exclusion" : "Add Exclusion");
         defenderExclusionBtn->setEnabled(true);
         ps->deleteLater();
     });
