@@ -47,11 +47,23 @@
 #include <QPalette>
 #include <QMessageBox>
 #include <QCheckBox>
+#include <QHash>
 #include <algorithm>
 
 namespace {
 constexpr int kGridSpacing = 12;
 constexpr int kSearchGraceMs = 600; // keep the filter bar up briefly after the magnifier click
+
+// Per-site suffix for the home-page config keys, e.g. "Search/HomeChannels" + suffix
+// (the ranked picker) and "Search/HomeAmount" + suffix (how many to show). Kept in one
+// place so Settings and Search always agree on the key names.
+QString homeSiteSuffix(SgSearch::Site site) {
+    switch (site) {
+    case SgSearch::Site::PornHub:    return QStringLiteral("PornHub");
+    case SgSearch::Site::Chaturbate: return QStringLiteral("Chaturbate");
+    default:                         return QStringLiteral("YouTube");
+    }
+}
 }
 
 QList<Search*> Search::s_instances; // every live Search tab (GUI thread only)
@@ -417,6 +429,7 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     };
     wireFavStore(SgFavorites::instance(),   SgSearch::Site::YouTube);
     wireFavStore(SgFavorites::phInstance(), SgSearch::Site::PornHub);
+    wireFavStore(SgFavorites::cbInstance(), SgSearch::Site::Chaturbate);
 
     if (m_search) {
         connect(m_search, &SgSearch::resultsReady,       this, &Search::onResultsReady);
@@ -620,17 +633,24 @@ void Search::enterFavoritesView() {
 
     SgFavorites* store = favStore();
     const auto favs = store ? store->favorites() : QList<SgFavorites::FavoriteChannel>{};
+    // Chaturbate "channels" are live rooms, so their favourite cards are playable rooms
+    // (isChannel=false) — clicking opens the room. YouTube/PornHub favourites are channel
+    // cards that open the channel/model page.
+    const bool channelCards = currentSite() != SgSearch::Site::Chaturbate;
     for (const auto& fav : favs) {
         SearchResult r;
-        r.isChannel  = true;
+        r.isChannel  = channelCards;
         r.url        = fav.url;
         r.channelUrl = fav.url;
         r.channel    = fav.name;
         r.title      = fav.name;
         if (!fav.cachedThumbPath.isEmpty())
             r.thumbnail = QUrl::fromLocalFile(fav.cachedThumbPath).toString();
-        else if (!fav.thumbnailUrl.isEmpty())
+        else if (!fav.thumbnailUrl.isEmpty()) {
             r.thumbnail = fav.thumbnailUrl;
+            if (fav.url.contains("chaturbate.com", Qt::CaseInsensitive))
+                r.thumbnailReferer = QStringLiteral("https://chaturbate.com/"); // CDN needs it
+        }
         addCard(r);
     }
 
@@ -662,24 +682,28 @@ void Search::exitFavoritesView() {
 }
 
 bool Search::isFavouritableSite(SgSearch::Site s) {
-    return s == SgSearch::Site::YouTube || s == SgSearch::Site::PornHub;
+    return s == SgSearch::Site::YouTube || s == SgSearch::Site::PornHub
+        || s == SgSearch::Site::Chaturbate;
 }
 
 SgFavorites* Search::favStore() const {
     switch (currentSite()) {
-    case SgSearch::Site::YouTube: return SgFavorites::instance();
-    case SgSearch::Site::PornHub: return SgFavorites::phInstance();
-    default:                      return nullptr; // Chaturbate: no favourites
+    case SgSearch::Site::YouTube:    return SgFavorites::instance();
+    case SgSearch::Site::PornHub:    return SgFavorites::phInstance();
+    case SgSearch::Site::Chaturbate: return SgFavorites::cbInstance();
+    default:                         return nullptr;
     }
 }
 
 QString Search::emptyStateText() const {
     // On a favouritable site the landing view is the favourites home feed, so when there
     // are no favourites yet, nudge the user to add some instead of prompting a search.
-    if (SgFavorites* store = favStore(); store && store->favorites().isEmpty())
-        return currentSite() == SgSearch::Site::PornHub
+    if (SgFavorites* store = favStore(); store && store->favorites().isEmpty()) {
+        const SgSearch::Site s = currentSite();
+        return (s == SgSearch::Site::PornHub || s == SgSearch::Site::Chaturbate)
             ? QStringLiteral("Favorite some models to fill your homepage.")
             : QStringLiteral("Favorite some channels to fill your homepage.");
+    }
     return "Search " + siteName() + " to see results.";
 }
 
@@ -691,10 +715,12 @@ QStringList Search::homeChannels() const {
     if (all.isEmpty()) return {};
 
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    const int amount = qBound(1, cfg.value("Search/HomeChannelAmount", 5).toInt(), 5);
-    const QString key = currentSite() == SgSearch::Site::PornHub
-        ? QStringLiteral("Search/HomeChannelsPornHub")
-        : QStringLiteral("Search/HomeChannelsYouTube");
+    const QString suffix = homeSiteSuffix(currentSite());
+    // Per-site result limit (1..20). Falls back to the old global key so existing users
+    // keep their chosen amount the first time after upgrading.
+    const int legacy = cfg.value("Search/HomeChannelAmount", 5).toInt();
+    const int amount = qBound(1, cfg.value("Search/HomeAmount" + suffix, legacy).toInt(), 20);
+    const QString key = "Search/HomeChannels" + suffix;
 
     // The Settings picker stores the user's chosen channels in priority order. Use them
     // (still-favourited), capped at `amount`. If they haven't picked any, fall back to the
@@ -709,7 +735,11 @@ QStringList Search::homeChannels() const {
 
 int Search::homeVideosPerChannel() const {
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    return qBound(1, cfg.value("Search/HomeVideosPerChannel", kHomePerChannel).toInt(), 20);
+    // Per-site, falling back to the old global key so upgrades keep the prior value.
+    // (Chaturbate never reaches here — its home feed is favourited rooms, not a per-channel pull.)
+    const int legacy = cfg.value("Search/HomeVideosPerChannel", kHomePerChannel).toInt();
+    const QString key = "Search/HomeVideosPerChannel" + homeSiteSuffix(currentSite());
+    return qBound(1, cfg.value(key, legacy).toInt(), 20);
 }
 
 void Search::loadHomeFeed() {
@@ -739,6 +769,35 @@ void Search::loadHomeFeed() {
         m_homeCache.clear();
         rebuildCards();                  // grid is now empty
         setStatus(emptyStateText(), false);
+        return;
+    }
+
+    if (site == SgSearch::Site::Chaturbate) {
+        // Chaturbate models are live rooms, not video lists — there's nothing to fetch
+        // per channel. The home feed is simply your favourited models (in picker order,
+        // already capped by homeChannels()), each card opening its live room.
+        SgFavorites* store = favStore();
+        QHash<QString, SgFavorites::FavoriteChannel> byUrl;
+        if (store) for (const auto& f : store->favorites()) byUrl.insert(f.url, f);
+        for (const QString& url : channels) {
+            const auto it = byUrl.constFind(url);
+            if (it == byUrl.constEnd()) continue;
+            const SgFavorites::FavoriteChannel& f = it.value();
+            SearchResult r;
+            r.url        = f.url;          // the live room — playable on click
+            r.channelUrl = f.url;          // routes the favourite star to the CB store
+            r.channel    = f.name;
+            r.title      = f.name;
+            if (!f.cachedThumbPath.isEmpty())
+                r.thumbnail = QUrl::fromLocalFile(f.cachedThumbPath).toString();
+            else if (!f.thumbnailUrl.isEmpty()) {
+                r.thumbnail = f.thumbnailUrl;
+                r.thumbnailReferer = QStringLiteral("https://chaturbate.com/"); // CDN needs it
+            }
+            if (!r.url.isEmpty()) m_seenUrls.insert(r.url);
+            m_allResults.append(r);
+        }
+        pumpHomeFeed(); // empty queue -> runs the finalise tail (sort/cache/cards/status)
         return;
     }
 

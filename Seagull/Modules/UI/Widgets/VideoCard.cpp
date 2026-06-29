@@ -177,13 +177,16 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
         m_starBtn->setToolTip("Favorite channel");
         updateStarIcon(favStore->isFavorited(m_channelUrl));
         connect(m_starBtn, &QToolButton::clicked, this, [this, favStore]() {
-            // Only pass the thumbnail URL when this is a channel card; video cards
-            // carry a video frame thumbnail, not the channel avatar. The YouTube store
-            // fetches a missing avatar via yt-dlp; the PornHub store leaves it empty.
+            // Pass the thumbnail URL for channel cards (the avatar) — and for Chaturbate
+            // rooms, whose card image IS the model, so favourites/home cards aren't blank.
+            // Plain video cards carry a frame, not an avatar, so they pass none (the
+            // YouTube store fetches a missing avatar via yt-dlp; PornHub leaves it empty).
+            const bool keepThumb = m_result.isChannel
+                || m_channelUrl.contains("chaturbate.com", Qt::CaseInsensitive);
             favStore->toggle(
                 m_channelUrl,
                 m_result.channel,
-                m_result.isChannel ? m_result.thumbnail : QString());
+                keepThumb ? m_result.thumbnail : QString());
         });
         // When another card (or any other caller) toggles the same channel, sync up.
         connect(favStore, &SgFavorites::changed, this,

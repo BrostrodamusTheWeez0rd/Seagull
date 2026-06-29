@@ -159,10 +159,11 @@ private:
     void enterFavoritesView();
     void exitFavoritesView();
 
-    // Home feed: the landing view, filled with the newest uploads from the user's
-    // (up to 5) favourited channels/models. Works on YouTube and PornHub, each off its
-    // own favourites store (see favStore). Fetched sequentially through m_search, one
-    // light request per channel, and rebuilt when switching to another favouritable site.
+    // Home feed: the landing view, filled with the user's favourited channels/models
+    // (up to the per-site limit). YouTube/PornHub pull newest uploads per channel,
+    // fetched sequentially through m_search; Chaturbate has no per-channel listing, so
+    // its feed is the favourited rooms themselves. Each site reads its own favourites
+    // store (see favStore) and the feed rebuilds when switching to another such site.
     QStringList homeChannels() const;    // resolve the channels to feed the home page (Settings order/amount)
     int         homeVideosPerChannel() const; // videos pulled per channel (Settings; default kHomePerChannel)
     void        loadHomeFeed();          // (re)build the feed for the resolved channels
@@ -170,10 +171,10 @@ private:
     void        handleHomeBatch(const SearchResult& info, const QList<SearchResult>& videos);
     void        pumpHomeFeed();          // fetch the next queued channel, or finalise the feed
     QString     emptyStateText() const;  // landing message (favourites prompt vs "search ...")
-    // The favourites store backing the current site (YouTube vs PornHub), or nullptr
-    // for sites without favourites (Chaturbate).
+    // The favourites store backing the current site (YouTube / PornHub / Chaturbate),
+    // or nullptr for sites without favourites.
     SgFavorites* favStore() const;
-    static bool  isFavouritableSite(SgSearch::Site s); // YouTube or PornHub
+    static bool  isFavouritableSite(SgSearch::Site s); // YouTube, PornHub or Chaturbate
     static constexpr int kHomePerChannel = 5; // default newest videos pulled per channel
     int         m_homePerChannel = kHomePerChannel; // resolved per-channel count for the active build
     bool        m_homeLoading = false;   // a home-feed build is in progress

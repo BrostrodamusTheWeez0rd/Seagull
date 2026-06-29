@@ -934,6 +934,7 @@ QList<SearchResult> SgSearch::parseChaturbateJson(const QByteArray& bytes) const
         if (subj.isEmpty()) subj = o["subject"].toString();
         r.title = subj.isEmpty() ? user : subj;
         r.channel = user;
+        r.channelUrl = r.url; // the model's room IS its "channel" — lets the card show a favourite star
 
         QString img = o["img"].toString();
         if (img.startsWith("//")) img = "https:" + img;

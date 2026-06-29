@@ -16,6 +16,7 @@
 class QFormLayout;
 class QListWidgetItem;
 class QTimer;
+class QLabel;
 class SgFavorites;
 
 class Settings : public QWidget {
@@ -66,8 +67,9 @@ private:
     void buildHomeSection(QFormLayout* form);  // homepage header + per-site ranked pickers + amount spins
     void rebuildHomePickers();  // repopulate every site's ranked picker from its favourites + saved order
     void saveHomePickerFor(QListWidget* list); // persist one site's ranked URL order
-    void toggleHomeRank(QListWidget* list, QListWidgetItem* item);  // click: add next rank / remove + compact
-    void promoteHomeRank(QListWidget* list, QListWidgetItem* item); // double-click: swap up one rank
+    void toggleHomeRank(QListWidget* list, QListWidgetItem* item);  // click: add next rank (unranked) / bump up (ranked)
+    void promoteHomeRank(QListWidget* list, QListWidgetItem* item); // move an item up one rank
+    void removeHomeRank(QListWidget* list, QListWidgetItem* item);  // double-click: drop its number + compact
     void onDefenderExclusionClicked(); // toggle the Defender exclusion (elevated), then refresh
     void refreshDefenderButton();      // query Defender state -> set Add/Remove Exclusion label
 
@@ -145,11 +147,19 @@ private:
     QFormLayout* searchForm       = nullptr; // the Search page form
 
     // Homepage section: a per-site collapsible ranked picker (click an item to add the
-    // next 1..5 number, double-click to move it up) plus the two amount spins.
-    struct HomePicker { SgFavorites* store; QString cfgKey; QListWidget* list; };
+    // next 1..20 number, double-click to move it up), each with its OWN result-count
+    // spin folded into the section, plus the one shared videos-per-channel spin.
+    struct HomePicker {
+        SgFavorites* store;
+        QString      cfgKey;            // ranked picker order:    "Search/HomeChannels<Site>"
+        QString      amountKey;         // per-site result limit:  "Search/HomeAmount<Site>"
+        QString      videosKey;         // per-site videos/channel: "Search/HomeVideosPerChannel<Site>" (empty for Chaturbate)
+        QListWidget* list;
+        QSpinBox*    amountSpin = nullptr;
+        QSpinBox*    videosSpin = nullptr; // null for Chaturbate (live rooms, no per-channel videos)
+        QLabel*      warning    = nullptr; // YouTube throttle note (shown when amount > 10); null otherwise
+    };
     QList<HomePicker> m_homePickers;
-    QSpinBox* homeChannelAmountSpin = nullptr; // how many ranked channels feed the home page
-    QSpinBox* homeBatchSpin         = nullptr; // how many videos per channel
     QTimer*   m_homeClickTimer      = nullptr; // disambiguates single-click (rank) from double-click (promote)
     QListWidget* m_pendingList      = nullptr; // the list whose click is pending
     QString   m_pendingUrl;                    // url of the item whose single-click is pending

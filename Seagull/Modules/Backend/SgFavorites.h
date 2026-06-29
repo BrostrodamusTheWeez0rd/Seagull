@@ -11,9 +11,10 @@ class QProcess;
 // Singleton that persists a set of favorited channels to a JSON file under
 // Config/. Keyed by channelUrl; stores the display name and thumbnail URL too.
 //
-// There are two independent, contained stores backed by the SAME class:
-//   - instance()   -> YouTube favourites  (Config/favorites.json, avatars via yt-dlp)
-//   - phInstance() -> PornHub favourites  (Config/ph_favorites.json, no yt-dlp)
+// There are three independent, contained stores backed by the SAME class:
+//   - instance()   -> YouTube favourites    (Config/favorites.json, avatars via yt-dlp)
+//   - phInstance() -> PornHub favourites    (Config/ph_favorites.json, no yt-dlp)
+//   - cbInstance() -> Chaturbate favourites (Config/cb_favorites.json, no yt-dlp)
 // The first call to each creates that singleton and loads its JSON; every toggle
 // writes back immediately. Use forUrl() to route a card's channel URL to its store.
 class SgFavorites : public QObject {
@@ -28,9 +29,10 @@ public:
 
     static SgFavorites* instance();   // YouTube store
     static SgFavorites* phInstance(); // PornHub store
+    static SgFavorites* cbInstance(); // Chaturbate store
 
-    // Routes a channel/model URL to the store that owns it (YouTube vs PornHub),
-    // or nullptr if the URL belongs to no favouritable site.
+    // Routes a channel/model URL to the store that owns it (YouTube / PornHub /
+    // Chaturbate), or nullptr if the URL belongs to no favouritable site.
     static SgFavorites* forUrl(const QString& url);
 
     bool isFavorited(const QString& channelUrl) const;

@@ -23,9 +23,15 @@ SgFavorites* SgFavorites::phInstance() {
     return s_instance;
 }
 
+SgFavorites* SgFavorites::cbInstance() {
+    static SgFavorites* s_instance = new SgFavorites("cb_favorites.json", /*fetchAvatars*/false, nullptr);
+    return s_instance;
+}
+
 SgFavorites* SgFavorites::forUrl(const QString& url) {
-    if (url.contains("pornhub.com", Qt::CaseInsensitive)) return phInstance();
-    if (url.contains("youtube.com", Qt::CaseInsensitive)) return instance();
+    if (url.contains("pornhub.com", Qt::CaseInsensitive))   return phInstance();
+    if (url.contains("chaturbate.com", Qt::CaseInsensitive)) return cbInstance();
+    if (url.contains("youtube.com", Qt::CaseInsensitive))   return instance();
     return nullptr; // not a favouritable site
 }
 
