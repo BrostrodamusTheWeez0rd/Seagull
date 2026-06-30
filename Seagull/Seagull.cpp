@@ -36,7 +36,10 @@
 #include <QLocale>
 #include <QStringList>
 #include <QHash>
+#include <QRandomGenerator>
+#include <QSet>
 #include <QPalette>
+#include <iterator>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -59,6 +62,7 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     prefetcherWorker = new SgYtDlp(this);
     playerWorker = new SgYtDlp(this);
     downloadWorker = new SgYtDlp(this);
+    shortsPrefetcher = new SgYtDlp(this);
     searchWorker = new SgSearch(this);
 
     // The comments worker runs the slow, paginated comment extraction + JSON parse on
@@ -84,12 +88,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     resolverWorker->setHlsProxy(hlsProxy);
     prefetcherWorker->setHlsProxy(hlsProxy);
     playerWorker->setHlsProxy(hlsProxy);
+    shortsPrefetcher->setHlsProxy(hlsProxy);
 
     // One -J cache shared by every worker: a video the queue title-resolver already
     // extracted is answered from cache when the prefetcher and player ask for it,
     // instead of three separate yt-dlp launches against YouTube.
     metaCache = new SgMetaCache(this);
-    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker })
+    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker, shortsPrefetcher })
         w->setMetaCache(metaCache);
 
     // Records the currently-playing live stream (parallel ffmpeg), driven by the
@@ -527,8 +532,51 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // Any worker that hits a bot-check / throttling block warns the user (debounced).
     // Queued so the modal opens from the event loop, not re-entrantly inside the
     // worker's finished-handler while it's mid-emit.
-    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker, commentsWorker })
+    for (SgYtDlp* w : { downloaderWorker, resolverWorker, prefetcherWorker, playerWorker, downloadWorker, commentsWorker, shortsPrefetcher })
         connect(w, &SgYtDlp::extractionBlocked, this, &Seagull::onExtractionBlocked, Qt::QueuedConnection);
+
+    // Shorts prefetch results land here. streamUrlReady = success (cache the CDN, then
+    // fetch the next one in the lookahead); finished(false) = failure (drop it, continue).
+    // On success only streamUrlReady fires (the metadata path emits no finished(true)),
+    // so the two never double-handle. m_shortsBusyUrl gates out cancelled/stray emits.
+    connect(shortsPrefetcher, &SgYtDlp::streamUrlReady, this, [this](const QUrl& v, const QUrl& a) {
+        if (m_shortsBusyUrl.isEmpty()) return; // cancelled mid-flight or a stray
+        m_shortsWatchdogTimer->stop();
+        m_shortsReady.insert(m_shortsBusyUrl, qMakePair(v, a));
+        m_shortsBusyUrl.clear();
+        pumpShortsPrefetch(); // resolve the second short in the lookahead window
+    });
+    connect(shortsPrefetcher, &SgYtDlp::finished, this, [this](bool ok) {
+        if (m_shortsPrefetchCancelling) return; // our own cancel() — not a real result
+        if (ok || m_shortsBusyUrl.isEmpty()) return; // success is handled above; or a stray
+        m_shortsWatchdogTimer->stop();
+        m_shortsBusyUrl.clear();                // failed — abandon it (already off the want list)
+        pumpShortsPrefetch();
+    });
+    // Debounce: each fetch launches after a small jittered delay so the speculative
+    // requests don't hit YouTube on a fixed metronome (an easy bot tell).
+    m_shortsDebounceTimer = new QTimer(this);
+    m_shortsDebounceTimer->setSingleShot(true);
+    connect(m_shortsDebounceTimer, &QTimer::timeout, this, [this]() {
+        m_shortsScheduled = false;
+        if (!m_shortsBusyUrl.isEmpty()) return;            // a fetch already started
+        while (!m_shortsWant.isEmpty()
+               && (m_shortsWant.front().isEmpty() || m_shortsReady.contains(m_shortsWant.front())))
+            m_shortsWant.removeFirst();                    // skip any that became ready meanwhile
+        if (m_shortsWant.isEmpty()) return;
+        m_shortsBusyUrl = m_shortsWant.takeFirst();
+        shortsPrefetcher->fetchMetadataAndStreamUrl(m_shortsBusyUrl);
+        m_shortsWatchdogTimer->start(15000);               // recover the slot if it never reports
+    });
+    // Watchdog for the no-result resolve (see header): abandon a fetch that never reports.
+    m_shortsWatchdogTimer = new QTimer(this);
+    m_shortsWatchdogTimer->setSingleShot(true);
+    connect(m_shortsWatchdogTimer, &QTimer::timeout, this, [this]() {
+        if (m_shortsBusyUrl.isEmpty()) return;
+        m_shortsBusyUrl.clear();        // already off the want list — don't re-storm it
+        cancelShortsFetch();            // kill a wedged process; its finished() is ignored
+        pumpShortsPrefetch();
+    });
 
     // Once a queued/streamed video starts, clear the URL bar (the metadata preview
     // stays up, showing the now-playing video). Library playback leaves it alone.
@@ -538,6 +586,9 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         // slideshow if a photo just loaded.
         m_currentIsPhoto = (videoPlayer->currentMediaKind() == MediaKind::Photo);
         mainWindow->setPlaybackContext(currentContextKey(), m_currentIsPhoto);
+        // setPlaybackContext just pointed the autoplay toggle at this content type;
+        // mirror it into the player so a finished short loops vs. advances correctly.
+        videoPlayer->setAutoplayEnabled(mainWindow->autoplayEnabled());
         updateSlideshow();
         });
 
@@ -602,7 +653,10 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     slideshowTimer->setSingleShot(true);
     connect(slideshowTimer, &QTimer::timeout, this, [this]() { skipActive(1); });
     // Toggling the slideshow control, or editing the interval, re-evaluates it.
-    connect(mainWindow, &MainWindow::autoplayChanged,      this, [this](bool) { updateSlideshow(); });
+    connect(mainWindow, &MainWindow::autoplayChanged,      this, [this](bool on) {
+        videoPlayer->setAutoplayEnabled(on); // a short ending mid-toggle loops vs. advances correctly
+        updateSlideshow();
+    });
     connect(mainWindow, &MainWindow::photoIntervalChanged, this, [this](int)  { updateSlideshow(); });
     // Tearing down playback ends any running slideshow.
     connect(videoPlayer, &VideoPlayer::closed, this, [this]() {
@@ -695,6 +749,59 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // it owns checkFinished/applyProgress/applyFinished for the whole flow.
 }
 
+void Seagull::armShortsPrefetch(const QStringList& upcoming) {
+    // `upcoming` is the next up-to-kShortsLookahead shorts in feed order. Keep only the
+    // resolved entries still inside that window (drop anything scrolled past), then queue
+    // the ones we don't already have.
+    const QSet<QString> keep(upcoming.begin(), upcoming.end());
+    for (auto it = m_shortsReady.begin(); it != m_shortsReady.end(); )
+        it = keep.contains(it.key()) ? std::next(it) : m_shortsReady.erase(it);
+
+    // An in-flight fetch for a short no longer in the window is wasted — drop it.
+    if (!m_shortsBusyUrl.isEmpty() && !keep.contains(m_shortsBusyUrl)) {
+        m_shortsBusyUrl.clear();
+        cancelShortsFetch();
+    }
+
+    m_shortsWant.clear();
+    for (const QString& u : upcoming)
+        if (!u.isEmpty() && !m_shortsReady.contains(u) && u != m_shortsBusyUrl)
+            m_shortsWant.append(u);
+    pumpShortsPrefetch();
+}
+
+void Seagull::pumpShortsPrefetch() {
+    if (!m_shortsBusyUrl.isEmpty()) return;         // one resolve at a time
+    if (m_shortsScheduled) return;                  // a debounced launch is already pending
+    while (!m_shortsWant.isEmpty()
+           && (m_shortsWant.front().isEmpty() || m_shortsReady.contains(m_shortsWant.front())))
+        m_shortsWant.removeFirst();
+    if (m_shortsWant.isEmpty()) return;
+    m_shortsScheduled = true;
+    // Small base (~200ms) + jitter(0..600) so launches don't form a fixed cadence.
+    m_shortsDebounceTimer->start(200 + int(QRandomGenerator::global()->bounded(600)));
+}
+
+void Seagull::clearShortsPrefetch() {
+    m_shortsDebounceTimer->stop();
+    m_shortsWatchdogTimer->stop();
+    m_shortsScheduled = false;
+    m_shortsWant.clear();
+    m_shortsReady.clear();
+    if (!m_shortsBusyUrl.isEmpty()) {
+        m_shortsBusyUrl.clear();
+        cancelShortsFetch();
+    }
+}
+
+void Seagull::cancelShortsFetch() {
+    // cancel() is synchronous and fires finished(false); the guard tells that handler the
+    // emission is ours, not a real failure. Caller has already cleared m_shortsBusyUrl.
+    m_shortsPrefetchCancelling = true;
+    shortsPrefetcher->cancel();
+    m_shortsPrefetchCancelling = false;
+}
+
 void Seagull::wireSearchTab(Search* s) {
     // A search card plays through the same path as the queue; a short additionally
     // loops at the end and the wheel walks the feed. Capturing `s` lets the active
@@ -705,9 +812,26 @@ void Seagull::wireSearchTab(Search* s) {
             m_activeSearch = s;
             const bool wasShorts = videoPlayer->shortsMode();
             const bool isShort   = rawUrl.toString().contains("/shorts/", Qt::CaseInsensitive);
-            videoPlayer->playVideo(rawUrl, cdnVideoUrl, cdnAudioUrl, title);
+
+            // If this short was prefetched (scroll-ahead), hand the player the resolved
+            // CDN so it starts instantly instead of re-running yt-dlp.
+            QUrl v = cdnVideoUrl, a = cdnAudioUrl;
+            if (isShort && v.isEmpty()) {
+                auto it = m_shortsReady.constFind(rawUrl.toString());
+                if (it != m_shortsReady.constEnd() && !it->first.isEmpty()) {
+                    v = it->first;
+                    a = it->second;
+                }
+            }
+
+            videoPlayer->playVideo(rawUrl, v, a, title);
             videoPlayer->setShortsMode(isShort); // playVideo cleared it — re-arm
             if (isShort && !wasShorts) mainWindow->collapseTabs();
+
+            // Warm the next two shorts so scrolling stays instant; leaving shorts drops
+            // the prefetch state and frees the worker.
+            if (isShort) armShortsPrefetch(s->peekForwardUrls(kShortsLookahead));
+            else         clearShortsPrefetch();
         });
     // Card "Queue" adds to the Queue tab; "Download" goes to the dedicated download
     // worker's FIFO (files land in the library).

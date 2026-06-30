@@ -1192,6 +1192,16 @@ void Search::playAdjacentResult(int delta) {
     playResultAt(i);
 }
 
+QStringList Search::peekForwardUrls(int count) const {
+    QStringList out;
+    if (count <= 0 || m_allResults.isEmpty() || m_playingIndex < 0) return out;
+
+    for (int i = m_playingIndex + 1; i < m_allResults.size() && out.size() < count; ++i)
+        if (shows(m_allResults[i]))
+            out.append(m_allResults[i].url);
+    return out; // shorter than count near the loaded tail; no loadMore (stays speculative)
+}
+
 void Search::playRandomResult() {
     if (m_allResults.isEmpty()) return;
     // Collect the indices that currently pass the filter, then pick one that

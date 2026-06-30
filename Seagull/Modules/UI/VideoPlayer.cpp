@@ -317,14 +317,21 @@ void VideoPlayer::hardStop() {
 void VideoPlayer::onMediaEndReached() {
     stopRecordingIfActive(); // the live source ended — finalise any recording
 
-    // Shorts loop like YouTube's feed: restart instead of ended mode, and no
-    // mediaEnded — auto-advance is the wheel/skip, never the clock.
+    // Shorts behave like the feed at end-of-clip, honouring autoplay:
+    //   • autoplay OFF -> loop this short in place (no ended chrome, no poster).
+    //   • autoplay ON  -> advance to the next short via mediaEnded (the orchestrator
+    //     calls playAdjacentResult(1)); seamless, the next video replaces the frame
+    //     with no poster flash. Emit WITHOUT the ended-mode/poster chrome below.
     if (m_shortsMode && engine->hasMedia()) {
-        engine->reloadLastMedia();
-        QTimer::singleShot(50, this, [this]() {
-            engine->play();
-            if (playerControls) { playerControls->resetUiState(); playerControls->startPolling(); }
-            });
+        if (m_autoplayEnabled) {
+            emit mediaEnded();
+        } else {
+            engine->reloadLastMedia();
+            QTimer::singleShot(50, this, [this]() {
+                engine->play();
+                if (playerControls) { playerControls->resetUiState(); playerControls->startPolling(); }
+                });
+        }
         return;
     }
 
@@ -550,8 +557,10 @@ void VideoPlayer::applyPosterPixmap(const QPixmap& pm) {
         return;
     }
     // Fetch placeholder: stand in for the (black) video until it starts; if
-    // the poster is already up (EOF replay), paint the pixmap in now.
-    if (m_fetching) showPosterOverlay();
+    // the poster is already up (EOF replay), paint the pixmap in now. Shorts skip
+    // this so scrolling cuts straight to the next video with no thumbnail flash
+    // (the pixmap is still kept above for SMTC artwork).
+    if (m_fetching && !m_shortsMode) showPosterOverlay();
     else if (posterOverlay && posterOverlay->isVisible())
         repositionOverlays();
 }
@@ -597,7 +606,7 @@ void VideoPlayer::onPlaybackError() {
     if (m_isStreaming && !m_streamRetried) {
         m_streamRetried = true;
         m_fetching = true; // poster stands in again while the fresh URL resolves
-        if (!m_posterPixmap.isNull()) showPosterOverlay();
+        if (!m_posterPixmap.isNull() && !m_shortsMode) showPosterOverlay(); // shorts stay posterless
         if (titleBar) {
             titleBar->setTitle("Stream link expired — refetching...");
             titleBar->setLoading(true);

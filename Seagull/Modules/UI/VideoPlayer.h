@@ -78,6 +78,11 @@ public:
     void setShortsMode(bool on);
     bool shortsMode() const { return m_shortsMode; }
 
+    // The orchestrator mirrors the current content type's autoplay toggle here so the
+    // player can decide what a finished short does: autoplay off loops it (YouTube-feed
+    // style), autoplay on auto-advances to the next short (seamless, no poster).
+    void setAutoplayEnabled(bool on) { m_autoplayEnabled = on; }
+
     // The shell pushes the tabs-pane state so the splitter-toggle chevron
     // points the way the pane will move: down to drop it, up to bring it back.
     void setTabsPaneOpen(bool open);
@@ -314,6 +319,7 @@ private:
     // Shorts feed: wheel deltas accumulate to one notch (trackpads stream tiny
     // steps), rate-limited so a flick advances exactly one short.
     bool          m_shortsMode = false;
+    bool          m_autoplayEnabled = false; // mirrors the active content type's autoplay toggle
     int           m_shortsWheelAccum = 0;
     QElapsedTimer m_shortsScrollClock;
 };

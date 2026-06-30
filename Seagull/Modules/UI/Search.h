@@ -53,6 +53,11 @@ public slots:
     void playAdjacentResult(int delta);
     // Shuffle: play a random other result that passes the current filter.
     void playRandomResult();
+    // Peek at the page URLs of the next up-to-`count` results AFTER the playing one
+    // that pass the current filter, in feed order, WITHOUT playing them or pulling more
+    // pages. Used by the shorts prefetcher to resolve the upcoming streams ahead of the
+    // scroll. Returns fewer than `count` (or empty) near the loaded tail.
+    QStringList peekForwardUrls(int count) const;
     // Settings namespace for this tab's active site (e.g. "search.youtube"), so
     // autoplay/shuffle settings are remembered per site.
     QString playbackContextKey() const;

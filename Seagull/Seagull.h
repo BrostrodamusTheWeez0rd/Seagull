@@ -7,6 +7,8 @@
 #include <QList>
 #include <QHash>
 #include <QSet>
+#include <QUrl>
+#include <QPair>
 #include "Modules/UI/MainWindow.h"
 #include "Modules/UI/VideoPlayer.h"
 #include "Modules/UI/Queue.h"
@@ -142,6 +144,29 @@ private:
     QList<FileExplorer*> m_explorerTabs;
     FileExplorer*        m_activeExplorer = nullptr;
 
+    // Shorts prefetch: while a short plays, resolve the next two shorts' CDN streams on
+    // shortsPrefetcher and hold them, so scrolling stays instant even when you move faster
+    // than one resolve (same CDN-passthrough the Queue prefetch uses). Forward-only —
+    // that's the dominant scroll direction; a back-scroll resolves on demand. The two are
+    // fetched SEQUENTIALLY (never parallel yt-dlp — that's a bot tell and the worker only
+    // runs one job anyway), each launch behind a small jittered debounce so the background
+    // requests don't march at a fixed metronome.
+    static constexpr int kShortsLookahead = 2;
+    QHash<QString, QPair<QUrl, QUrl>> m_shortsReady; // page URL -> resolved {video, audio} CDN
+    QStringList m_shortsWant;    // upcoming page URLs still needing a fetch (in feed order)
+    QString     m_shortsBusyUrl; // URL the prefetcher is resolving now ("" = idle)
+    bool        m_shortsScheduled = false;          // a debounced launch is pending
+    bool        m_shortsPrefetchCancelling = false; // guard: ignore our own cancel()'s finished()
+    QTimer*     m_shortsDebounceTimer = nullptr;    // jittered delay before each fetch launches
+    // Watchdog: a resolve that finds no playable format emits neither streamUrlReady nor
+    // finished, which would latch m_shortsBusyUrl and stall the feature. If a fetch hasn't
+    // reported back in time, abandon it (the short still resolves on demand when scrolled to).
+    QTimer*     m_shortsWatchdogTimer = nullptr;
+    void armShortsPrefetch(const QStringList& upcoming); // set the lookahead window from the feed
+    void pumpShortsPrefetch();                            // schedule the next fetch if idle
+    void clearShortsPrefetch();                           // drop state + abandon any in-flight fetch
+    void cancelShortsFetch();                             // guarded cancel() of the in-flight job
+
     void wireSearchTab(Search* s);          // connect a Search instance's signals
     void wireExplorerTab(FileExplorer* e);  // connect a FileExplorer instance's signals
     void openDuplicateTab(const QString& kind, bool switchTo = true); // "+" -> build + wire + add a new instance
@@ -154,6 +179,7 @@ private:
     SgYtDlp* playerWorker;     // dedicated to the player's probe/stream-url traffic
     SgYtDlp* downloadWorker;   // dedicated to ad-hoc (Search card) downloads
     SgYtDlp* commentsWorker;   // dedicated to the slow, paginated comments fetch
+    SgYtDlp* shortsPrefetcher; // dedicated to resolving the NEXT short ahead of the scroll
     SgSearch* searchWorker;    // backend for the Search tab (discovery)
     SgSpellCheck* spellChecker; // shared OS spell checker for the text fields
 
