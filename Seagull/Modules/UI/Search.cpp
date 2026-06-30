@@ -528,9 +528,12 @@ void Search::updateFilterPillVisibility() {
     const QRect zone(0, 0, resultsArea->width(), stripH + 2 * kPillTopMargin);
     const bool hovered = zone.contains(resultsArea->mapFromGlobal(QCursor::pos()));
     const bool show = atTop || hovered;
-    // The Videos/Shorts pill is YouTube-only; the favourites chip is on favouritable sites.
+    // The Videos/Shorts pill is YouTube-only, and only on an actual search/channel view —
+    // hide it on the home feed (landing, navIndex < 0) and in the favourites view. The
+    // favourites chip itself stays on favouritable sites.
     const bool isYouTube = (currentSite() == SgSearch::Site::YouTube);
-    m_filterPill->setVisible(show && isYouTube);
+    const bool onSearchView = (m_navIndex >= 0) && !m_favoritesActive;
+    m_filterPill->setVisible(show && isYouTube && onSearchView);
     m_resultSortBtn->setVisible(show);
     if (m_favoritesBtn) {
         const bool favShow = show && isFavouritableSite(currentSite());
