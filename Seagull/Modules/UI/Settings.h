@@ -66,12 +66,9 @@ private:
     void onCookiesBrowserChanged(const QString& text); // warn on enable, then save
     void deleteCookieData(); // clear yt-dlp's cached login/session data
     void applySmartSortState(); // smart sort toggle -> show/hide the Downloads Folder row
-    void buildHomeSection(QFormLayout* form);  // homepage header + per-site ranked pickers + amount spins
-    void rebuildHomePickers();  // repopulate every site's ranked picker from its favourites + saved order
-    void saveHomePickerFor(QListWidget* list); // persist one site's ranked URL order
-    void toggleHomeRank(QListWidget* list, QListWidgetItem* item);  // click: add next rank (unranked) / bump up (ranked)
-    void promoteHomeRank(QListWidget* list, QListWidgetItem* item); // move an item up one rank
-    void removeHomeRank(QListWidget* list, QListWidgetItem* item);  // double-click: drop its number + compact
+    void buildHomeSection(QFormLayout* form);  // homepage header + per-site drag-ordered pickers + amount spins
+    void rebuildHomePickers();  // repopulate every site's picker from its favourites, in saved priority order
+    void saveHomePickerFor(QListWidget* list); // persist one site's order (row order = priority)
     void onDefenderExclusionClicked(); // toggle the Defender exclusion (elevated), then refresh
     void refreshDefenderButton();      // query Defender state -> set Add/Remove Exclusion label
 
@@ -148,24 +145,24 @@ private:
     QSpinBox* searchResultsSpin;         // how many results a search fetches
     QFormLayout* searchForm       = nullptr; // the Search page form
 
-    // Homepage section: a per-site collapsible ranked picker (click an item to add the
-    // next 1..20 number, double-click to move it up), each with its OWN result-count
-    // spin folded into the section, plus the one shared videos-per-channel spin.
+    // Homepage section: a per-site collapsible picker you drag to reorder (top row =
+    // highest priority), each with its OWN result-count spin folded into the section,
+    // plus a per-site videos-per-channel spin.
     struct HomePicker {
         SgFavorites* store;
-        QString      cfgKey;            // ranked picker order:    "Search/HomeChannels<Site>"
+        QString      cfgKey;            // drag-order priority:    "Search/HomeChannels<Site>"
         QString      amountKey;         // per-site result limit:  "Search/HomeAmount<Site>"
         QString      videosKey;         // per-site videos/channel: "Search/HomeVideosPerChannel<Site>" (empty for Chaturbate)
         QListWidget* list;
         QSpinBox*    amountSpin = nullptr;
         QSpinBox*    videosSpin = nullptr; // null for Chaturbate (live rooms, no per-channel videos)
         QLabel*      warning    = nullptr; // YouTube throttle note (shown when amount > 10); null otherwise
+        QString      shuffleKey;           // randomize toggle: "Search/HomeRandomize<Site>" (empty for Chaturbate)
+        QPushButton* shuffleBtn = nullptr; // checked = mix by recency (default); unchecked = favourites order. null for Chaturbate
+        int          amountDefault = 5;    // per-site default for the "Max homepage videos" spin
     };
     QList<HomePicker> m_homePickers;
-    QTimer*   m_homeClickTimer      = nullptr; // disambiguates single-click (rank) from double-click (promote)
-    QListWidget* m_pendingList      = nullptr; // the list whose click is pending
-    QString   m_pendingUrl;                    // url of the item whose single-click is pending
-    qint64    m_lastPickDblMs       = 0;       // when the last double-click landed (swallow its trailing click)
+    bool m_rebuildingPickers = false; // true while rebuildHomePickers repopulates (suppresses save)
     QPushButton* clearHistoryBtn;        // wipe the search history right now
     QCheckBox* clearHistoryOnCloseCheck; // wipe it automatically on every exit
 

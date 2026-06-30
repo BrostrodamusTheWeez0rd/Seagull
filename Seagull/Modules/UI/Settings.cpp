@@ -36,27 +36,9 @@
 #endif
 
 namespace {
-// The ranked-picker item roles: the channel URL, and its 1..5 position (0 = unranked).
-constexpr int kUrlRole  = Qt::UserRole;
-constexpr int kRankRole = Qt::UserRole + 1;
-
-// Paints the home-feed picker rows: the channel name (default) plus, for ranked items,
-// its number drawn in the accent colour at the right edge.
-class RankDelegate : public QStyledItemDelegate {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-    void paint(QPainter* p, const QStyleOptionViewItem& opt, const QModelIndex& idx) const override {
-        QStyledItemDelegate::paint(p, opt, idx);
-        const int rank = idx.data(kRankRole).toInt();
-        if (rank <= 0) return;
-        p->save();
-        QFont f = opt.font; f.setBold(true); p->setFont(f);
-        p->setPen(opt.palette.color(QPalette::Highlight));
-        p->drawText(opt.rect.adjusted(0, 0, -10, 0), Qt::AlignRight | Qt::AlignVCenter,
-                    QString::number(rank));
-        p->restore();
-    }
-};
+// The home-feed picker stores each row's channel URL; the row order IS the priority
+// (top = highest), set by dragging.
+constexpr int kUrlRole = Qt::UserRole;
 
 // Load a bundled resource doc as text ("" if missing).
 QString readDoc(const QString& resourcePath) {
@@ -714,36 +696,21 @@ void Settings::buildHomeSection(QFormLayout* form) {
     header->setContentsMargins(0, 2, 0, 0);
     form->addRow(header);
 
-    auto* intro = new QLabel("Click a site to choose and order favourites for its home page, and set how "
-        "many appear. Click an unpicked favourite to give it the next number, click a numbered one to "
-        "move it up, or double-click to remove its number.");
+    auto* intro = new QLabel("Open a site below to set how many favourites appear on its home page, then "
+        "drag them into the order you want. The ones at the top show first.");
     intro->setObjectName("metaStats"); // themed dim text
     intro->setWordWrap(true);
     form->addRow(intro);
 
-    // Disambiguate a single click (number / bump up) from a double-click (remove): a
-    // click arms this timer; a double-click cancels it; if it fires, the click was solo.
-    m_homeClickTimer = new QTimer(this);
-    m_homeClickTimer->setSingleShot(true);
-    m_homeClickTimer->setInterval(QApplication::doubleClickInterval());
-    connect(m_homeClickTimer, &QTimer::timeout, this, [this]() {
-        QListWidget* list = m_pendingList;
-        m_pendingList = nullptr;
-        if (!list) return;
-        for (int i = 0; i < list->count(); ++i)
-            if (list->item(i)->data(kUrlRole).toString() == m_pendingUrl) {
-                toggleHomeRank(list, list->item(i));
-                break;
-            }
-    });
-
     // hasVideos: YouTube/PornHub pull N recent videos per channel; Chaturbate favourites
     // are live rooms, so it gets the result-limit spin but no videos-per-channel spin.
-    struct SiteDef { SgFavorites* store; const char* label; const char* suffix; bool isYouTube; bool hasVideos; };
+    // hasAmount: YouTube/PornHub cap the home page at a max-videos count; Chaturbate shows
+    // ALL favourited models, so it gets no max-amount spin.
+    struct SiteDef { SgFavorites* store; const char* label; const char* suffix; bool isYouTube; bool hasVideos; bool hasAmount; int defaultAmount; };
     const SiteDef sites[] = {
-        { SgFavorites::instance(),   "YouTube",    "YouTube",    true,  true  },
-        { SgFavorites::phInstance(), "PornHub",    "PornHub",    false, true  },
-        { SgFavorites::cbInstance(), "Chaturbate", "Chaturbate", false, false },
+        { SgFavorites::instance(),   "YouTube",    "YouTube",    true,  true,  true,  15 },
+        { SgFavorites::phInstance(), "PornHub",    "PornHub",    false, true,  true,  20 },
+        { SgFavorites::cbInstance(), "Chaturbate", "Chaturbate", false, false, false, 5  },
     };
     for (const SiteDef& s : sites) {
         const QString label  = QString::fromLatin1(s.label);
@@ -758,20 +725,34 @@ void Settings::buildHomeSection(QFormLayout* form) {
         auto* list = new QListWidget();
         list->setFixedHeight(140);
         list->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        list->setSelectionMode(QAbstractItemView::NoSelection); // we manage rank, not selection
-        list->setItemDelegate(new RankDelegate(list));
+        // Drag to reorder: the row order is the home-page priority (top = first).
+        list->setSelectionMode(QAbstractItemView::SingleSelection);
+        list->setDragDropMode(QAbstractItemView::InternalMove);
+        list->setDefaultDropAction(Qt::MoveAction);
+        list->setDragDropOverwriteMode(false);
         list->hide(); // collapsed until the site label is clicked
         form->addRow(list);
 
-        // Per-site result limit, folded into this site's section.
-        auto* amountSpin = new QSpinBox();
-        amountSpin->setRange(1, 20);
-        amountSpin->setValue(5);
-        amountSpin->setToolTip("How many of your ranked favourites appear on this site's home page.");
-        amountSpin->hide();
-        auto* amountLabel = new QLabel(label + " on home page:");
-        amountLabel->hide();
-        form->addRow(amountLabel, amountSpin);
+        // Per-site result limit, folded into this site's section. Chaturbate has no limit
+        // (it shows all favourited models), so it gets a short note instead of a spin.
+        QSpinBox* amountSpin = nullptr;
+        QLabel*   amountLabel = nullptr;
+        if (s.hasAmount) {
+            amountSpin = new QSpinBox();
+            amountSpin->setRange(1, 20);
+            amountSpin->setValue(s.defaultAmount);
+            amountSpin->setToolTip("The most videos shown on this site's home page (from the top of your list).");
+            amountSpin->hide();
+            amountLabel = new QLabel("Max homepage videos:");
+            amountLabel->hide();
+            form->addRow(amountLabel, amountSpin);
+        } else {
+            amountLabel = new QLabel("All favourited models show on the home page.");
+            amountLabel->setObjectName("metaStats"); // themed dim text
+            amountLabel->setWordWrap(true);
+            amountLabel->hide();
+            form->addRow(amountLabel);
+        }
 
         // YouTube only: a throttling/bot-detection warning when the count goes past 10
         // (each channel is another rapid request). Shown inline, no modal nag.
@@ -797,118 +778,104 @@ void Settings::buildHomeSection(QFormLayout* form) {
             videosSpin->setValue(5);
             videosSpin->setToolTip("How many recent videos to pull from each of this site's home-page channels.");
             videosSpin->hide();
-            videosLabel = new QLabel(label + " videos per channel:");
+            videosLabel = new QLabel("Videos per channel:");
             videosLabel->hide();
             form->addRow(videosLabel, videosSpin);
             connect(videosSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
         }
 
+        // Randomize-order toggle (only the video feeds mix by recency — Chaturbate's live
+        // rooms always show in your list order, so it gets no toggle). Checked = mix by
+        // recency (current behaviour); unchecked = show grouped in your favourites order.
+        QPushButton* shuffleBtn = nullptr;
+        if (s.hasVideos) {
+            shuffleBtn = new QPushButton();
+            shuffleBtn->setObjectName("homeShuffleToggle");
+            shuffleBtn->setCheckable(true);
+            shuffleBtn->setCursor(Qt::PointingHandCursor);
+            shuffleBtn->setToolTip("On: mix recent videos from your favourites together. "
+                                   "Off: show them grouped in the order set above.");
+            shuffleBtn->hide();
+            form->addRow(shuffleBtn);
+            connect(shuffleBtn, &QPushButton::toggled, this, [shuffleBtn](bool on) {
+                shuffleBtn->setText(on ? QStringLiteral("Randomize order: On")
+                                       : QStringLiteral("Randomize order: Off"));
+            });
+            connect(shuffleBtn, &QPushButton::toggled, this, &Settings::saveSettings);
+        }
+
         m_homePickers.append({ s.store, "Search/HomeChannels" + suffix, "Search/HomeAmount" + suffix,
                                s.hasVideos ? ("Search/HomeVideosPerChannel" + suffix) : QString(),
-                               list, amountSpin, videosSpin, warning });
+                               list, amountSpin, videosSpin, warning,
+                               s.hasVideos ? ("Search/HomeRandomize" + suffix) : QString(), shuffleBtn,
+                               s.defaultAmount });
 
-        connect(amountSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
+        if (amountSpin) connect(amountSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
         connect(toggle, &QPushButton::toggled, this,
-                [toggle, list, amountSpin, amountLabel, videosSpin, videosLabel, warning, label](bool on) {
+                [toggle, list, amountSpin, amountLabel, videosSpin, videosLabel, warning, shuffleBtn, label](bool on) {
             list->setVisible(on);
-            amountSpin->setVisible(on);
-            amountLabel->setVisible(on);
+            if (amountSpin)  amountSpin->setVisible(on);
+            if (amountLabel) amountLabel->setVisible(on);
             if (videosSpin)  videosSpin->setVisible(on);
             if (videosLabel) videosLabel->setVisible(on);
-            if (warning) warning->setVisible(on && amountSpin->value() > 10);
+            if (warning) warning->setVisible(on && amountSpin && amountSpin->value() > 10);
+            if (shuffleBtn) shuffleBtn->setVisible(on);
             toggle->setText((on ? QStringLiteral("▾  ") : QStringLiteral("▸  ")) + label); // ▾/▸
         });
-        connect(list, &QListWidget::itemClicked, this, [this, list](QListWidgetItem* it) {
-            // Swallow the stray click Qt emits on the release after a double-click.
-            if (QDateTime::currentMSecsSinceEpoch() - m_lastPickDblMs < QApplication::doubleClickInterval())
-                return;
-            m_pendingList = list;
-            m_pendingUrl  = it->data(kUrlRole).toString();
-            m_homeClickTimer->start(); // wait to see if a double-click follows
-        });
-        connect(list, &QListWidget::itemDoubleClicked, this, [this, list](QListWidgetItem* it) {
-            m_homeClickTimer->stop(); m_pendingList = nullptr; // the click was a double-click
-            m_lastPickDblMs = QDateTime::currentMSecsSinceEpoch();
-            removeHomeRank(list, it); // double-click removes the number, freeing the slot
-        });
+        // Persist the new priority whenever a drag reorders the rows. QListWidget's
+        // internal move is a remove+insert (rowsInserted); cover rowsMoved too in case
+        // the model does a true move. Guarded so the programmatic rebuild doesn't save.
+        auto save = [this, list]() { if (!m_rebuildingPickers) saveHomePickerFor(list); };
+        connect(list->model(), &QAbstractItemModel::rowsInserted, this, save);
+        connect(list->model(), &QAbstractItemModel::rowsMoved,    this, save);
     }
 }
 
 void Settings::rebuildHomePickers() {
+    m_rebuildingPickers = true; // suppress the rowsInserted save while we repopulate
     for (const HomePicker& p : m_homePickers) {
-        const QStringList ranked = iniSettings->value(p.cfgKey).toStringList(); // priority order
-        p.list->blockSignals(true);
-        p.list->clear();
-        for (const auto& f : p.store->favorites()) {
-            auto* item = new QListWidgetItem(f.name.isEmpty() ? f.url : f.name, p.list);
-            item->setData(kUrlRole, f.url);
-            const int idx = ranked.indexOf(f.url);
-            item->setData(kRankRole, (idx >= 0 && idx < 20) ? idx + 1 : 0);
+        const QStringList saved = iniSettings->value(p.cfgKey).toStringList(); // priority order
+        const auto favs = p.store->favorites();
+
+        // Display order = saved order first (still-favourited), then any favourites not
+        // yet placed appended at the bottom (lowest priority — e.g. a freshly starred one).
+        QStringList order;
+        for (const QString& u : saved) {
+            bool stillFav = false;
+            for (const auto& f : favs) if (f.url == u) { stillFav = true; break; }
+            if (stillFav && !order.contains(u)) order << u;
         }
-        p.list->blockSignals(false);
-        p.list->viewport()->update();
+        for (const auto& f : favs)
+            if (!order.contains(f.url)) order << f.url;
+
+        p.list->clear();
+        for (const QString& u : order) {
+            QString name = u;
+            for (const auto& f : favs) if (f.url == u) { name = f.name.isEmpty() ? f.url : f.name; break; }
+            auto* item = new QListWidgetItem(name, p.list);
+            item->setData(kUrlRole, u);
+        }
+
+        // Keep the stored order complete (newly starred favourites get appended) so the
+        // home feed includes them without the user having to open this page and drag.
+        if (order != saved) {
+            iniSettings->setValue(p.cfgKey, order);
+            iniSettings->sync();
+        }
     }
+    m_rebuildingPickers = false;
 }
 
 void Settings::saveHomePickerFor(QListWidget* list) {
-    QString cfgKey;
-    for (const HomePicker& p : m_homePickers)
-        if (p.list == list) { cfgKey = p.cfgKey; break; }
-    if (cfgKey.isEmpty()) return;
-
-    QMap<int, QString> byRank; // rank (1..5) -> url, sorted ascending
-    for (int i = 0; i < list->count(); ++i) {
-        const int r = list->item(i)->data(kRankRole).toInt();
-        if (r > 0) byRank.insert(r, list->item(i)->data(kUrlRole).toString());
-    }
-    iniSettings->setValue(cfgKey, QStringList(byRank.values()));
-    iniSettings->sync();
-}
-
-void Settings::toggleHomeRank(QListWidget* list, QListWidgetItem* item) {
-    // Single-click: an unpicked favourite gets the next number; a numbered one moves up
-    // one (reorder). Removal is the explicit double-click gesture (removeHomeRank).
-    const int rank = item->data(kRankRole).toInt();
-    if (rank == 0) {
-        // Unranked -> give it the next number, up to the ranking cap of 20.
-        int maxRank = 0;
+    for (const HomePicker& p : m_homePickers) {
+        if (p.list != list) continue;
+        QStringList order; // row order top->bottom IS the priority
         for (int i = 0; i < list->count(); ++i)
-            maxRank = qMax(maxRank, list->item(i)->data(kRankRole).toInt());
-        if (maxRank >= 20) return; // ranking cap (the per-site spin decides how many actually show)
-        item->setData(kRankRole, maxRank + 1);
-        list->viewport()->update();
-        saveHomePickerFor(list);
-    } else {
-        promoteHomeRank(list, item); // already saves + repaints
+            order << list->item(i)->data(kUrlRole).toString();
+        iniSettings->setValue(p.cfgKey, order);
+        iniSettings->sync();
+        return;
     }
-}
-
-void Settings::promoteHomeRank(QListWidget* list, QListWidgetItem* item) {
-    const int rank = item->data(kRankRole).toInt();
-    if (rank <= 1) return; // unranked, or already number 1
-    for (int i = 0; i < list->count(); ++i) {
-        if (list->item(i)->data(kRankRole).toInt() == rank - 1) {
-            list->item(i)->setData(kRankRole, rank);     // the item above is pushed down
-            item->setData(kRankRole, rank - 1);          // this item moves up
-            break;
-        }
-    }
-    list->viewport()->update();
-    saveHomePickerFor(list);
-}
-
-void Settings::removeHomeRank(QListWidget* list, QListWidgetItem* item) {
-    // Drop this item's number and close the gap (everything above shifts down by one),
-    // freeing the slot so another favourite can be numbered.
-    const int rank = item->data(kRankRole).toInt();
-    if (rank == 0) return; // not picked — nothing to remove
-    item->setData(kRankRole, 0);
-    for (int i = 0; i < list->count(); ++i) {
-        const int r = list->item(i)->data(kRankRole).toInt();
-        if (r > rank) list->item(i)->setData(kRankRole, r - 1);
-    }
-    list->viewport()->update();
-    saveHomePickerFor(list);
 }
 
 void Settings::onDefenderExclusionClicked() {
@@ -1046,13 +1013,24 @@ void Settings::loadSettings() {
     searchResultsSpin->setValue(iniSettings->value("Search/ResultLimit", 20).toInt());
     // Per-site home result limit + videos per channel. Migrate from the old global keys
     // so existing users keep their chosen values on first run after the upgrade.
+    const bool hasLegacyAmount = iniSettings->contains("Search/HomeChannelAmount");
     const int legacyAmount = iniSettings->value("Search/HomeChannelAmount", 5).toInt();
     const int legacyVideos = iniSettings->value("Search/HomeVideosPerChannel", 5).toInt();
     for (const HomePicker& p : m_homePickers) {
-        if (p.amountSpin)
-            p.amountSpin->setValue(qBound(1, iniSettings->value(p.amountKey, legacyAmount).toInt(), 20));
+        if (p.amountSpin) {
+            // Fall back to the old global key only if it was actually set; otherwise the
+            // per-site default (e.g. 15 for YouTube, 20 for PornHub).
+            const int fallback = hasLegacyAmount ? legacyAmount : p.amountDefault;
+            p.amountSpin->setValue(qBound(1, iniSettings->value(p.amountKey, fallback).toInt(), 20));
+        }
         if (p.videosSpin)
             p.videosSpin->setValue(qBound(1, iniSettings->value(p.videosKey, legacyVideos).toInt(), 20));
+        if (p.shuffleBtn) {
+            const bool on = iniSettings->value(p.shuffleKey, true).toBool(); // default: mix by recency
+            p.shuffleBtn->setChecked(on);
+            p.shuffleBtn->setText(on ? QStringLiteral("Randomize order: On")
+                                     : QStringLiteral("Randomize order: Off"));
+        }
         if (p.warning) p.warning->setVisible(false); // collapsed sections hide it; toggle re-evaluates
     }
 
@@ -1108,6 +1086,7 @@ void Settings::saveSettings() {
     for (const HomePicker& p : m_homePickers) {
         if (p.amountSpin) iniSettings->setValue(p.amountKey, p.amountSpin->value());
         if (p.videosSpin) iniSettings->setValue(p.videosKey, p.videosSpin->value());
+        if (p.shuffleBtn) iniSettings->setValue(p.shuffleKey, p.shuffleBtn->isChecked());
     }
     iniSettings->setValue("Paths/HomeFolder", homeFolderEdit->text());
     iniSettings->setValue("Paths/DownloadFolder", dlFolderEdit->text());
@@ -1238,8 +1217,12 @@ void Settings::resetDefaults() {
     recFormatCombo->setCurrentText("MP4");
     searchResultsSpin->setValue(20);
     for (const HomePicker& p : m_homePickers) {
-        if (p.amountSpin) p.amountSpin->setValue(5);
+        if (p.amountSpin) p.amountSpin->setValue(p.amountDefault);
         if (p.videosSpin) p.videosSpin->setValue(5);
+        if (p.shuffleBtn) {
+            p.shuffleBtn->setChecked(true);
+            p.shuffleBtn->setText(QStringLiteral("Randomize order: On"));
+        }
         if (p.warning) p.warning->setVisible(false);
     }
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());

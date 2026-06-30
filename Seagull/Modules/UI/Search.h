@@ -166,6 +166,7 @@ private:
     // store (see favStore) and the feed rebuilds when switching to another such site.
     QStringList homeChannels() const;    // resolve the channels to feed the home page (Settings order/amount)
     int         homeVideosPerChannel() const; // videos pulled per channel (Settings; default kHomePerChannel)
+    bool        homeRandomize() const;   // on: mix the feed by recency; off: keep favourites (list) order
     void        loadHomeFeed();          // (re)build the feed for the resolved channels
     void        maybeBuildHomeFeed();    // build for the current site's landing if needed
     void        handleHomeBatch(const SearchResult& info, const QList<SearchResult>& videos);

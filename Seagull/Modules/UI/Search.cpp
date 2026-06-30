@@ -716,11 +716,15 @@ QStringList Search::homeChannels() const {
 
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     const QString suffix = homeSiteSuffix(currentSite());
-    // Per-site result limit (1..20). Falls back to the old global key so existing users
-    // keep their chosen amount the first time after upgrading.
-    const int legacy = cfg.value("Search/HomeChannelAmount", 5).toInt();
-    const int amount = qBound(1, cfg.value("Search/HomeAmount" + suffix, legacy).toInt(), 20);
     const QString key = "Search/HomeChannels" + suffix;
+
+    // Chaturbate shows ALL favourited models on its home page (no max-amount limit).
+    // Other sites cap at the per-site amount (1..20), falling back to the old global key
+    // so existing users keep their chosen amount the first time after upgrading.
+    const bool unlimited = currentSite() == SgSearch::Site::Chaturbate;
+    const int legacy = cfg.value("Search/HomeChannelAmount", 5).toInt();
+    const int amount = unlimited ? all.size()
+                                 : qBound(1, cfg.value("Search/HomeAmount" + suffix, legacy).toInt(), 20);
 
     // The Settings picker stores the user's chosen channels in priority order. Use them
     // (still-favourited), capped at `amount`. If they haven't picked any, fall back to the
@@ -728,8 +732,12 @@ QStringList Search::homeChannels() const {
     QStringList out;
     for (const QString& u : cfg.value(key).toStringList())
         if (all.contains(u) && out.size() < amount) out << u;
-    if (out.isEmpty())
+    if (unlimited) {
+        // Include any favourites not yet in the saved order (e.g. newly added models).
+        for (const QString& u : all) if (!out.contains(u)) out << u;
+    } else if (out.isEmpty()) {
         for (const QString& u : all) { if (out.size() >= amount) break; out << u; }
+    }
     return out;
 }
 
@@ -740,6 +748,14 @@ int Search::homeVideosPerChannel() const {
     const int legacy = cfg.value("Search/HomeVideosPerChannel", kHomePerChannel).toInt();
     const QString key = "Search/HomeVideosPerChannel" + homeSiteSuffix(currentSite());
     return qBound(1, cfg.value(key, legacy).toInt(), 20);
+}
+
+bool Search::homeRandomize() const {
+    // Per-site. On (default) mixes every favourite's pulled videos together by recency;
+    // off keeps them grouped in the favourites order set in Settings. (Chaturbate has no
+    // such key — its live rooms always show in list order regardless.)
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    return cfg.value("Search/HomeRandomize" + homeSiteSuffix(currentSite()), true).toBool();
 }
 
 void Search::loadHomeFeed() {
@@ -816,7 +832,9 @@ void Search::pumpHomeFeed() {
     m_homeLoading = false;
     m_homeBuilt   = true;
     m_shownCount  = m_allResults.size();
-    applySort();                          // default Newest mixes channels by recency
+    if (homeRandomize())                  // on: mix the channels' videos together by recency
+        applySort();
+    // off: leave m_allResults in the favourites (channel-priority) order it was built in
     m_homeCache   = m_allResults;         // cache the built feed so back/Home restore it
     rebuildCards();
     setStatus(m_allResults.isEmpty() ? emptyStateText() : QString(), false);
