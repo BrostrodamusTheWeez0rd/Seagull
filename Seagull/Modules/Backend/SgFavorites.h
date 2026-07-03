@@ -11,10 +11,12 @@ class QProcess;
 // Singleton that persists a set of favorited channels to a JSON file under
 // Config/. Keyed by channelUrl; stores the display name and thumbnail URL too.
 //
-// There are three independent, contained stores backed by the SAME class:
+// There are five independent, contained stores backed by the SAME class:
 //   - instance()   -> YouTube favourites    (Config/favorites.json, avatars via yt-dlp)
 //   - phInstance() -> PornHub favourites    (Config/ph_favorites.json, no yt-dlp)
 //   - cbInstance() -> Chaturbate favourites (Config/cb_favorites.json, no yt-dlp)
+//   - scInstance() -> SoundCloud favourites (Config/sc_favorites.json, avatars via yt-dlp)
+//   - twInstance() -> Twitch favourites     (Config/tw_favorites.json, no yt-dlp)
 // The first call to each creates that singleton and loads its JSON; every toggle
 // writes back immediately. Use forUrl() to route a card's channel URL to its store.
 class SgFavorites : public QObject {
@@ -30,9 +32,11 @@ public:
     static SgFavorites* instance();   // YouTube store
     static SgFavorites* phInstance(); // PornHub store
     static SgFavorites* cbInstance(); // Chaturbate store
+    static SgFavorites* scInstance(); // SoundCloud store
+    static SgFavorites* twInstance(); // Twitch store
 
-    // Routes a channel/model URL to the store that owns it (YouTube / PornHub /
-    // Chaturbate), or nullptr if the URL belongs to no favouritable site.
+    // Routes a channel/model/artist URL to the store that owns it, or nullptr if
+    // the URL belongs to no favouritable site.
     static SgFavorites* forUrl(const QString& url);
 
     bool isFavorited(const QString& channelUrl) const;
@@ -50,7 +54,8 @@ signals:
 private:
     // storeFile: filename under Config/ (e.g. "favorites.json").
     // fetchAvatars: if true, a video-card star with no avatar URL triggers a
-    // yt-dlp avatar fetch (YouTube only); PornHub leaves it off.
+    // yt-dlp avatar fetch (YouTube + SoundCloud); the live/scraped sites leave
+    // it off (their cards already carry the avatar/room image).
     explicit SgFavorites(const QString& storeFile, bool fetchAvatars, QObject* parent = nullptr);
 
     void load();

@@ -22,7 +22,7 @@ public:
         QString pageUrl;          // the page/watch URL — the stable key, re-resolvable to CDN
         QString title;
         QString thumbUrl;         // network thumbnail URL for the row (may be empty)
-        QString site;             // "youtube" / "pornhub" / "chaturbate" / "other"
+        QString site;             // "youtube" / "pornhub" / "chaturbate" / "soundcloud" / "twitch" / "other"
         QString filePath;         // final saved file (parsed from yt-dlp output), empty until done
         int     status = Queued;
         qint64  addedAt = 0;      // ms since epoch — drives most-recent-first ordering

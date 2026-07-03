@@ -36,6 +36,9 @@ QString SgWatchHistory::siteForKey(const QString& key, bool isLocal) {
         key.contains("youtu.be",   Qt::CaseInsensitive)) return QStringLiteral("youtube");
     if (key.contains("pornhub.com",   Qt::CaseInsensitive)) return QStringLiteral("pornhub");
     if (key.contains("chaturbate.com", Qt::CaseInsensitive)) return QStringLiteral("chaturbate");
+    if (key.contains("soundcloud.com", Qt::CaseInsensitive)) return QStringLiteral("soundcloud");
+    // Live streams never record, but the bucket keeps any twitch.tv key out of "other".
+    if (key.contains("twitch.tv",     Qt::CaseInsensitive)) return QStringLiteral("twitch");
     return QStringLiteral("other");
 }
 

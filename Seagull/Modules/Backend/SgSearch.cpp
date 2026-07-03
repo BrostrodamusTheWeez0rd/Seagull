@@ -47,6 +47,10 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
         startChaturbateSearch(query.trimmed(), limit);
         return;
     }
+    if (site == Site::Twitch) { // live channels via the public GQL endpoint
+        startTwitchSearch(query.trimmed(), limit);
+        return;
+    }
 
     const QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
@@ -58,12 +62,19 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
     args += SgOptions::cookieArgs(); // opted-in browser cookies (PH age gates, YT bot checks)
 
     // Per-site search target. New sites slot in here with their own branch.
-    // (PornHub is handled above via the HTML-scrape path, not yt-dlp.)
+    // (PornHub/Chaturbate/Twitch are handled above via their HTTP paths, not yt-dlp.)
     switch (site) {
     case Site::YouTube:
         args << QString("ytsearch%1:%2").arg(limit).arg(query.trimmed());
         break;
+    case Site::SoundCloud:
+        // yt-dlp's native SoundCloud search prefix — the same flat -J path as
+        // ytsearch; results parse through the generic flat-entry branch.
+        args << QString("scsearch%1:%2").arg(limit).arg(query.trimmed());
+        break;
     case Site::PornHub:
+    case Site::Chaturbate:
+    case Site::Twitch:
         break; // unreachable; handled before the yt-dlp args are built
     }
 
@@ -77,6 +88,15 @@ void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit, bool sho
 
     cancel(); // a channel open supersedes any in-flight query
 
+    // Live-only sites (Twitch, Chaturbate) have no video listing to open — their
+    // "channel" IS the live room — so answer cleanly instead of launching a doomed
+    // yt-dlp run against a made-up /videos URL.
+    if (channelUrl.contains("twitch.tv", Qt::CaseInsensitive)
+        || channelUrl.contains("chaturbate.com", Qt::CaseInsensitive)) {
+        emit failed("Live channels have no video list to browse. Play the card to open the stream.");
+        return;
+    }
+
     // PornHub models/channels have no yt-dlp listing; scrape their /videos tab instead
     // (same tiles as search). YouTube falls through to the yt-dlp path below. PornHub
     // has no shorts, so the flag is simply ignored there.
@@ -85,21 +105,28 @@ void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit, bool sho
         return;
     }
 
-    m_site = Site::YouTube;
+    // SoundCloud artists list through the same yt-dlp flat path, targeting /tracks.
+    // m_site steers parseVideoEntry's thumbnail branch (SoundCloud artwork comes from
+    // thumbnails[], not the YouTube i.ytimg.com rewrite, which would build a broken
+    // URL from a numeric track id).
+    const bool soundcloud = channelUrl.contains("soundcloud.com", Qt::CaseInsensitive);
+    m_site = soundcloud ? Site::SoundCloud : Site::YouTube;
     m_mode = Mode::ChannelList;
     m_buffer.clear();
 
     const QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
-    // The channel's uploads tab (or /shorts in Shorts mode). Strip a trailing slash and
-    // any existing tab, then target the wanted one (so a bare channel/handle URL doesn't
-    // list every tab as nested playlists). The channel /shorts tab is a normal flat
-    // playlist — unlike the search extractor, yt-dlp parses it fine.
+    // The channel's uploads tab (/shorts in Shorts mode; /tracks for a SoundCloud
+    // artist). Strip a trailing slash and any existing tab, then target the wanted one
+    // (so a bare channel/handle URL doesn't list every tab as nested playlists). The
+    // channel /shorts tab is a normal flat playlist — unlike the search extractor,
+    // yt-dlp parses it fine.
     QString url = channelUrl.trimmed();
     while (url.endsWith('/')) url.chop(1);
     if (url.endsWith("/videos")) url.chop(7);
     else if (url.endsWith("/shorts")) url.chop(7);
-    url += shorts ? "/shorts" : "/videos";
+    else if (url.endsWith("/tracks")) url.chop(7);
+    url += soundcloud ? "/tracks" : (shorts ? "/shorts" : "/videos");
 
     QStringList args;
     args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings"
@@ -146,6 +173,18 @@ void SgSearch::cancel() {
         m_cbReply->abort();
         m_cbReply->deleteLater();
         m_cbReply = nullptr;
+    }
+    if (m_twReply) {
+        m_twReply->disconnect(this);
+        m_twReply->abort();
+        m_twReply->deleteLater();
+        m_twReply = nullptr;
+    }
+    if (m_twUsersReply) {
+        m_twUsersReply->disconnect(this);
+        m_twUsersReply->abort();
+        m_twUsersReply->deleteLater();
+        m_twUsersReply = nullptr;
     }
     m_buffer.clear();
 }
@@ -230,6 +269,18 @@ bool SgSearch::parseVideoEntry(const QJsonObject& e, SearchResult& r) const {
     // The uploader's channel page, so the card's channel name is clickable.
     r.channelUrl = e["channel_url"].toString();
     if (r.channelUrl.isEmpty()) r.channelUrl = e["uploader_url"].toString();
+
+    // SoundCloud flat entries don't always carry an uploader URL, but a track page is
+    // soundcloud.com/<artist>/<slug>, so the artist page (and a fallback display name)
+    // derive straight from the track URL. Keeps the card's name clickable + starrable.
+    if (m_site == Site::SoundCloud && r.channelUrl.isEmpty()) {
+        const QUrl u(url);
+        const QStringList segs = u.path().split('/', Qt::SkipEmptyParts);
+        if (segs.size() >= 2) {
+            r.channelUrl = u.scheme() + "://" + u.host() + "/" + segs.first();
+            if (r.channel.isEmpty()) r.channel = segs.first();
+        }
+    }
 
     // YouTube's thumbnails[] urls are .jpg-named but actually serve WebP (the
     // signed sqp/rs variants), which QPixmap can't decode without the WebP plugin.
@@ -329,6 +380,15 @@ void SgSearch::parseChannelList(const QJsonObject& root, SearchResult& info,
     info.subscriberCount =
         root.contains("channel_follower_count") && !root["channel_follower_count"].isNull()
             ? static_cast<qint64>(root["channel_follower_count"].toDouble()) : -1;
+
+    // SoundCloud: the listing targets the /tracks tab, so the root's webpage_url can
+    // carry the tab suffix. Favourites key on the artist page itself; normalise so a
+    // star from this page and a star from a track card land on the same entry.
+    if (m_site == Site::SoundCloud) {
+        while (info.url.endsWith('/')) info.url.chop(1);
+        if (info.url.endsWith("/tracks", Qt::CaseInsensitive)) info.url.chop(7);
+        info.channelUrl = info.url;
+    }
 
     // A flat-playlist channel listing omits per-entry uploader fields (every video
     // belongs to this one channel — the info lives on the root), so video cards from
@@ -985,4 +1045,200 @@ QList<SearchResult> SgSearch::parseChaturbateJson(const QByteArray& bytes) const
         out.append(r);
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Twitch — channel search + home-feed live status via the public GQL endpoint
+// ---------------------------------------------------------------------------
+// gql.twitch.tv with the anonymous web Client-Id (the id the Twitch website itself
+// sends; the same approach yt-dlp and streamlink use). No account, cookies, or OAuth.
+// Playback is untouched here: cards emit the twitch.tv page URL and the existing
+// resolver + SgHlsProxy (ad-strip) plumbing takes it from there.
+
+namespace {
+const char kTwitchClientId[] = "kimne78kx3ncx6brgo4mv6wki5h1ko"; // public web client id
+}
+
+QString SgSearch::twitchLoginFromUrl(const QString& url) {
+    const QUrl u(url.trimmed());
+    if (!u.host().contains(QStringLiteral("twitch.tv"), Qt::CaseInsensitive)) return QString();
+    const QStringList segs = u.path().split('/', Qt::SkipEmptyParts);
+    return segs.isEmpty() ? QString() : segs.first().toLower();
+}
+
+QNetworkReply* SgSearch::postTwitchGql(const QJsonObject& body) {
+    if (!m_nam) m_nam = new QNetworkAccessManager(this);
+    QNetworkRequest req(QUrl("https://gql.twitch.tv/gql"));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    req.setHeader(QNetworkRequest::UserAgentHeader,
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    req.setRawHeader("Client-Id", kTwitchClientId);
+    return m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+}
+
+// One GQL User object -> a playable live-room card (the CB pattern: the channel IS
+// the result). Live channels carry the stream title + viewer count + a LIVE badge;
+// offline ones show the channel name and resolve to nothing until they go live.
+bool SgSearch::parseTwitchUser(const QJsonObject& u, SearchResult& r) const {
+    const QString login = u["login"].toString();
+    if (login.isEmpty()) return false;
+    QString name = u["displayName"].toString();
+    if (name.isEmpty()) name = login;
+
+    r.url        = "https://www.twitch.tv/" + login;
+    r.channelUrl = r.url; // the channel IS the live room — routes the star to the Twitch store
+    r.channel    = name;
+    r.title      = name;
+    r.thumbnail  = u["profileImageURL"].toString();
+
+    const QJsonObject stream = u["stream"].toObject();
+    if (!stream.isEmpty()) {
+        r.isLive = true;
+        const QString streamTitle = stream["title"].toString();
+        if (!streamTitle.isEmpty()) r.title = streamTitle;
+        if (stream.contains("viewersCount") && !stream["viewersCount"].isNull())
+            r.viewCount = static_cast<qint64>(stream["viewersCount"].toDouble()); // current viewers
+    }
+    return true;
+}
+
+void SgSearch::startTwitchSearch(const QString& query, int limit) {
+    m_twLimit = limit;
+    if (query != m_twQuery) { // new query resets the per-query cache
+        m_twQuery = query;
+        m_twResults.clear();
+        m_twSeen.clear();
+    }
+    if (!m_twResults.isEmpty()) { emit resultsReady(m_twResults); return; } // cached
+
+    emit logMessage("Searching Twitch channels: " + query);
+
+    // Raw GQL (not a persisted query hash, so it keeps working if Twitch rotates
+    // those): the site's own channel search. One page is plenty for channel lookup.
+    const QString gql = QStringLiteral(
+        "query($q: String!, $limit: Int) {"
+        " searchFor(userQuery: $q, platform: \"web\", target: {index: CHANNEL, limit: $limit}) {"
+        " channels { edges { item { ... on User {"
+        " login displayName profileImageURL(width: 150)"
+        " stream { title viewersCount }"
+        " } } } } } }");
+    const QJsonObject body{
+        { "query",     gql },
+        { "variables", QJsonObject{ { "q", m_twQuery }, { "limit", qBound(1, m_twLimit, 50) } } },
+    };
+    m_twReply = postTwitchGql(body);
+    connect(m_twReply, &QNetworkReply::finished, this, &SgSearch::handleTwitchSearchReply);
+}
+
+void SgSearch::handleTwitchSearchReply() {
+    QNetworkReply* reply = m_twReply;
+    m_twReply = nullptr;
+    reply->deleteLater();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        emit logMessage("Twitch search failed: " + reply->errorString());
+        emit failed("Twitch search failed: " + reply->errorString());
+        return;
+    }
+
+    const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+    // GQL reports schema problems in an errors[] array with HTTP 200 — surface them
+    // in the verbose log so a Twitch-side change is diagnosable from a SEALOG.
+    if (root.contains("errors"))
+        emit logMessage("Twitch search GQL errors: " + QString::fromUtf8(
+            QJsonDocument(root["errors"].toArray()).toJson(QJsonDocument::Compact)));
+
+    const QJsonArray edges = root["data"]["searchFor"]["channels"]["edges"].toArray();
+    for (const auto& it : edges) {
+        const QJsonObject edge = it.toObject();
+        QJsonObject item = edge["item"].toObject();
+        if (item.isEmpty()) item = edge["node"].toObject(); // tolerate edge-shape drift
+        SearchResult r;
+        if (!parseTwitchUser(item, r)) continue;
+        if (m_twSeen.contains(r.url)) continue;
+        m_twSeen.insert(r.url);
+        m_twResults.append(r);
+        if (m_twResults.size() >= m_twLimit) break;
+    }
+
+    emit logMessage(QString("Twitch: %1 channel(s) parsed.").arg(m_twResults.size()));
+    if (m_twResults.isEmpty() && root.contains("errors")) {
+        emit failed("Twitch search failed. See the verbose log for details.");
+        return;
+    }
+    emit resultsReady(m_twResults);
+}
+
+void SgSearch::fetchTwitchChannels(const QList<SearchResult>& channels) {
+    cancel(); // supersede anything in flight before the feed's status lookup
+
+    m_twHomeSeeds = channels;
+    QJsonArray logins;
+    for (const SearchResult& c : channels) {
+        const QString login = twitchLoginFromUrl(c.url);
+        if (!login.isEmpty()) logins.append(login);
+    }
+    if (logins.isEmpty()) { emit channelVideosReady(SearchResult{}, m_twHomeSeeds); return; }
+
+    emit logMessage(QString("Twitch home: checking live status for %1 channel(s).").arg(logins.size()));
+
+    // ONE batched lookup for the whole feed — users(logins:) answers every favourite
+    // in a single request, so the home build never fans out per channel.
+    const QString gql = QStringLiteral(
+        "query($logins: [String!]) { users(logins: $logins) {"
+        " login displayName profileImageURL(width: 150)"
+        " stream { title viewersCount }"
+        " } }");
+    const QJsonObject body{
+        { "query",     gql },
+        { "variables", QJsonObject{ { "logins", logins } } },
+    };
+    m_twUsersReply = postTwitchGql(body);
+    connect(m_twUsersReply, &QNetworkReply::finished, this, &SgSearch::handleTwitchUsersReply);
+}
+
+void SgSearch::handleTwitchUsersReply() {
+    QNetworkReply* reply = m_twUsersReply;
+    m_twUsersReply = nullptr;
+    reply->deleteLater();
+
+    // Any failure degrades gracefully: the seeds (the favourites themselves) are the
+    // feed, just without live status — never an empty home page over a blip.
+    if (reply->error() != QNetworkReply::NoError) {
+        emit logMessage("Twitch live-status lookup failed: " + reply->errorString());
+        emit channelVideosReady(SearchResult{}, m_twHomeSeeds);
+        return;
+    }
+
+    const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+    if (root.contains("errors"))
+        emit logMessage("Twitch home GQL errors: " + QString::fromUtf8(
+            QJsonDocument(root["errors"].toArray()).toJson(QJsonDocument::Compact)));
+
+    // login -> parsed user card (users[] can hold nulls for renamed/banned channels).
+    QHash<QString, SearchResult> byLogin;
+    for (const auto& it : root["data"]["users"].toArray()) {
+        SearchResult r;
+        if (parseTwitchUser(it.toObject(), r))
+            byLogin.insert(twitchLoginFromUrl(r.url), r);
+    }
+
+    // Enrich each seed (keep its name and cached avatar; fill live status/title/
+    // viewers from the lookup), then order live-first, favourites order within each
+    // group — who's live now sits at the top of the home page.
+    QList<SearchResult> live, offline;
+    for (const SearchResult& seed : m_twHomeSeeds) {
+        SearchResult r = seed;
+        const auto it = byLogin.constFind(twitchLoginFromUrl(seed.url));
+        if (it != byLogin.constEnd()) {
+            r.isLive    = it->isLive;
+            r.viewCount = it->viewCount;
+            if (it->isLive && !it->title.isEmpty()) r.title = it->title;
+            if (r.thumbnail.isEmpty()) r.thumbnail = it->thumbnail;
+        }
+        (r.isLive ? live : offline).append(r);
+    }
+
+    emit logMessage(QString("Twitch home: %1 live, %2 offline.").arg(live.size()).arg(offline.size()));
+    emit channelVideosReady(SearchResult{}, live + offline);
 }

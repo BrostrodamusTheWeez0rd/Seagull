@@ -55,8 +55,9 @@ longer queues a deferred `winId()`/VLC hookup at construction (the old
 realize the native windows under the modal block, and leave the app input-dead).
 
 1. **Favourites preload.** `SgFavorites::instance()` and `phInstance()` are constructed
-   eagerly so their JSON loads on the main thread before any `VideoCard` exists (the
-   Chaturbate store constructs lazily on first use).
+   eagerly so their JSON loads on the main thread before any `VideoCard` exists; the other
+   stores (Chaturbate, SoundCloud, Twitch) construct lazily, in practice touched by the
+   Search/Settings constructors while wiring signals, well before any card exists.
 2. **Terms of Use** (first run only, `Setup/TermsAccepted` unset): a modal QDialog renders
    the bundled `DISCLAIMER.md`. Decline — or closing, or Escape — returns `false` from
    `run()` and `main()` exits.
@@ -359,10 +360,17 @@ Active/Deactivated).
 ### Search — discovery, channels, home feed
 
 Browser-style chrome: back / forward / refresh / Home, a site dropdown
-(YouTube / PornHub / Chaturbate), and an editable query combo (arrow drops the per-site
-history; typing filters via a `MatchContains` completer; Enter's returnPressed+textActivated
-twin-fire is collapsed by an end-stamped timestamp, robust across the duplicate-site
-modal's nested event loop).
+(YouTube / PornHub / Chaturbate / SoundCloud / Twitch — typed shorthands like "sc"/"tw"
+work), and an editable query combo (arrow drops the per-site history; typing filters via a
+`MatchContains` completer; Enter's returnPressed+textActivated twin-fire is collapsed by an
+end-stamped timestamp, robust across the duplicate-site modal's nested event loop).
+
+Two site shapes: **video sites** (YouTube, PornHub, SoundCloud — results are playable
+items, channels/artists have listing pages) and **live sites** (Chaturbate, Twitch —
+results ARE the live channels, `SearchResult::isLive` puts a red LIVE badge + viewer count
+on the card, clicking a channel name gets a clean "no video list" message instead of a
+doomed yt-dlp run). SoundCloud plays as audio kind, so the EQ/limiter, visualizer,
+artwork embedding, and resume all apply to it.
 
 - **Results feed.** Cards dedupe by URL, page in batches (cap 240), sortable
   (Relevance = arrival order / name / date), title-filterable via the magnifier chip.
@@ -383,8 +391,12 @@ modal's nested event loop).
   rate-limit sensitive), cached for instant back/Home, rebuilt on site switch. Settings
   control per site: ranked drag-order picker, channel count, videos per channel, randomize
   (recency mix vs favourites order), and lazy load (scroll pulls deeper per channel, capped
-  at 60/channel, warned on enable). Chaturbate's feed is the favourited rooms themselves.
-  The primary tab warms its feed at startup (`warmHomeFeed`).
+  at 60/channel, warned on enable). YouTube, PornHub, and SoundCloud get the full set;
+  the live sites keep fixed list order (randomize would break live-first). Chaturbate's
+  feed is the favourited rooms themselves; Twitch's is the favourited channels enriched by
+  ONE batched GQL live-status request (`users(logins:)`), live channels first with stream
+  titles, degrading to plain favourite cards if the lookup fails. The primary tab warms
+  its feed at startup (`warmHomeFeed`).
 - **Continue Watching pill** on home landings when `SgWatchHistory` has resumable items
   for the site (per-site toggle), rendering history entries as cards.
 - **Duplicate-site guard.** Before a user search, if a sibling Search tab targets the same
@@ -425,15 +437,22 @@ and swallows Escape while busy so a tool is never replaced while something might
   `--embed-thumbnail --embed-metadata --convert-thumbnails jpg` (ffmpeg embeds for
   MP3/Opus/FLAC, AtomicParsley for M4A/MP4; jpg because YouTube thumbnails are WebP).
 - `SgFormat` — `StreamOption` + the format-selection policy shared by resolve/probe.
-- `SgSearch` — discovery worker. yt-dlp for normal search and channel `/videos` listings;
-  YouTube's internal `youtubei/v1/search` API over QNAM for shorts search, channel search
+- `SgSearch` — discovery worker (`Site` enum: YouTube / PornHub / Chaturbate / SoundCloud /
+  Twitch). yt-dlp for normal search (`ytsearch:` / `scsearch:` — SoundCloud rides the same
+  flat `-J` path as YouTube) and channel/artist listings (`/videos`, `/tracks`); YouTube's
+  internal `youtubei/v1/search` API over QNAM for shorts search, channel search
   (`params:"EgIQAg=="`), and home-feed channel shorts (search-by-name; yt-dlp can't list a
-  `/shorts` tab), paging via continuation tokens accumulated per query. PornHub/Chaturbate
-  parse their HTML listings.
-- `SgFavorites` — three contained stores: `instance()` → `Config/favorites.json` (YouTube,
+  `/shorts` tab), paging via continuation tokens accumulated per query. Twitch goes through
+  the public GQL endpoint (`gql.twitch.tv` with the anonymous web Client-Id, the same
+  approach streamlink uses): `searchFor` for channel search, one batched `users(logins:)`
+  for the home feed's live statuses; GQL `errors[]` are logged so a schema drift shows up
+  in the SEALOG. PornHub/Chaturbate parse their HTML listings. `fetchChannelVideos` guards
+  the live sites (no video list to browse).
+- `SgFavorites` — five contained stores: `instance()` → `Config/favorites.json` (YouTube,
   avatars via yt-dlp), `phInstance()` → `ph_favorites.json`, `cbInstance()` →
-  `cb_favorites.json`. `forUrl()` routes a channel URL to its store. Keyed by channelUrl;
-  loads once, writes back immediately.
+  `cb_favorites.json`, `scInstance()` → `sc_favorites.json` (avatars via yt-dlp, like
+  YouTube), `twInstance()` → `tw_favorites.json`. `forUrl()` routes a channel URL to its
+  store. Keyed by channelUrl; loads once, writes back immediately.
 - `SgWatchHistory` — resume + Continue Watching store (`Config/watch_history.json`).
   Near-complete ⇒ completed (no resume, hidden from Continue Watching); `resumePosition`
   returns −1 unless past the minimum threshold and outside the end guard; per-site queries
@@ -528,6 +547,8 @@ install is self-contained and survives the self-update's robocopy swap.
 | `Config/favorites.json` | `SgFavorites::instance()` | YouTube favourites |
 | `Config/ph_favorites.json` | `phInstance()` | PornHub favourites |
 | `Config/cb_favorites.json` | `cbInstance()` | Chaturbate favourites |
+| `Config/sc_favorites.json` | `scInstance()` | SoundCloud favourites |
+| `Config/tw_favorites.json` | `twInstance()` | Twitch favourites |
 | `Config/watch_history.json` | `SgWatchHistory` | Resume positions / Continue Watching |
 | `Config/download_history.json` | `SgDownloadHistory` | Downloads-tab records |
 | `Config/seagull-log.txt` | `SgLog` | SEALOG verbose log (append, session-bannered) |

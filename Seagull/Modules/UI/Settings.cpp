@@ -441,6 +441,10 @@ void Settings::setupUI() {
             [this](const QString&, bool) { rebuildHomePickers(); });
     connect(SgFavorites::cbInstance(), &SgFavorites::changed, this,
             [this](const QString&, bool) { rebuildHomePickers(); });
+    connect(SgFavorites::scInstance(), &SgFavorites::changed, this,
+            [this](const QString&, bool) { rebuildHomePickers(); });
+    connect(SgFavorites::twInstance(), &SgFavorites::changed, this,
+            [this](const QString&, bool) { rebuildHomePickers(); });
 
     searchResultsSpin = new QSpinBox();
     searchResultsSpin->setRange(5, 100);
@@ -726,15 +730,34 @@ void Settings::buildHomeSection(QFormLayout* form) {
     intro->setWordWrap(true);
     form->addRow(intro);
 
-    // hasVideos: YouTube/PornHub pull N recent videos per channel; Chaturbate favourites
-    // are live rooms, so it gets the result-limit spin but no videos-per-channel spin.
-    // hasAmount: YouTube/PornHub cap the home page at a max-videos count; Chaturbate shows
-    // ALL favourited models, so it gets no max-amount spin.
-    struct SiteDef { SgFavorites* store; const char* label; const char* suffix; bool isYouTube; bool hasVideos; bool hasAmount; int defaultAmount; };
+    // hasVideos: YouTube/PornHub/SoundCloud pull N recent videos (tracks) per channel;
+    // the live sites' favourites are live rooms/channels, so no per-channel spin there.
+    // hasAmount: most sites cap the home page at a max count; Chaturbate shows ALL
+    // favourited models, so it gets no max-amount spin.
+    // hasContinue: live streams never enter watch history, so Twitch gets no Continue
+    // Watching toggle (there would never be anything to show).
+    // amountLabel/videosLabel: per-site wording (videos vs tracks vs channels).
+    struct SiteDef {
+        SgFavorites* store;
+        const char*  label;
+        const char*  suffix;
+        bool isYouTube;
+        bool hasVideos;
+        bool hasAmount;
+        bool hasContinue;
+        int  defaultAmount;
+        const char* amountLabel;
+        const char* videosLabel;
+    };
+    // Section order mirrors the Search tab's site dropdown: YouTube first, then the
+    // other general sites, adult sites last. Config keys are per-suffix, so reordering
+    // rows never touches stored settings.
     const SiteDef sites[] = {
-        { SgFavorites::instance(),   "YouTube",    "YouTube",    true,  true,  true,  15 },
-        { SgFavorites::phInstance(), "PornHub",    "PornHub",    false, true,  true,  20 },
-        { SgFavorites::cbInstance(), "Chaturbate", "Chaturbate", false, false, false, 5  },
+        { SgFavorites::instance(),   "YouTube",    "YouTube",    true,  true,  true,  true,  15, "Max homepage videos:",   "Videos per channel:" },
+        { SgFavorites::scInstance(), "SoundCloud", "SoundCloud", false, true,  true,  true,  15, "Max homepage tracks:",   "Tracks per artist:"  },
+        { SgFavorites::twInstance(), "Twitch",     "Twitch",     false, false, true,  false, 20, "Max homepage channels:", ""                    },
+        { SgFavorites::phInstance(), "PornHub",    "PornHub",    false, true,  true,  true,  20, "Max homepage videos:",   "Videos per channel:" },
+        { SgFavorites::cbInstance(), "Chaturbate", "Chaturbate", false, false, false, false, 5,  "",                       ""                    },
     };
     for (const SiteDef& s : sites) {
         const QString label  = QString::fromLatin1(s.label);
@@ -765,9 +788,11 @@ void Settings::buildHomeSection(QFormLayout* form) {
             amountSpin = new QSpinBox();
             amountSpin->setRange(1, 20);
             amountSpin->setValue(s.defaultAmount);
-            amountSpin->setToolTip("The most videos shown on this site's home page (from the top of your list).");
+            amountSpin->setToolTip(s.hasVideos
+                ? "The most items shown on this site's home page (from the top of your list)."
+                : "The most channels shown on this site's home page (from the top of your list).");
             amountSpin->hide();
-            amountLabel = new QLabel("Max homepage videos:");
+            amountLabel = new QLabel(QString::fromLatin1(s.amountLabel));
             amountLabel->hide();
             form->addRow(amountLabel, amountSpin);
         } else {
@@ -793,16 +818,17 @@ void Settings::buildHomeSection(QFormLayout* form) {
             });
         }
 
-        // Per-site videos-per-channel (YouTube/PornHub only — Chaturbate has no listing).
+        // Per-site videos-per-channel (video-listing sites only — the live sites have
+        // no per-channel listing to pull from).
         QSpinBox* videosSpin = nullptr;
         QLabel*   videosLabel = nullptr;
         if (s.hasVideos) {
             videosSpin = new QSpinBox();
             videosSpin->setRange(1, 20);
             videosSpin->setValue(5);
-            videosSpin->setToolTip("How many recent videos to pull from each of this site's home-page channels.");
+            videosSpin->setToolTip("How many recent items to pull from each of this site's home-page favourites.");
             videosSpin->hide();
-            videosLabel = new QLabel("Videos per channel:");
+            videosLabel = new QLabel(QString::fromLatin1(s.videosLabel));
             videosLabel->hide();
             form->addRow(videosLabel, videosSpin);
             connect(videosSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
@@ -828,15 +854,18 @@ void Settings::buildHomeSection(QFormLayout* form) {
             connect(shuffleBtn, &QPushButton::toggled, this, &Settings::saveSettings);
         }
 
-        // Per-site "Continue Watching" row toggle. Every site has a home page, so all
-        // three get one. Off hides the row on that site's home; playback position is
-        // still remembered silently (governed by the global Playback toggle).
-        auto* continueCheck = new QCheckBox("Show Continue Watching");
-        continueCheck->setToolTip("Offer a Continue Watching option on this site's home page, "
-                                  "listing videos you've partly watched.");
-        continueCheck->hide();
-        form->addRow(continueCheck);
-        connect(continueCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
+        // Per-site "Continue Watching" row toggle. Off hides the row on that site's
+        // home; playback position is still remembered silently (governed by the global
+        // Playback toggle). Twitch skips it: live streams never enter watch history.
+        QCheckBox* continueCheck = nullptr;
+        if (s.hasContinue) {
+            continueCheck = new QCheckBox("Show Continue Watching");
+            continueCheck->setToolTip("Offer a Continue Watching option on this site's home page, "
+                                      "listing videos you've partly watched.");
+            continueCheck->hide();
+            form->addRow(continueCheck);
+            connect(continueCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
+        }
 
         // Lazy-load toggle (video-listing sites only — Chaturbate's live rooms are a fixed
         // list). Off by default; enabling it makes the home feed keep pulling more from your
@@ -876,7 +905,7 @@ void Settings::buildHomeSection(QFormLayout* form) {
                                list, amountSpin, videosSpin, warning,
                                s.hasVideos ? ("Search/HomeRandomize" + suffix) : QString(), shuffleBtn,
                                s.defaultAmount,
-                               "Search/ShowContinueWatching" + suffix, continueCheck,
+                               s.hasContinue ? ("Search/ShowContinueWatching" + suffix) : QString(), continueCheck,
                                s.hasVideos ? ("Search/HomeLazyLoad" + suffix) : QString(), lazyCheck });
 
         if (amountSpin) connect(amountSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);

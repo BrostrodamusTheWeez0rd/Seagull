@@ -242,6 +242,19 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
     if (m_result.isChannel) m_thumb->setPlaceholderIcon(QStringLiteral(":/Assets/icons/account.svg"));
     lay->addWidget(m_thumb);
 
+    // LIVE badge for currently-live channels (Twitch search/home cards). A child of
+    // the thumbnail, pinned to its top-left corner, so it rides every resize for free.
+    if (m_result.isLive) {
+        auto* live = new QLabel(QStringLiteral("LIVE"), m_thumb);
+        live->setObjectName("videoCardLiveBadge");
+        live->setStyleSheet(QStringLiteral(
+            "background-color:#e91916; color:white; font-weight:bold;"
+            "border-radius:4px; padding:1px 6px;"));
+        live->adjustSize();
+        live->move(8, 8);
+        live->raise();
+    }
+
     auto* title = new QLabel(m_result.title, this);
     title->setObjectName("videoCardTitle");
     QFont tf = title->font();
@@ -275,12 +288,14 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
         m_starBtn->setToolTip("Favorite channel");
         updateStarIcon(favStore->isFavorited(m_channelUrl));
         connect(m_starBtn, &QToolButton::clicked, this, [this, favStore]() {
-            // Pass the thumbnail URL for channel cards (the avatar) — and for Chaturbate
-            // rooms, whose card image IS the model, so favourites/home cards aren't blank.
-            // Plain video cards carry a frame, not an avatar, so they pass none (the
-            // YouTube store fetches a missing avatar via yt-dlp; PornHub leaves it empty).
+            // Pass the thumbnail URL for channel cards (the avatar) — and for the live
+            // sites (Chaturbate rooms, Twitch channels), whose card image IS the model/
+            // avatar, so favourites/home cards aren't blank. Plain video cards carry a
+            // frame, not an avatar, so they pass none (the YouTube and SoundCloud stores
+            // fetch a missing avatar via yt-dlp; PornHub leaves it empty).
             const bool keepThumb = m_result.isChannel
-                || m_channelUrl.contains("chaturbate.com", Qt::CaseInsensitive);
+                || m_channelUrl.contains("chaturbate.com", Qt::CaseInsensitive)
+                || m_channelUrl.contains("twitch.tv", Qt::CaseInsensitive);
             favStore->toggle(
                 m_channelUrl,
                 m_result.channel,

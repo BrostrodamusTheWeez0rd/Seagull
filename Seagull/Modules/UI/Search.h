@@ -142,7 +142,8 @@ private:
     void loadHistory();  // read both sites' persisted history files
     void saveHistory(SgSearch::Site site); // rewrite one site's file (one query per line)
     void applyHistoryToUi(); // load the active site's history into the completer + combo
-    QString siteName() const; // "YouTube" / "PornHub" for the active site
+    QString siteName() const; // display name of the active site ("YouTube", "Twitch", ...)
+    static QString siteLabelFor(SgSearch::Site site); // Site -> its dropdown display name
     static QString historyFilePath(SgSearch::Site site); // per-site history file
     void setFilterMode(FilterMode mode);
     void updatePillChecked();          // sync the pill buttons' checked state to m_filterMode
@@ -191,10 +192,10 @@ private:
     QList<SearchResult> continueWatchingResults() const;  // history entries -> grid cards for this site
     static QString historySiteFor(SgSearch::Site s);      // SgSearch::Site -> SgWatchHistory site string
     static constexpr int kContinueMax = 60;               // most items in the Continue Watching view
-    // The favourites store backing the current site (YouTube / PornHub / Chaturbate),
-    // or nullptr for sites without favourites.
+    // The favourites store backing the current site, or nullptr for sites
+    // without favourites.
     SgFavorites* favStore() const;
-    static bool  isFavouritableSite(SgSearch::Site s); // YouTube, PornHub or Chaturbate
+    static bool  isFavouritableSite(SgSearch::Site s); // every supported site, currently
     static constexpr int kHomePerChannel = 5; // default newest videos pulled per channel
     int         m_homePerChannel = kHomePerChannel; // resolved per-channel count for the active build
     bool        m_homeLoading = false;   // a home-feed build is in progress
@@ -214,7 +215,7 @@ private:
     QPushButton* forwardBtn;
     QPushButton* refreshBtn;
     QPushButton* homeBtn;  // jump to the current site's home feed (landing)
-    QComboBox*   siteBar; // dropdown of supported search sites (YouTube / PornHub)
+    QComboBox*   siteBar; // dropdown of supported search sites
     QPushButton* goBtn;
     // Editable combo like the File Explorer address bar: the arrow drops the
     // full search history; typing filters it through the completer.
@@ -283,7 +284,8 @@ private:
     QList<NavEntry> m_navHistory;
     int             m_navIndex = -1;
 
-    QStringList  m_historyFor[3]; // per-site search history, indexed by int(SgSearch::Site)
+    static constexpr int kSiteCount = 5; // size of SgSearch::Site (keep in sync with the enum)
+    QStringList  m_historyFor[kSiteCount]; // per-site search history, indexed by int(SgSearch::Site)
     SgSearch::Site m_uiSite = SgSearch::Site::YouTube; // site the history/chrome is currently showing
 
     QString m_currentQuery;

@@ -21,7 +21,7 @@ public:
         QString key;              // page URL (online) or file path (local)
         QString title;
         QString thumbUrl;         // network thumbnail URL for the Continue-Watching card (may be empty)
-        QString site;             // "youtube" / "pornhub" / "chaturbate" / "local" / "other"
+        QString site;             // "youtube" / "pornhub" / "chaturbate" / "soundcloud" / "twitch" / "local" / "other"
         qint64  positionMs = 0;
         qint64  durationMs = 0;
         qint64  updatedAt  = 0;   // ms since epoch — drives most-recent-first ordering

@@ -24,6 +24,7 @@ struct SearchResult {
     qint64  timestamp = -1;   // approximate upload time (Unix seconds), -1 unknown
     int     seq       = 0;    // arrival order, set by the Search UI; "Relevance" sort key
     bool    isShort   = false;
+    bool    isLive    = false; // currently-live channel (Twitch) — the card gets a LIVE badge
     // Channel support. isChannel marks a channel result (the tile becomes a
     // channel card). channelUrl is the channel/uploader page: on a video result it
     // makes the uploader name clickable; on a channel result it's the page to open.
@@ -49,7 +50,7 @@ struct SearchResult {
 class SgSearch : public QObject {
     Q_OBJECT
 public:
-    enum class Site { YouTube, PornHub, Chaturbate };
+    enum class Site { YouTube, PornHub, Chaturbate, SoundCloud, Twitch };
 
     explicit SgSearch(QObject* parent = nullptr);
     ~SgSearch();
@@ -69,7 +70,18 @@ public:
     // shorts=true targets the channel's /shorts tab instead of /videos. PornHub channels
     // ignore it (no shorts). The home feed's Shorts mode uses fetchChannelShorts (below)
     // instead, since yt-dlp can't list a channel's /shorts tab reliably.
+    // SoundCloud artist URLs route here too: the same yt-dlp flat listing, targeting
+    // the artist's /tracks tab. Live-only sites (Twitch, Chaturbate) have no video
+    // listing and answer with a clean `failed` instead of a doomed yt-dlp run.
     void fetchChannelVideos(const QString& channelUrl, int limit = 30, bool shorts = false);
+
+    // Twitch home feed: ONE batched live-status lookup for the favourited channels.
+    // `channels` are the favourites' base cards (url/name/thumbnail), built by the
+    // caller; the reply enriches them with live status/title/viewer count, orders
+    // them live-first (favourites order within each group), and answers on
+    // channelVideosReady so the home build consumes it like a single channel batch.
+    // On any failure the seeds are emitted back unchanged, so the feed still shows.
+    void fetchTwitchChannels(const QList<SearchResult>& channels);
 
     // Home-feed Shorts: pull up to `limit` Shorts for one favourite channel by
     // searching its name (yt-dlp can't list a channel's /shorts tab reliably), tagging
@@ -134,6 +146,18 @@ private:
     void handleChaturbateReply();
     QList<SearchResult> parseChaturbateJson(const QByteArray& bytes) const;
 
+    // Twitch channel search via the public GQL endpoint (gql.twitch.tv with the
+    // anonymous web Client-Id — the same approach yt-dlp and streamlink use; no
+    // account or OAuth involved). Single page, cached per query like channel search.
+    void startTwitchSearch(const QString& query, int limit);
+    void handleTwitchSearchReply();
+    void handleTwitchUsersReply();
+    QNetworkReply* postTwitchGql(const QJsonObject& body);
+    // One GQL User object -> a live-room SearchResult; false if unusable.
+    bool parseTwitchUser(const QJsonObject& user, SearchResult& out) const;
+    // ".../twitch.tv/<login>/..." -> "login" (lowercased), empty if not a channel URL.
+    static QString twitchLoginFromUrl(const QString& url);
+
     QProcess*  m_process;
     QByteArray m_buffer;
     Site       m_site = Site::YouTube;
@@ -185,4 +209,15 @@ private:
     QSet<QString>          m_cbSeen;
     int                    m_cbLimit = 20;
     bool                   m_cbExhausted = false;
+
+    // Twitch search state (GQL; single page, cached per query).
+    QNetworkReply*         m_twReply = nullptr;
+    QString                m_twQuery;
+    QList<SearchResult>    m_twResults;
+    QSet<QString>          m_twSeen;
+    int                    m_twLimit = 20;
+
+    // Twitch home-feed live-status lookup (one batched request per feed build).
+    QNetworkReply*         m_twUsersReply = nullptr;
+    QList<SearchResult>    m_twHomeSeeds;  // the favourites' base cards, awaiting enrichment
 };

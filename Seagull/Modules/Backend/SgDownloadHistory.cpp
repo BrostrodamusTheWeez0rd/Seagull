@@ -34,6 +34,8 @@ QString SgDownloadHistory::siteForUrl(const QString& url) {
         url.contains("youtu.be",   Qt::CaseInsensitive)) return QStringLiteral("youtube");
     if (url.contains("pornhub.com",    Qt::CaseInsensitive)) return QStringLiteral("pornhub");
     if (url.contains("chaturbate.com", Qt::CaseInsensitive)) return QStringLiteral("chaturbate");
+    if (url.contains("soundcloud.com", Qt::CaseInsensitive)) return QStringLiteral("soundcloud");
+    if (url.contains("twitch.tv",      Qt::CaseInsensitive)) return QStringLiteral("twitch");
     return QStringLiteral("other");
 }
 

@@ -28,10 +28,24 @@ SgFavorites* SgFavorites::cbInstance() {
     return s_instance;
 }
 
+SgFavorites* SgFavorites::scInstance() {
+    // fetchAvatars on: a track-card star knows no artwork, and yt-dlp's flat -J on the
+    // artist page yields the (square) avatar the same way the YouTube fetch does.
+    static SgFavorites* s_instance = new SgFavorites("sc_favorites.json", /*fetchAvatars*/true, nullptr);
+    return s_instance;
+}
+
+SgFavorites* SgFavorites::twInstance() {
+    static SgFavorites* s_instance = new SgFavorites("tw_favorites.json", /*fetchAvatars*/false, nullptr);
+    return s_instance;
+}
+
 SgFavorites* SgFavorites::forUrl(const QString& url) {
-    if (url.contains("pornhub.com", Qt::CaseInsensitive))   return phInstance();
+    if (url.contains("pornhub.com", Qt::CaseInsensitive))    return phInstance();
     if (url.contains("chaturbate.com", Qt::CaseInsensitive)) return cbInstance();
-    if (url.contains("youtube.com", Qt::CaseInsensitive))   return instance();
+    if (url.contains("soundcloud.com", Qt::CaseInsensitive)) return scInstance();
+    if (url.contains("twitch.tv", Qt::CaseInsensitive))      return twInstance();
+    if (url.contains("youtube.com", Qt::CaseInsensitive))    return instance();
     return nullptr; // not a favouritable site
 }
 

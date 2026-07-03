@@ -1196,7 +1196,9 @@ bool Seagull::run() {
     // Eagerly construct the favorites singletons so they load their JSON before any
     // VideoCard is built (safe to call before this, but this guarantees the load
     // happens on the main thread before modules are shown). Two contained stores:
-    // YouTube channels and PornHub models.
+    // YouTube channels and PornHub models. The other stores (Chaturbate, SoundCloud,
+    // Twitch) construct lazily; in practice the Search/Settings constructors touch
+    // all five while wiring their changed signals, well before any card exists.
     SgFavorites::instance();
     SgFavorites::phInstance();
 

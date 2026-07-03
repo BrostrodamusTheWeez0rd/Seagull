@@ -62,7 +62,20 @@ QString homeSiteSuffix(SgSearch::Site site) {
     switch (site) {
     case SgSearch::Site::PornHub:    return QStringLiteral("PornHub");
     case SgSearch::Site::Chaturbate: return QStringLiteral("Chaturbate");
+    case SgSearch::Site::SoundCloud: return QStringLiteral("SoundCloud");
+    case SgSearch::Site::Twitch:     return QStringLiteral("Twitch");
     default:                         return QStringLiteral("YouTube");
+    }
+}
+
+// Default per-site home amount for sites that never had the old global
+// Search/HomeChannelAmount key (they didn't exist when it did), matching the
+// Settings page's per-site defaults so both read the same number pre-save.
+int homeAmountDefault(SgSearch::Site site) {
+    switch (site) {
+    case SgSearch::Site::SoundCloud: return 15;
+    case SgSearch::Site::Twitch:     return 20;
+    default:                         return 5; // pre-existing sites keep the legacy fallback
     }
 }
 }
@@ -107,9 +120,11 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     siteBar->setObjectName("searchSiteBar");
     siteBar->setEditable(true);                      // type a site OR pick from the dropdown
     siteBar->setInsertPolicy(QComboBox::NoInsert);   // typing a query never adds junk items
-    siteBar->addItems({ "YouTube", "PornHub", "Chaturbate" }); // searchable sites
+    // Searchable sites: YouTube first, then the other general sites, adult sites last.
+    // Order is display-only — currentSite() parses the text, never the index.
+    siteBar->addItems({ "YouTube", "SoundCloud", "Twitch", "PornHub", "Chaturbate" });
     siteBar->setCurrentText("YouTube");
-    siteBar->lineEdit()->setPlaceholderText("Site \xe2\x80\x94 e.g. youtube");
+    siteBar->lineEdit()->setPlaceholderText("Site, e.g. youtube");
     siteBar->setToolTip("Type or pick a site to search.");
 
     goBtn = new QPushButton(QStringLiteral("Go"));
@@ -437,6 +452,8 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
     wireFavStore(SgFavorites::instance(),   SgSearch::Site::YouTube);
     wireFavStore(SgFavorites::phInstance(), SgSearch::Site::PornHub);
     wireFavStore(SgFavorites::cbInstance(), SgSearch::Site::Chaturbate);
+    wireFavStore(SgFavorites::scInstance(), SgSearch::Site::SoundCloud);
+    wireFavStore(SgFavorites::twInstance(), SgSearch::Site::Twitch);
 
     if (m_search) {
         connect(m_search, &SgSearch::resultsReady,       this, &Search::onResultsReady);
@@ -557,7 +574,8 @@ void Search::updateFilterPillVisibility() {
         showShorts   = isYouTube;
         showContinue = continueRowEnabledForSite(site)
                        && SgWatchHistory::instance()->hasResumable(historySiteFor(site));
-        const bool videoSite = (site == SgSearch::Site::YouTube || site == SgSearch::Site::PornHub);
+        const bool videoSite = (site == SgSearch::Site::YouTube || site == SgSearch::Site::PornHub
+                                || site == SgSearch::Site::SoundCloud);
         showVideos   = videoSite && (showShorts || showContinue);
     }
     m_filterVideosBtn->setVisible(showVideos);
@@ -668,10 +686,13 @@ void Search::enterFavoritesView() {
 
     SgFavorites* store = favStore();
     const auto favs = store ? store->favorites() : QList<SgFavorites::FavoriteChannel>{};
-    // Chaturbate "channels" are live rooms, so their favourite cards are playable rooms
-    // (isChannel=false) — clicking opens the room. YouTube/PornHub favourites are channel
-    // cards that open the channel/model page.
-    const bool channelCards = currentSite() != SgSearch::Site::Chaturbate;
+    // Live sites' "channels" (Chaturbate rooms, Twitch channels) are live rooms, so
+    // their favourite cards are playable (isChannel=false) — clicking opens the stream.
+    // YouTube/PornHub/SoundCloud favourites are channel cards that open the channel/
+    // model/artist page.
+    const SgSearch::Site favSite = currentSite();
+    const bool channelCards = favSite != SgSearch::Site::Chaturbate
+                           && favSite != SgSearch::Site::Twitch;
     for (const auto& fav : favs) {
         SearchResult r;
         r.isChannel  = channelCards;
@@ -691,12 +712,26 @@ void Search::enterFavoritesView() {
 
     applyCardWidth();
 
-    if (favs.isEmpty())
-        setStatus(currentSite() == SgSearch::Site::PornHub
-            ? "No favourite models yet. Star a model to add it."
-            : "No favourite channels yet. Star a channel to add it.", false);
-    else
+    if (favs.isEmpty()) {
+        // Per-site noun: PornHub/Chaturbate favourites are models, SoundCloud's are
+        // artists, YouTube's/Twitch's are channels.
+        QString msg;
+        switch (favSite) {
+        case SgSearch::Site::PornHub:
+        case SgSearch::Site::Chaturbate:
+            msg = QStringLiteral("No favourite models yet. Star a model to add it.");
+            break;
+        case SgSearch::Site::SoundCloud:
+            msg = QStringLiteral("No favourite artists yet. Star an artist to add it.");
+            break;
+        default:
+            msg = QStringLiteral("No favourite channels yet. Star a channel to add it.");
+            break;
+        }
+        setStatus(msg, false);
+    } else {
         setStatus("", false);
+    }
 
     tintFavoritesIcon();
 }
@@ -718,7 +753,8 @@ void Search::exitFavoritesView() {
 
 bool Search::isFavouritableSite(SgSearch::Site s) {
     return s == SgSearch::Site::YouTube || s == SgSearch::Site::PornHub
-        || s == SgSearch::Site::Chaturbate;
+        || s == SgSearch::Site::Chaturbate || s == SgSearch::Site::SoundCloud
+        || s == SgSearch::Site::Twitch;
 }
 
 SgFavorites* Search::favStore() const {
@@ -726,6 +762,8 @@ SgFavorites* Search::favStore() const {
     case SgSearch::Site::YouTube:    return SgFavorites::instance();
     case SgSearch::Site::PornHub:    return SgFavorites::phInstance();
     case SgSearch::Site::Chaturbate: return SgFavorites::cbInstance();
+    case SgSearch::Site::SoundCloud: return SgFavorites::scInstance();
+    case SgSearch::Site::Twitch:     return SgFavorites::twInstance();
     default:                         return nullptr;
     }
 }
@@ -734,10 +772,15 @@ QString Search::emptyStateText() const {
     // On a favouritable site the landing view is the favourites home feed, so when there
     // are no favourites yet, nudge the user to add some instead of prompting a search.
     if (SgFavorites* store = favStore(); store && store->favorites().isEmpty()) {
-        const SgSearch::Site s = currentSite();
-        return (s == SgSearch::Site::PornHub || s == SgSearch::Site::Chaturbate)
-            ? QStringLiteral("Favorite some models to fill your homepage.")
-            : QStringLiteral("Favorite some channels to fill your homepage.");
+        switch (currentSite()) {
+        case SgSearch::Site::PornHub:
+        case SgSearch::Site::Chaturbate:
+            return QStringLiteral("Favorite some models to fill your homepage.");
+        case SgSearch::Site::SoundCloud:
+            return QStringLiteral("Favorite some artists to fill your homepage.");
+        default:
+            return QStringLiteral("Favorite some channels to fill your homepage.");
+        }
     }
     return "Search " + siteName() + " to see results.";
 }
@@ -754,12 +797,16 @@ QStringList Search::homeChannels() const {
     const QString key = "Search/HomeChannels" + suffix;
 
     // Chaturbate shows ALL favourited models on its home page (no max-amount limit).
-    // Other sites cap at the per-site amount (1..20), falling back to the old global key
-    // so existing users keep their chosen amount the first time after upgrading.
-    const bool unlimited = currentSite() == SgSearch::Site::Chaturbate;
-    const int legacy = cfg.value("Search/HomeChannelAmount", 5).toInt();
+    // Other sites cap at the per-site amount (1..20). YouTube/PornHub fall back to the
+    // old global key so existing users keep their chosen amount after upgrading; the
+    // newer sites (SoundCloud/Twitch) never had it, so they use their own defaults.
+    const SgSearch::Site site = currentSite();
+    const bool unlimited = site == SgSearch::Site::Chaturbate;
+    const bool preLegacy = (site == SgSearch::Site::SoundCloud || site == SgSearch::Site::Twitch);
+    const int fallback = preLegacy ? homeAmountDefault(site)
+                                   : cfg.value("Search/HomeChannelAmount", 5).toInt();
     const int amount = unlimited ? all.size()
-                                 : qBound(1, cfg.value("Search/HomeAmount" + suffix, legacy).toInt(), 20);
+                                 : qBound(1, cfg.value("Search/HomeAmount" + suffix, fallback).toInt(), 20);
 
     // The Settings picker stores the user's chosen channels in priority order. Use them
     // (still-favourited), capped at `amount`. If they haven't picked any, fall back to the
@@ -787,10 +834,13 @@ int Search::homeVideosPerChannel() const {
 
 bool Search::homeRandomize() const {
     // Per-site. On (default) shuffles every favourite's pulled videos into a random order;
-    // off keeps them grouped in the favourites order set in Settings. (Chaturbate has no
-    // such key — its live rooms always show in list order regardless.)
+    // off keeps them grouped in the favourites order set in Settings. The live sites have
+    // no such setting and must never shuffle: Chaturbate shows list order, and Twitch's
+    // feed is live-first ordered by the status lookup — a shuffle would bury who's live.
+    const SgSearch::Site site = currentSite();
+    if (site == SgSearch::Site::Chaturbate || site == SgSearch::Site::Twitch) return false;
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    return cfg.value("Search/HomeRandomize" + homeSiteSuffix(currentSite()), true).toBool();
+    return cfg.value("Search/HomeRandomize" + homeSiteSuffix(site), true).toBool();
 }
 
 bool Search::homeLazyLoad() const {
@@ -819,10 +869,11 @@ void Search::loadHomeFeed() {
     m_shownCount  = 0;
     m_loadingMore = false;
     m_homeLoadingMore = false;           // this is the first page, not a scroll-driven load-more
-    // Video-listing home feeds (YouTube/PornHub) can scroll-paginate by pulling deeper per
-    // channel, but only when the per-site "Load more as I scroll" setting is on. Chaturbate's
-    // live rooms and Continue Watching are always fixed lists.
-    m_endReached  = (site == SgSearch::Site::Chaturbate) || !homeLazyLoad();
+    // Video-listing home feeds (YouTube/PornHub/SoundCloud) can scroll-paginate by pulling
+    // deeper per channel, but only when the per-site "Load more as I scroll" setting is on.
+    // The live sites' rooms/channels and Continue Watching are always fixed lists.
+    m_endReached  = (site == SgSearch::Site::Chaturbate) || (site == SgSearch::Site::Twitch)
+                  || !homeLazyLoad();
     refreshBtn->setEnabled(true);        // refresh rebuilds the home feed
     updateNavButtons();
 
@@ -861,6 +912,40 @@ void Search::loadHomeFeed() {
             m_allResults.append(r);
         }
         pumpHomeFeed(); // empty queue -> runs the finalise tail (sort/cache/cards/status)
+        return;
+    }
+
+    if (site == SgSearch::Site::Twitch) {
+        // Twitch favourites are live channels: build the base cards from the store (the
+        // Chaturbate pattern), then ask the worker for live status in ONE batched GQL
+        // request. It answers on channelVideosReady with the cards enriched (live badge,
+        // stream title, viewers) and ordered live-first; on failure the cards come back
+        // unchanged, so the feed never blanks over a network blip.
+        SgFavorites* store = favStore();
+        QHash<QString, SgFavorites::FavoriteChannel> byUrl;
+        if (store) for (const auto& f : store->favorites()) byUrl.insert(f.url, f);
+        QList<SearchResult> seeds;
+        for (const QString& url : channels) {
+            const auto it = byUrl.constFind(url);
+            if (it == byUrl.constEnd()) continue;
+            const SgFavorites::FavoriteChannel& f = it.value();
+            SearchResult r;
+            r.url        = f.url;          // the live channel — playable on click
+            r.channelUrl = f.url;          // routes the favourite star to the Twitch store
+            r.channel    = f.name;
+            r.title      = f.name;
+            if (!f.cachedThumbPath.isEmpty())
+                r.thumbnail = QUrl::fromLocalFile(f.cachedThumbPath).toString();
+            else if (!f.thumbnailUrl.isEmpty())
+                r.thumbnail = f.thumbnailUrl;
+            seeds.append(r);
+        }
+        // Every seed is one card; lift the per-channel cap so handleHomeBatch keeps the
+        // whole batch (homeVideosPerChannel has no meaning for a live-channel feed).
+        m_homePerChannel = qMax(1, int(seeds.size()));
+        m_homeLoading = true;
+        setStatus("Checking who is live.", true);
+        m_search->fetchTwitchChannels(seeds);
         return;
     }
 
@@ -930,7 +1015,8 @@ void Search::loadMoreHome() {
     // home build. Only video-listing sites page; live rooms / Continue Watching are fixed.
     if (!m_search || m_homeLoading || m_endReached || !m_homeBuilt) return;
     const SgSearch::Site site = currentSite();
-    if (site == SgSearch::Site::Chaturbate || !homeLazyLoad()
+    if (site == SgSearch::Site::Chaturbate || site == SgSearch::Site::Twitch
+        || !homeLazyLoad()
         || m_filterMode == FilterMode::ContinueWatching) { m_endReached = true; return; }
 
     const int base = homeVideosPerChannel();
@@ -983,8 +1069,9 @@ void Search::goHome() {
         m_allResults  = m_homeCache;
         m_shownCount  = m_homeCache.size();
         // Restored feed keeps paging when lazy-load is on for a video site (depth carries
-        // in m_homePerChannel); Chaturbate and lazy-load-off feeds are fixed.
-        m_endReached  = (site == SgSearch::Site::Chaturbate) || !homeLazyLoad();
+        // in m_homePerChannel); the live sites' and lazy-load-off feeds are fixed.
+        m_endReached  = (site == SgSearch::Site::Chaturbate) || (site == SgSearch::Site::Twitch)
+                      || !homeLazyLoad();
         m_loadingMore = false;
         refreshBtn->setEnabled(true);
         for (const SearchResult& r : m_allResults)
@@ -1084,7 +1171,7 @@ void Search::navigateTo(int index) {
             }
             setViewMode(ViewMode::Search);
             siteBar->blockSignals(true);
-            siteBar->setCurrentText(e.site == SgSearch::Site::PornHub ? "PornHub" : "YouTube");
+            siteBar->setCurrentText(siteLabelFor(e.site));
             siteBar->blockSignals(false);
             m_currentQuery = e.target;
             m_currentSite  = e.site;
@@ -1107,7 +1194,7 @@ void Search::navigateTo(int index) {
         } else {
             // Restore the site this query ran against so startSearch routes correctly.
             siteBar->blockSignals(true);
-            siteBar->setCurrentText(e.site == SgSearch::Site::PornHub ? "PornHub" : "YouTube");
+            siteBar->setCurrentText(siteLabelFor(e.site));
             siteBar->blockSignals(false);
             m_currentQuery = e.target;
             m_currentSite  = e.site;
@@ -1152,12 +1239,14 @@ QString Search::historyFilePath(SgSearch::Site site) {
     switch (site) {
     case SgSearch::Site::PornHub:    return base + "/search_history_ph.txt";
     case SgSearch::Site::Chaturbate: return base + "/search_history_cb.txt";
+    case SgSearch::Site::SoundCloud: return base + "/search_history_sc.txt";
+    case SgSearch::Site::Twitch:     return base + "/search_history_tw.txt";
     default:                         return base + "/search_history.txt";
     }
 }
 
 void Search::loadHistory() {
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < kSiteCount; ++i) {
         m_historyFor[i].clear();
         QFile f(historyFilePath(static_cast<SgSearch::Site>(i)));
         if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue; // none yet
@@ -1189,7 +1278,7 @@ void Search::saveHistory(SgSearch::Site site) {
 }
 
 void Search::clearSearchHistory() {
-    for (int i = 0; i < 3; ++i) { // clear every site's history + file
+    for (int i = 0; i < kSiteCount; ++i) { // clear every site's history + file
         m_historyFor[i].clear();
         QFile::remove(historyFilePath(static_cast<SgSearch::Site>(i)));
     }
@@ -1351,6 +1440,8 @@ QString Search::playbackContextKey() const {
     switch (m_currentSite) {
     case SgSearch::Site::PornHub:    return QStringLiteral("search.pornhub");
     case SgSearch::Site::Chaturbate: return QStringLiteral("search.chaturbate");
+    case SgSearch::Site::SoundCloud: return QStringLiteral("search.soundcloud");
+    case SgSearch::Site::Twitch:     return QStringLiteral("search.twitch");
     default:                         return QStringLiteral("search.youtube");
     }
 }
@@ -1647,6 +1738,8 @@ QString Search::historySiteFor(SgSearch::Site s) {
     switch (s) {
     case SgSearch::Site::PornHub:    return QStringLiteral("pornhub");
     case SgSearch::Site::Chaturbate: return QStringLiteral("chaturbate");
+    case SgSearch::Site::SoundCloud: return QStringLiteral("soundcloud");
+    case SgSearch::Site::Twitch:     return QStringLiteral("twitch");
     default:                         return QStringLiteral("youtube");
     }
 }
@@ -1782,17 +1875,25 @@ void Search::loadAvatar(const QString& url) {
 
 SgSearch::Site Search::currentSite() const {
     const QString s = siteBar->currentText().trimmed().toLower();
-    if (s.contains("chaturbate") || s == "cb") return SgSearch::Site::Chaturbate;
-    if (s.contains("porn") || s == "ph")       return SgSearch::Site::PornHub;
+    if (s.contains("chaturbate") || s == "cb")  return SgSearch::Site::Chaturbate;
+    if (s.contains("porn") || s == "ph")        return SgSearch::Site::PornHub;
+    if (s.contains("soundcloud") || s == "sc")  return SgSearch::Site::SoundCloud;
+    if (s.contains("twitch") || s == "tw")      return SgSearch::Site::Twitch;
     return SgSearch::Site::YouTube;
 }
 
-QString Search::siteName() const {
-    switch (currentSite()) {
+QString Search::siteLabelFor(SgSearch::Site site) {
+    switch (site) {
     case SgSearch::Site::PornHub:    return QStringLiteral("PornHub");
     case SgSearch::Site::Chaturbate: return QStringLiteral("Chaturbate");
+    case SgSearch::Site::SoundCloud: return QStringLiteral("SoundCloud");
+    case SgSearch::Site::Twitch:     return QStringLiteral("Twitch");
     default:                         return QStringLiteral("YouTube");
     }
+}
+
+QString Search::siteName() const {
+    return siteLabelFor(currentSite());
 }
 
 Search::~Search() {
