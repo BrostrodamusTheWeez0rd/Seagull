@@ -37,7 +37,13 @@ AV1 is decoded in software (dav1d) on purpose - VLC 3's AV1 hardware path is unr
 Hover the video, open the gear (quality) menu in the controls bar, and pick a stream. Your default stream/download quality is set in **Settings → Download & Streaming**.
 
 **Is there an equalizer?**
-Yes - the **EQ** tab has a 10-band graphic equalizer that applies in real time. It's set separately for Audio and Video: switch between them with the pill at the top, choose a stock preset or build and save your own, and use the power button in the top-right to bypass or enable the EQ for that type. Your bands, presets, and on/off choice are remembered per type. Engaging the EQ doesn't drop your volume, so boosted bands play at the gain you set.
+Yes - **Settings → Audio** has a 10-band graphic equalizer that applies in real time, and a floating EQ button appears by the tab bar while anything plays to jump straight to it. It's set separately for Audio and Video: switch between them with the pill at the top (it follows whatever's playing until you pick one yourself), choose a stock preset or build and save your own, and use the power button to bypass or enable the EQ for that type. Your bands, presets, and on/off choices are remembered per type. The EQ runs in Seagull's own audio pipeline with a limiter behind it, so boosted bands play louder without ever clipping or distorting.
+
+**What is the Normalization button next to the EQ power button?**
+Per-type loudness control: it gently lifts quiet material toward a comfortable level and hard-limits peaks just under full scale, so quiet tracks are audible and loud ones never clip. It's independent of the EQ (it protects even with the EQ off), is remembered separately for Audio and Video, and is on by default. Your volume control is applied after it, so it always wins.
+
+**Does Seagull remember where I stopped watching?**
+Yes - partly watched videos and local files resume from their last position when you play them again, and each site's home page can show a **Continue Watching** view of what you haven't finished. Items watched to the end drop off automatically. Turn it off with **Settings → General → Remember playback position**; the per-site Continue Watching rows have their own toggles under **Settings → Search**.
 
 **What is the pop-out player?**
 The button beside fullscreen detaches the video into its own window so you can keep watching while you use the rest of Seagull (or other apps). Playback continues across the move. **Closing the pop-out window stops playback** and returns the player to the main window.
@@ -48,13 +54,16 @@ The button beside fullscreen detaches the video into its own window so you can k
 The Videos/Shorts pill on the Search tab switches the source. In Shorts, results come from a short-form vertical feed; a playing short loops at the end, and scrolling the mouse wheel over the video moves to the next/previous short, fetching more as you go.
 
 **What is the home feed?**
-When you have favourited channels, the Search tab can open on a personalized feed of their newest videos instead of a blank page. In **Settings → Search** you can rank which favourites lead the feed, how many of them feed it, and how many videos each one contributes. It works per site - each supported site keeps its own favourites and its own home feed.
+When you have favourited channels, the Search tab can open on a personalized feed of their newest videos instead of a blank page. In **Settings → Search** you can drag favourites into priority order, set how many of them feed it and how many videos each one contributes, choose whether the feed mixes by recency or keeps your order, and optionally let scrolling pull deeper into each channel. It works per site - each supported site keeps its own favourites and its own home feed.
 
 **How do I favourite a channel?**
 Click the star on a result card (or a channel page). Favourites drive the home feed and are saved per site next to your config, so they persist between sessions.
 
 **Can I see a video's comments?**
-Yes - when an online video has comments, a **Comments** tab appears next to the player. Comments load when you open the tab (not before), with collapsible reply threads you can expand and fold like on the source site.
+Yes - when an online video has comments, a **Comments** tab appears next to the player, with collapsible reply threads you can expand and fold like on the source site. The first batch loads quietly in the background so it's usually ready the moment you open the tab, and scrolling to the bottom loads more.
+
+**How do I track my downloads?**
+Downloads started from search result cards line up in the **Downloads** tab: live progress with speed and ETA (a slim progress bar also runs along the tab's header), plus restart, cancel, remove, and open-folder actions per item. The list persists between sessions, and restarting an item fetches it fresh from its source page. Downloads started from the Queue tab show their progress right there in the Queue instead.
 
 **Can I clear my search history?**
 Yes - **Settings → Search** has "Clear History Now" and an option to auto-clear on exit. History is stored next to `config.ini`.
@@ -63,7 +72,7 @@ Yes - **Settings → Search** has "Clear History Now" and an option to auto-clea
 A queue holds one kind at a time (all local or all online) so playback behaves predictably. Adding the other kind prompts you to clear the queue first.
 
 **Can I shuffle playback?**
-Yes - with autoplay on, a shuffle toggle appears in the player controls. Turn it on to play through the current list in random order; auto-advance and skip then follow the shuffled order.
+Yes - while media plays, an autoplay toggle appears beside the tab bar, and with autoplay on a shuffle toggle appears next to it. Turn it on to play through the current list in random order; auto-advance and skip then follow the shuffled order. Both are remembered separately for each kind of content.
 
 **What are playlists?**
 You can save the current queue as a playlist (`.sgpl` file) and replay it later from the Library tab's Playlists view.
@@ -118,6 +127,11 @@ That's the one-time setup dialog. It confirms your media folders and downloads a
 
 **Does Seagull need internet on first run?**
 Yes. The external tools are not bundled; Seagull downloads `yt-dlp`, `ffmpeg`, `deno`, and `AtomicParsley` during first-run setup. After that, local playback works offline; online features naturally still need a connection.
+
+## Reporting a problem
+
+**Something's misbehaving - how do I capture a log?**
+Type `SEALOG` into the Queue tab's link bar and press Enter; a confirmation tells you verbose logging is active. From then on Seagull writes everything it does (tool commands and output, player and worker activity, warnings) to `Config/seagull-log.txt` next to the app. The setting survives restarts, so a startup problem is captured from the very first moment of the next launch. Reproduce the issue, then send that file along with your report. Type `SEALOG` again to turn it off; logging is off by default and the log never leaves your machine unless you share it.
 
 ## Building
 

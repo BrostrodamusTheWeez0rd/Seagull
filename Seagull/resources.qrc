@@ -30,10 +30,10 @@
         <file>Assets/icons/power.svg</file>
         <file>Assets/icons/star.svg</file>
         <file>Assets/icons/star-outline.svg</file>
-        <file alias="docs/README.md">../README.md</file>
-        <file alias="docs/FAQ.md">../FAQ.md</file>
-        <file alias="docs/DISCLAIMER.md">../DISCLAIMER.md</file>
+        <file alias="docs/README.md">../docs/README.md</file>
+        <file alias="docs/FAQ.md">../docs/FAQ.md</file>
+        <file alias="docs/DISCLAIMER.md">../docs/DISCLAIMER.md</file>
         <file alias="docs/LICENSE.txt">../LICENSE.txt</file>
-        <file alias="docs/THIRD_PARTY_NOTICES.md">../THIRD_PARTY_NOTICES.md</file>
+        <file alias="docs/THIRD_PARTY_NOTICES.md">../docs/THIRD_PARTY_NOTICES.md</file>
     </qresource>
 </RCC>

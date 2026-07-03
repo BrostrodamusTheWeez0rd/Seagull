@@ -43,7 +43,7 @@ public:
     void stopPolling();
     void startPolling();
     void setEndedMode(bool ended); // Freeze seeker/time at end-of-stream
-    void setLiveMode(bool isLive); // Live stream: show "LIVE", disable seeking
+    void setLiveMode(bool isLive); // Live stream: LIVE badge replaces the duration; seeking stays (DVR window)
     void setCurrentFormat(const QString& formatId); // Track active selection
     void setRecording(bool on);          // reflect recorder state: red pulse while on
     void setRecordAvailable(bool avail); // show/hide the Record button (any playing media)

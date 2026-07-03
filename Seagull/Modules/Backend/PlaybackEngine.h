@@ -58,10 +58,11 @@ public:
     void setMute(bool muted);
 
     // Audio tap: route this player's decoded audio through our own QAudioSink so
-    // we can both play it and analyse it (RMS level + beat onsets) to drive the
-    // visualizer. ONLY used for audio-only media — video keeps VLC's native audio
-    // output so its A/V sync is untouched. No-op + stays on VLC audio if the
-    // output device can't be opened. Call before loading media.
+    // we can play it, run our own EQ/limiter chain on it (SgEq -> SgDynamics), and
+    // analyse it (RMS level + beat onsets) to drive the visualizer. Used for ALL
+    // audio-bearing media — audio and video alike (photos stay untapped); a tapped
+    // video's sink-buffer latency is trimmed via setTapAudioDelayMs. No-op + stays
+    // on VLC audio if the output device can't be opened. Call before loading media.
     void setAudioTap(bool on);
     bool audioTapActive() const { return m_tapOn; }
 

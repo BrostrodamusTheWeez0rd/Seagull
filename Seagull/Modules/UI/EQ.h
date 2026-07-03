@@ -21,7 +21,7 @@ enum class EqContentType { Video = 0, Audio = 1 };
 
 // The equalizer (the Settings "Audio" page): a Video/Audio pill, a content-type-aware preset dropdown (stock +
 // custom presets, with an "Add custom preset…" action), and a 10-band graphic EQ
-// (libVLC's equalizer) adjusted in real time. Per-type state + custom presets persist
+// (our own SgEq, run on the audio tap) adjusted in real time. Per-type state + custom presets persist
 // to config.ini under Eq/. The tab edits/persists; VideoPlayer reads the saved EQ and
 // applies it per media kind on play, and the orchestrator forwards live edits when the
 // playing media's kind matches the edited type.
