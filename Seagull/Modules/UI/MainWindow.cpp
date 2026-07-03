@@ -22,6 +22,7 @@
 #include <QMenu>
 #include <QLabel>
 #include <QMovie>
+#include <QProgressBar>
 #include <QFrame>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -198,8 +199,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         emit photoIntervalChanged(v);
     });
 
-    // Drag-reordering moves the last tab's edge without any add/remove of ours.
-    connect(tabs->tabBar(), &QTabBar::tabMoved, this, [this](int, int) { schedulePlusReposition(); });
+    // Drag-reordering moves the last tab's edge without any add/remove of ours. Persist
+    // the new order right away (but not while applyStoredTabOrder is replaying it — that
+    // would clobber the saved active-tab before restoreActiveTab reads it).
+    connect(tabs->tabBar(), &QTabBar::tabMoved, this, [this](int, int) {
+        schedulePlusReposition();
+        if (!m_applyingOrder) saveOpenTabs();
+    });
     // Selecting a tab can shift tab widths; re-tuck the manual close buttons.
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) { schedulePlusReposition(); });
     // Ignored vertical policy gives the tabs pane a zero minimum (it still expands
@@ -509,7 +515,9 @@ void MainWindow::positionCloseButtons() {
     const int curX = bar->mapFromGlobal(QCursor::pos()).x(); // for the grabbed tab
     const bool dragging = m_tabDragging && m_pressedWrapper;
     QWidget* busyWrapper = m_busyTab ? m_tabPages.value(m_busyTab) : nullptr;
+    QWidget* progressWrapper = m_progressTab ? m_tabPages.value(m_progressTab) : nullptr;
     bool spinnerPlaced = false;
+    bool progressPlaced = false;
     QToolButton* draggedBtn = nullptr;
     for (auto it = m_closeButtons.cbegin(); it != m_closeButtons.cend(); ++it) {
         QToolButton* b = it.value();
@@ -544,9 +552,21 @@ void MainWindow::positionCloseButtons() {
         b->move(x, r.top() + (r.height() - b->height()) / 2);
         b->show();
         if (isDragged) draggedBtn = b; else b->raise();
+
+        // A tab with an active download shows a thin progress bar along its bottom edge
+        // (coexists with the x — the bar doesn't replace it).
+        if (it.key() == progressWrapper && m_tabProgress) {
+            constexpr int ppad = 8;
+            m_tabProgress->setGeometry(r.left() + ppad, r.bottom() - 3,
+                                       qMax(0, r.width() - 2 * ppad), 3);
+            m_tabProgress->raise();
+            m_tabProgress->show();
+            progressPlaced = true;
+        }
     }
     if (draggedBtn) draggedBtn->raise(); // keep the grabbed tab's x on top
     if (m_tabSpinner && !spinnerPlaced) m_tabSpinner->hide(); // busy tab gone/scrolled away
+    if (m_tabProgress && !progressPlaced) m_tabProgress->hide(); // progress tab gone/scrolled away
 }
 
 void MainWindow::settleCloseButton(QWidget* wrapper) {
@@ -875,9 +895,72 @@ void MainWindow::saveOpenTabs() {
             extra << m_duplicateKindMap.value(w);
     }
 
+    // Remember the selected tab so the app reopens where the user left off. Identify it
+    // by label + ordinal (duplicate tabs can share a label), which survives the fixed
+    // rebuild order (base tabs, minus closed, then ExtraTabs). Dynamic tabs (Description /
+    // Comments) aren't restored, but saving their label is harmless — restore just finds
+    // no match and leaves the default selection.
+    QString activeLabel; int activeOrdinal = 0;
+    const int cur = tabs->currentIndex();
+    if (cur >= 0) {
+        activeLabel = tabs->tabText(cur);
+        for (int i = 0; i < cur; ++i)
+            if (tabs->tabText(i) == activeLabel) ++activeOrdinal;
+    }
+
+    // The current left-to-right order of the docked tabs (by label), so a user's manual
+    // reordering is restored next launch (applyStoredTabOrder). Dynamic tabs (Description/
+    // Comments) are included harmlessly — restore skips any label with no matching tab.
+    QStringList order;
+    for (int i = 0; i < tabs->count(); ++i) order << tabs->tabText(i);
+
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     cfg.setValue("Tabs/Closed", closed);
     cfg.setValue("Tabs/ExtraTabs", extra);
+    cfg.setValue("Tabs/Order", order);
+    cfg.setValue("Tabs/ActiveLabel", activeLabel);
+    cfg.setValue("Tabs/ActiveOrdinal", activeOrdinal);
+}
+
+void MainWindow::applyStoredTabOrder() {
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    const QStringList order = cfg.value("Tabs/Order").toStringList();
+    if (order.isEmpty()) return; // fresh config — keep the registration/default order
+
+    // Walk the saved order, pulling each still-present tab to the next slot. Tabs not in
+    // the saved list (e.g. one added in a newer version) are left trailing after the rest.
+    m_applyingOrder = true;
+    QTabBar* bar = tabs->tabBar();
+    int target = 0;
+    for (const QString& label : order) {
+        for (int i = target; i < tabs->count(); ++i) {
+            if (tabs->tabText(i) == label) {
+                if (i != target) bar->moveTab(i, target);
+                ++target;
+                break;
+            }
+        }
+    }
+    m_applyingOrder = false;
+    schedulePlusReposition();
+}
+
+void MainWindow::restoreActiveTab() {
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    const QString label = cfg.value("Tabs/ActiveLabel").toString();
+    if (label.isEmpty()) return;
+    const int ordinal = cfg.value("Tabs/ActiveOrdinal", 0).toInt();
+
+    // Prefer the exact match (label + ordinal); fall back to the first same-labelled
+    // tab if the ordinal drifted (e.g. a duplicate was closed before this launch).
+    int seen = 0;
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i) != label) continue;
+        if (seen == ordinal) { tabs->setCurrentIndex(i); return; }
+        ++seen;
+    }
+    for (int i = 0; i < tabs->count(); ++i)
+        if (tabs->tabText(i) == label) { tabs->setCurrentIndex(i); return; }
 }
 
 void MainWindow::setTabBusy(QWidget* tab, bool busy) {
@@ -920,6 +1003,35 @@ void MainWindow::ensureTabSpinner() {
     m_tabSpinner->setMovie(m_tabSpinnerMovie);
     m_tabSpinner->resize(w, h);
     m_tabSpinner->hide();
+}
+
+void MainWindow::setTabProgress(QWidget* tab, double percent) {
+    QWidget* page = m_tabPages.value(tab, nullptr);
+    if (!page) return;
+
+    if (percent < 0) { // clear
+        if (m_progressTab == tab) {
+            m_progressTab = nullptr;
+            if (m_tabProgress) m_tabProgress->hide();
+            schedulePlusReposition();
+        }
+        return;
+    }
+
+    if (!m_tabProgress) {
+        m_tabProgress = new QProgressBar(tabs->tabBar());
+        m_tabProgress->setObjectName("tabProgressBar");
+        m_tabProgress->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_tabProgress->setTextVisible(false);
+        m_tabProgress->setRange(0, 100);
+        m_tabProgress->setFixedHeight(3);
+        m_tabProgress->hide();
+    }
+    // Only reposition when (re)activating; a plain value tick just refills the bar in place.
+    const bool wasActive = (m_progressTab == tab && m_tabProgress->isVisible());
+    m_progressTab = tab;
+    m_tabProgress->setValue(qBound(0, int(percent + 0.5), 100));
+    if (!wasActive) schedulePlusReposition();
 }
 
 void MainWindow::dockPlayerIntoSplitter() {

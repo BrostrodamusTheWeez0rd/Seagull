@@ -72,13 +72,14 @@ void SgSearch::search(Site site, const QString& query, int limit, bool shortsOnl
     m_process->start(exePath, args);
 }
 
-void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit) {
+void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit, bool shorts) {
     if (channelUrl.trimmed().isEmpty()) { emit failed("No channel to open."); return; }
 
     cancel(); // a channel open supersedes any in-flight query
 
     // PornHub models/channels have no yt-dlp listing; scrape their /videos tab instead
-    // (same tiles as search). YouTube falls through to the yt-dlp path below.
+    // (same tiles as search). YouTube falls through to the yt-dlp path below. PornHub
+    // has no shorts, so the flag is simply ignored there.
     if (channelUrl.contains("pornhub.com", Qt::CaseInsensitive)) {
         fetchPornHubModel(channelUrl.trimmed(), limit);
         return;
@@ -90,11 +91,15 @@ void SgSearch::fetchChannelVideos(const QString& channelUrl, int limit) {
 
     const QString exePath = QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe";
 
-    // The channel's uploads tab. Strip a trailing slash, then target /videos
-    // (so a bare channel/handle URL doesn't list every tab as nested playlists).
+    // The channel's uploads tab (or /shorts in Shorts mode). Strip a trailing slash and
+    // any existing tab, then target the wanted one (so a bare channel/handle URL doesn't
+    // list every tab as nested playlists). The channel /shorts tab is a normal flat
+    // playlist — unlike the search extractor, yt-dlp parses it fine.
     QString url = channelUrl.trimmed();
     while (url.endsWith('/')) url.chop(1);
-    if (!url.endsWith("/videos")) url += "/videos";
+    if (url.endsWith("/videos")) url.chop(7);
+    else if (url.endsWith("/shorts")) url.chop(7);
+    url += shorts ? "/shorts" : "/videos";
 
     QStringList args;
     args << "-J" << "--flat-playlist" << "--quiet" << "--no-warnings"
@@ -358,6 +363,7 @@ void SgSearch::parseChannelList(const QJsonObject& root, SearchResult& info,
 void SgSearch::startShortsSearch(const QString& query, int limit) {
     if (!m_nam) m_nam = new QNetworkAccessManager(this);
 
+    m_shortsHome  = false; // live search view: answer on resultsReady
     m_shortsLimit = limit;
     if (query != m_shortsQuery) {
         m_shortsQuery = query;
@@ -375,6 +381,39 @@ void SgSearch::startShortsSearch(const QString& query, int limit) {
 
     emit logMessage("Searching Shorts: " + query);
     fetchShortsPage();
+}
+
+void SgSearch::fetchChannelShorts(const QString& channelUrl, const QString& channelName,
+                                  int limit) {
+    if (!m_nam) m_nam = new QNetworkAccessManager(this);
+    cancel(); // supersede anything in flight before starting this channel's pull
+
+    // Home mode: emit channelVideosReady (tagged) instead of resultsReady, and always
+    // pull fresh for this channel (don't reuse the live view's per-query cache).
+    m_shortsHome     = true;
+    m_shortsHomeUrl  = channelUrl;
+    m_shortsHomeName = channelName;
+    m_shortsLimit    = qMax(1, limit);
+    m_shortsQuery    = channelName;
+    m_shortsResults.clear();
+    m_shortsSeenIds.clear();
+    m_shortsContinuation.clear();
+    m_shortsExhausted = false;
+
+    emit logMessage("Home Shorts for channel: " + channelName);
+    fetchShortsPage();
+}
+
+void SgSearch::emitShortsDone() {
+    if (!m_shortsHome) { emit resultsReady(m_shortsResults); return; }
+    // Home feed: tag each Short with the favourite it was pulled for (so cards show the
+    // channel and the star routes to the right favourite), then answer like /videos.
+    QList<SearchResult> tagged = m_shortsResults;
+    for (SearchResult& r : tagged) {
+        r.channel    = m_shortsHomeName;
+        r.channelUrl = m_shortsHomeUrl;
+    }
+    emit channelVideosReady(SearchResult{}, tagged);
 }
 
 void SgSearch::fetchShortsPage() {
@@ -401,7 +440,7 @@ void SgSearch::handleShortsReply() {
     reply->deleteLater();
 
     if (reply->error() != QNetworkReply::NoError) {
-        if (!m_shortsResults.isEmpty()) emit resultsReady(m_shortsResults); // keep what we have
+        if (!m_shortsResults.isEmpty()) emitShortsDone(); // keep what we have
         else emit failed("Shorts search failed: " + reply->errorString());
         return;
     }
@@ -455,7 +494,7 @@ void SgSearch::handleShortsReply() {
     if (m_shortsResults.size() < m_shortsLimit && !m_shortsExhausted)
         fetchShortsPage();
     else
-        emit resultsReady(m_shortsResults);
+        emitShortsDone();
 }
 
 // ---------------------------------------------------------------------------

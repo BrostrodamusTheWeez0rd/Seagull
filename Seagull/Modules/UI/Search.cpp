@@ -6,6 +6,7 @@
 #include "../Backend/SgFavorites.h"
 #include "../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
 #include "../Backend/SgPaths.h"
+#include "../Backend/SgWatchHistory.h" // per-site Continue Watching strip
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -209,18 +210,21 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
 
     resultsArea->viewport()->installEventFilter(this);
 
-    // --- Floating filter pill: Videos / Shorts ---
+    // --- Floating filter pill: Videos / Shorts / Continue Watching ---
     // Child of resultsArea (not Search) so raise() puts it above the viewport,
     // avoiding z-order issues where the viewport repaints over a sibling pill.
+    // Videos/Shorts appear on YouTube search + home; Continue Watching only on a home
+    // landing (per site), and only when that site has partly-watched items.
     m_filterPill = new QFrame(resultsArea);
     m_filterPill->setObjectName("searchFilterPill");
     auto* pillLay = new QHBoxLayout(m_filterPill);
     pillLay->setContentsMargins(6, 4, 6, 4);
     pillLay->setSpacing(2);
 
-    m_filterVideosBtn = new QPushButton("Videos", m_filterPill);
-    m_filterShortsBtn = new QPushButton("Shorts", m_filterPill);
-    for (QPushButton* b : { m_filterVideosBtn, m_filterShortsBtn }) {
+    m_filterVideosBtn   = new QPushButton("Videos", m_filterPill);
+    m_filterShortsBtn   = new QPushButton("Shorts", m_filterPill);
+    m_filterContinueBtn = new QPushButton("Continue Watching", m_filterPill);
+    for (QPushButton* b : { m_filterVideosBtn, m_filterShortsBtn, m_filterContinueBtn }) {
         b->setObjectName("searchFilterButton");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
@@ -391,14 +395,17 @@ Search::Search(SgSearch* searchWorker, SgSpellCheck* spell, QWidget* parent)
         navigateTo(m_navIndex);
     });
 
-    // Filter pill: clicking the active button unchecks it (= show all).
+    // Filter pill. Videos/Shorts: clicking the active one drops to All (search view);
+    // Continue Watching always selects (a home-only source, no "all"). setFilterMode
+    // resyncs every button's checked state via updatePillChecked, so exclusivity holds.
     connect(m_filterVideosBtn, &QPushButton::clicked, this, [this](bool checked) {
-        if (checked) m_filterShortsBtn->setChecked(false);
         setFilterMode(checked ? FilterMode::Videos : FilterMode::All);
     });
     connect(m_filterShortsBtn, &QPushButton::clicked, this, [this](bool checked) {
-        if (checked) m_filterVideosBtn->setChecked(false);
         setFilterMode(checked ? FilterMode::Shorts : FilterMode::All);
+    });
+    connect(m_filterContinueBtn, &QPushButton::clicked, this, [this](bool) {
+        setFilterMode(FilterMode::ContinueWatching);
     });
 
     connect(resultsArea->verticalScrollBar(), &QScrollBar::valueChanged, this,
@@ -469,6 +476,10 @@ void Search::maybeBuildHomeFeed() {
     if (m_homeLoading || !isFavouritableSite(site)) return;
     if (m_navIndex >= 0) return;                          // on a search/channel, not the landing
     if (m_homeBuilt && m_homeFeedSite == site) return;    // this site's feed already shown
+    // A fresh landing (first show / site switch) always defaults to the Videos feed —
+    // Shorts / Continue Watching are opt-in via the pill and don't carry across sites.
+    m_filterMode = FilterMode::Videos;
+    updatePillChecked();
     loadHomeFeed();
 }
 
@@ -528,12 +539,33 @@ void Search::updateFilterPillVisibility() {
     const QRect zone(0, 0, resultsArea->width(), stripH + 2 * kPillTopMargin);
     const bool hovered = zone.contains(resultsArea->mapFromGlobal(QCursor::pos()));
     const bool show = atTop || hovered;
-    // The Videos/Shorts pill is YouTube-only, and only on an actual search/channel view —
-    // hide it on the home feed (landing, navIndex < 0) and in the favourites view. The
-    // favourites chip itself stays on favouritable sites.
-    const bool isYouTube = (currentSite() == SgSearch::Site::YouTube);
+    // The pill's contents depend on the view:
+    //   - search / channel (YouTube): the classic Videos / Shorts filter.
+    //   - home landing: a per-site SOURCE selector. YouTube gets Videos + Shorts;
+    //     video sites (YouTube / PornHub) get Videos; any favouritable site gets
+    //     Continue Watching when it's enabled AND has partly-watched items. "Videos"
+    //     only appears when there's another option to switch to.
+    // Hidden entirely in the favourites view.
+    const SgSearch::Site site = currentSite();
+    const bool isYouTube = (site == SgSearch::Site::YouTube);
     const bool onSearchView = (m_navIndex >= 0) && !m_favoritesActive;
-    m_filterPill->setVisible(show && isYouTube && onSearchView);
+    const bool onHome = isHomeView();
+    bool showVideos = false, showShorts = false, showContinue = false;
+    if (onSearchView && isYouTube) {
+        showVideos = true; showShorts = true;
+    } else if (onHome) {
+        showShorts   = isYouTube;
+        showContinue = continueRowEnabledForSite(site)
+                       && SgWatchHistory::instance()->hasResumable(historySiteFor(site));
+        const bool videoSite = (site == SgSearch::Site::YouTube || site == SgSearch::Site::PornHub);
+        showVideos   = videoSite && (showShorts || showContinue);
+    }
+    m_filterVideosBtn->setVisible(showVideos);
+    m_filterShortsBtn->setVisible(showShorts);
+    if (m_filterContinueBtn) m_filterContinueBtn->setVisible(showContinue);
+    const bool anyPillBtn = showVideos || showShorts || showContinue;
+    m_filterPill->setVisible(show && anyPillBtn);
+    if (anyPillBtn) { m_filterPill->adjustSize(); positionFilterPill(); }
     m_resultSortBtn->setVisible(show);
     if (m_favoritesBtn) {
         const bool favShow = show && isFavouritableSite(currentSite());
@@ -754,11 +786,19 @@ int Search::homeVideosPerChannel() const {
 }
 
 bool Search::homeRandomize() const {
-    // Per-site. On (default) mixes every favourite's pulled videos together by recency;
+    // Per-site. On (default) shuffles every favourite's pulled videos into a random order;
     // off keeps them grouped in the favourites order set in Settings. (Chaturbate has no
     // such key — its live rooms always show in list order regardless.)
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     return cfg.value("Search/HomeRandomize" + homeSiteSuffix(currentSite()), true).toBool();
+}
+
+bool Search::homeLazyLoad() const {
+    // Per-site, OFF by default: when on, the home feed keeps pulling more from your
+    // favourites as you scroll to the bottom (extra requests — see the Settings warning).
+    // Chaturbate's live rooms are a fixed list, so it has no such key (stays off).
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    return cfg.value("Search/HomeLazyLoad" + homeSiteSuffix(currentSite()), false).toBool();
 }
 
 void Search::loadHomeFeed() {
@@ -778,7 +818,11 @@ void Search::loadHomeFeed() {
     m_navIndex     = -1;                 // home/landing
     m_shownCount  = 0;
     m_loadingMore = false;
-    m_endReached  = true;                // the home feed doesn't scroll-paginate
+    m_homeLoadingMore = false;           // this is the first page, not a scroll-driven load-more
+    // Video-listing home feeds (YouTube/PornHub) can scroll-paginate by pulling deeper per
+    // channel, but only when the per-site "Load more as I scroll" setting is on. Chaturbate's
+    // live rooms and Continue Watching are always fixed lists.
+    m_endReached  = (site == SgSearch::Site::Chaturbate) || !homeLazyLoad();
     refreshBtn->setEnabled(true);        // refresh rebuilds the home feed
     updateNavButtons();
 
@@ -820,6 +864,13 @@ void Search::loadHomeFeed() {
         return;
     }
 
+    // The Shorts feed searches each favourite by name (there's no reliable per-channel
+    // shorts listing), so map url -> display name up front for pumpHomeFeed to look up.
+    m_homeChannelNames.clear();
+    if (SgFavorites* store = favStore())
+        for (const auto& f : store->favorites())
+            m_homeChannelNames.insert(f.url, f.name);
+
     m_homeQueue   = channels;
     m_homeLoading = true;
     setStatus("Loading your channels.", true);
@@ -829,18 +880,80 @@ void Search::loadHomeFeed() {
 void Search::pumpHomeFeed() {
     // More channels queued -> fetch the next one. Drained -> finalise the feed.
     if (!m_homeQueue.isEmpty()) {
-        m_search->fetchChannelVideos(m_homeQueue.takeFirst(), m_homePerChannel);
+        const QString url = m_homeQueue.takeFirst();
+        // YouTube Shorts mode: yt-dlp can't list a channel's /shorts tab reliably, so
+        // reuse the working Shorts search, querying the channel by name (same per-channel
+        // count and channel cap as the /videos feed). Everything else pulls /videos.
+        const bool shorts = (m_homeFeedSite == SgSearch::Site::YouTube
+                             && m_filterMode == FilterMode::Shorts);
+        if (shorts)
+            m_search->fetchChannelShorts(url, m_homeChannelNames.value(url), m_homePerChannel);
+        else
+            m_search->fetchChannelVideos(url, m_homePerChannel, false);
         return;
     }
     m_homeLoading = false;
     m_homeBuilt   = true;
+    m_loadingMore = false;
+
+    // Randomize on (default): shuffle so the favourites' videos are mixed into a fresh
+    // random order rather than grouped by channel. Off: leave them in the channel-priority
+    // order they were built in. On a load-more we only shuffle the newly-appended tail so
+    // the cards already on screen don't jump around under the user.
+    const int from = m_homeLoadingMore ? m_homeAppendStart : 0;
+    if (homeRandomize()) {
+        for (int i = m_allResults.size() - 1; i > from; --i) {
+            const int j = from + QRandomGenerator::global()->bounded(i - from + 1);
+            m_allResults.swapItemsAt(i, j);
+        }
+    }
+
+    if (m_homeLoadingMore) {
+        // Nothing new arrived (channels exhausted at this depth) -> stop paging.
+        if (m_allResults.size() <= m_homeAppendStart) m_endReached = true;
+        for (int i = m_homeAppendStart; i < m_allResults.size(); ++i)
+            if (shows(m_allResults[i])) addCard(m_allResults[i]);
+        applyCardWidth();
+        m_homeLoadingMore = false;
+    } else {
+        rebuildCards();
+    }
     m_shownCount  = m_allResults.size();
-    if (homeRandomize())                  // on: mix the channels' videos together by recency
-        applySort();
-    // off: leave m_allResults in the favourites (channel-priority) order it was built in
     m_homeCache   = m_allResults;         // cache the built feed so back/Home restore it
-    rebuildCards();
     setStatus(m_allResults.isEmpty() ? emptyStateText() : QString(), false);
+}
+
+void Search::loadMoreHome() {
+    // Scroll-to-bottom paging for the landing feed: pull more videos from each favourite
+    // channel (deeper playlist-end) and append only the new tail — the same "re-request
+    // larger, keep the new part" approach the search view uses, adapted to the per-channel
+    // home build. Only video-listing sites page; live rooms / Continue Watching are fixed.
+    if (!m_search || m_homeLoading || m_endReached || !m_homeBuilt) return;
+    const SgSearch::Site site = currentSite();
+    if (site == SgSearch::Site::Chaturbate || !homeLazyLoad()
+        || m_filterMode == FilterMode::ContinueWatching) { m_endReached = true; return; }
+
+    const int base = homeVideosPerChannel();
+    if (m_homePerChannel >= kHomeDepthCap) { m_endReached = true; return; } // depth ceiling hit
+
+    const QStringList channels = homeChannels();
+    if (channels.isEmpty()) { m_endReached = true; return; }
+
+    // Refresh the url -> name map (the Shorts feed searches each channel by name).
+    m_homeChannelNames.clear();
+    if (SgFavorites* store = favStore())
+        for (const auto& f : store->favorites())
+            m_homeChannelNames.insert(f.url, f.name);
+
+    m_homePerChannel = qMin(m_homePerChannel + base, kHomeDepthCap); // pull one batch deeper
+    m_homeAppendStart = m_allResults.size();                         // new items start here
+    m_homeLoadingMore = true;
+    m_homeLoading     = true;
+    m_loadingMore     = true;                                        // gate the scroll trigger
+    m_homeFeedSite    = site;
+    m_homeQueue       = channels;
+    setStatus("Loading more.", true);
+    pumpHomeFeed();
 }
 
 void Search::goHome() {
@@ -852,10 +965,16 @@ void Search::goHome() {
 
     const SgSearch::Site site = currentSite();
 
+    // If the pill is on Continue Watching, Home returns to that view (not the feed).
+    if (isFavouritableSite(site) && m_filterMode == FilterMode::ContinueWatching) {
+        loadContinueWatchingHome();
+        return;
+    }
+
     // Sites without favourites (Chaturbate) have no home feed — just clear to the prompt.
     // Otherwise restore the cached feed instantly when it's for this site; else rebuild.
     if (isFavouritableSite(site) && m_homeBuilt && m_homeFeedSite == site) {
-        m_homeLoading = false; m_homeQueue.clear();
+        m_homeLoading = false; m_homeLoadingMore = false; m_homeQueue.clear();
         m_navIndex = -1;
         setViewMode(ViewMode::Search);
         clearResults();
@@ -863,7 +982,10 @@ void Search::goHome() {
         m_currentSite = site;
         m_allResults  = m_homeCache;
         m_shownCount  = m_homeCache.size();
-        m_endReached  = true;
+        // Restored feed keeps paging when lazy-load is on for a video site (depth carries
+        // in m_homePerChannel); Chaturbate and lazy-load-off feeds are fixed.
+        m_endReached  = (site == SgSearch::Site::Chaturbate) || !homeLazyLoad();
+        m_loadingMore = false;
         refreshBtn->setEnabled(true);
         for (const SearchResult& r : m_allResults)
             if (!r.url.isEmpty()) m_seenUrls.insert(r.url);
@@ -902,7 +1024,9 @@ void Search::handleHomeBatch(const SearchResult& /*info*/, const QList<SearchRes
         ++added;
     }
 
-    if (!m_homeQueue.isEmpty()) rebuildCards(); // show progress as each channel lands
+    // Show progress as each channel lands (first-page build only; a load-more appends
+    // its cards all at once in the finalise tail so on-screen cards don't reflow).
+    if (!m_homeQueue.isEmpty() && !m_homeLoadingMore) rebuildCards();
     pumpHomeFeed();
 }
 
@@ -1113,6 +1237,8 @@ void Search::performSearch() {
 
 void Search::startSearch(const QString& query) {
     m_homeLoading = false; m_homeQueue.clear(); // a real search supersedes a home build
+    // Continue Watching is a home-only source; a real search returns to the Videos filter.
+    if (m_filterMode == FilterMode::ContinueWatching) { m_filterMode = FilterMode::Videos; updatePillChecked(); }
     // Exit favourites view before a real search so the grid is clean.
     if (m_favoritesActive) {
         m_favoritesActive = false;
@@ -1152,6 +1278,9 @@ void Search::startSearch(const QString& query) {
 
 void Search::loadMore() {
     if (m_favoritesActive) return;
+    // The home landing pages by pulling deeper per channel (its own machinery), not the
+    // search re-request below.
+    if (isHomeView()) { loadMoreHome(); return; }
     if (m_loadingMore || m_endReached || m_shownCount == 0 || !m_search) return;
     if (m_shownCount >= kMaxResults) { m_endReached = true; return; }
 
@@ -1418,13 +1547,38 @@ void Search::applySort() {
     }
 }
 
+void Search::updatePillChecked() {
+    m_filterVideosBtn->setChecked(m_filterMode == FilterMode::Videos);
+    m_filterShortsBtn->setChecked(m_filterMode == FilterMode::Shorts);
+    if (m_filterContinueBtn) m_filterContinueBtn->setChecked(m_filterMode == FilterMode::ContinueWatching);
+}
+
 void Search::setFilterMode(FilterMode mode) {
-    if (m_filterMode == mode) return;
+    // The home landing has no "all" — clicking the active Videos button there just
+    // keeps Videos (it's a source selector, not a videos/shorts blend).
+    if (isHomeView() && mode == FilterMode::All) mode = FilterMode::Videos;
+
+    if (mode == m_filterMode) { updatePillChecked(); return; } // no change; just resync the buttons
+
+    // On a home landing the pill switches the feed's SOURCE: the Videos/Shorts feeds are
+    // rebuilt from favourites; Continue Watching fills the grid from watch history.
+    if (isHomeView()) {
+        m_filterMode = mode;
+        updatePillChecked();
+        if (mode == FilterMode::ContinueWatching) {
+            loadContinueWatchingHome();
+        } else {
+            m_homeBuilt = false; m_homeCache.clear(); // force a rebuild for the new source
+            loadHomeFeed();
+        }
+        return;
+    }
+
+    // Search / channel view: the original Videos/Shorts filter behaviour.
     const bool crossesShorts = (m_filterMode == FilterMode::Shorts)
                             || (mode == FilterMode::Shorts);
     m_filterMode = mode;
-    m_filterVideosBtn->setChecked(mode == FilterMode::Videos);
-    m_filterShortsBtn->setChecked(mode == FilterMode::Shorts);
+    updatePillChecked();
 
     // Shorts come from a different source (YouTube's shorts search, not the
     // yt-dlp video search), so crossing into or out of Shorts re-runs the
@@ -1449,6 +1603,29 @@ void Search::setFilterMode(FilterMode mode) {
     }
 }
 
+void Search::loadContinueWatchingHome() {
+    // The Continue Watching landing: same "home" state as the Videos feed, but filled
+    // from SgWatchHistory for this site instead of fetched from favourites' channels.
+    const SgSearch::Site site = currentSite();
+    if (m_favoritesActive) { m_favoritesActive = false; tintFavoritesIcon(); }
+    setViewMode(ViewMode::Search);
+    m_homeLoading = false; m_homeLoadingMore = false; m_homeQueue.clear();
+    clearResults();
+    m_currentQuery.clear();
+    m_currentSite  = site;
+    m_homeFeedSite = site;
+    m_navIndex     = -1;
+    m_endReached   = true;                 // history is a fixed list, no paging
+    m_allResults   = continueWatchingResults();
+    m_shownCount   = m_allResults.size();
+    for (const SearchResult& r : m_allResults)
+        if (!r.url.isEmpty()) m_seenUrls.insert(r.url);
+    refreshBtn->setEnabled(true);
+    updateNavButtons();
+    rebuildCards();
+    setStatus(m_allResults.isEmpty() ? QStringLiteral("Nothing to continue yet.") : QString(), false);
+}
+
 void Search::rebuildCards() {
     if (m_favoritesActive) return;
     QLayoutItem* item;
@@ -1459,6 +1636,45 @@ void Search::rebuildCards() {
     for (const SearchResult& r : m_allResults)
         if (shows(r)) addCard(r);
     applyCardWidth();
+}
+
+bool Search::isHomeView() const {
+    // The site's home landing: search mode, no nav entry, favourites view off.
+    return m_viewMode == ViewMode::Search && m_navIndex < 0 && !m_favoritesActive;
+}
+
+QString Search::historySiteFor(SgSearch::Site s) {
+    switch (s) {
+    case SgSearch::Site::PornHub:    return QStringLiteral("pornhub");
+    case SgSearch::Site::Chaturbate: return QStringLiteral("chaturbate");
+    default:                         return QStringLiteral("youtube");
+    }
+}
+
+bool Search::continueRowEnabledForSite(SgSearch::Site s) const {
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    if (!cfg.value("Playback/RememberPosition", true).toBool()) return false; // master off
+    return cfg.value("Search/ShowContinueWatching" + homeSiteSuffix(s), true).toBool();
+}
+
+QList<SearchResult> Search::continueWatchingResults() const {
+    const SgSearch::Site site = currentSite();
+    // Hotlink-protected thumbnail CDNs want the site as Referer (YouTube's don't).
+    const QString referer = (site == SgSearch::Site::PornHub)    ? QStringLiteral("https://www.pornhub.com/")
+                          : (site == SgSearch::Site::Chaturbate) ? QStringLiteral("https://chaturbate.com/")
+                          : QString();
+    QList<SearchResult> out;
+    const auto entries =
+        SgWatchHistory::instance()->continueWatching(historySiteFor(site), kContinueMax);
+    for (const SgWatchHistory::Entry& e : entries) {
+        SearchResult r;
+        r.url       = e.key;
+        r.title     = e.title;
+        r.thumbnail = e.thumbUrl;
+        if (!referer.isEmpty() && !e.thumbUrl.isEmpty()) r.thumbnailReferer = referer;
+        out.append(r);
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,6 +1697,8 @@ void Search::openChannel(const QString& channelUrl, const QString& name) {
 void Search::openChannelUrl(const QString& channelUrl, const QString& label) {
     if (!m_search) return;
     m_homeLoading = false; m_homeQueue.clear(); // opening a channel supersedes a home build
+    // Continue Watching is home-only; opening a channel returns to the Videos filter.
+    if (m_filterMode == FilterMode::ContinueWatching) { m_filterMode = FilterMode::Videos; updatePillChecked(); }
     setViewMode(ViewMode::Channel);
     queryBar->setCurrentText(label); // address-bar shows where you are
     clearResults();

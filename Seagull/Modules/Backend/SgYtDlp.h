@@ -51,6 +51,12 @@ public:
 signals:
     void logMessage(const QString& message);
     void progressUpdated(double percentage);
+    // Richer download progress for the Download Manager: percent plus yt-dlp's own speed
+    // ("1.50MiB/s") and ETA ("00:03") strings (either may be empty on a given line).
+    void downloadProgress(double percentage, const QString& speed, const QString& eta);
+    // The output file yt-dlp is writing to, parsed from its Destination/Merger lines, so a
+    // finished download can offer "Open folder". Emitted during a Downloading job.
+    void downloadDestination(const QString& path);
     void finished(bool success);
     void metadataReady(const QString& title, const QString& uploader, const QString& duration,
         const QString& viewCount, const QString& uploadDate, const QString& thumbUrl);
@@ -84,6 +90,11 @@ private slots:
 private:
     void emitProbeResults(const QJsonObject& root); // thumbnail / qualities / live / info
     void processMetadata(const QJsonObject& obj);   // the above + metadataReady + stream resolve
+
+    // Emits logMessage AND mirrors the line into the verbose log (SgLog). Every
+    // internal log point routes through here, so all yt-dlp activity is captured
+    // when verbose logging is on, regardless of which worker produced it.
+    void logLine(const QString& message);
 
     // -J results are cached per URL so a quality switch / replay / re-probe within
     // the TTL is answered locally (no yt-dlp relaunch — the slow part of starting a

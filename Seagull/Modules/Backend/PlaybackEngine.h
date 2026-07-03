@@ -32,7 +32,7 @@ public:
 
     // Load methods set the media but don't start playback, so callers keep the
     // small "settle then play" delay the UI relies on. Call play() after.
-    void loadLocalFile(const QString& path);
+    void loadLocalFile(const QString& path, qint64 startMs = 0);
     void loadStream(const QUrl& videoUrl, const QUrl& audioUrl, qint64 startMs,
         const QString& referer = QString());
     void reloadLastMedia();           // stop + re-arm the last media (for replay)

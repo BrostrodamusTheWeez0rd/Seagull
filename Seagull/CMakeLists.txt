@@ -41,6 +41,8 @@ add_executable(Seagull
     Modules/UI/Search.cpp
     Modules/UI/Settings.h
     Modules/UI/Settings.cpp
+    Modules/UI/DownloadManager.h
+    Modules/UI/DownloadManager.cpp
     Modules/UI/EQ.h
     Modules/UI/EQ.cpp
     Modules/UI/SetupDialog.h
@@ -52,6 +54,8 @@ add_executable(Seagull
     Modules/UI/Widgets/PlayerTitleBar.h
     Modules/UI/Widgets/VideoCard.cpp
     Modules/UI/Widgets/VideoCard.h
+    Modules/UI/Widgets/DownloadRow.cpp
+    Modules/UI/Widgets/DownloadRow.h
     Modules/UI/Widgets/UpdateDialog.cpp
     Modules/UI/Widgets/UpdateDialog.h
     Modules/UI/Widgets/FlowLayout.cpp
@@ -82,6 +86,10 @@ add_executable(Seagull
     Modules/Backend/SgPaths.cpp
     Modules/Backend/SgFavorites.h
     Modules/Backend/SgFavorites.cpp
+    Modules/Backend/SgWatchHistory.h
+    Modules/Backend/SgWatchHistory.cpp
+    Modules/Backend/SgDownloadHistory.h
+    Modules/Backend/SgDownloadHistory.cpp
     Modules/Backend/SgThumbnailer.h
     Modules/Backend/SgThumbnailer.cpp
     Modules/Backend/SgUpdater.h
@@ -96,6 +104,8 @@ add_executable(Seagull
     Modules/Backend/SgMediaControls.cpp
     Modules/Backend/SgAppUpdate.h
     Modules/Backend/SgAppUpdate.cpp
+    Modules/Backend/SgLog.h
+    Modules/Backend/SgLog.cpp
     resources.qrc
     app.rc
 )

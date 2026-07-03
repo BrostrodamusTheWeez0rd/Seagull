@@ -63,10 +63,11 @@ QStringList SgOptions::buildDownloadArgs(const QString& url) {
 QStringList SgOptions::cookieArgs() {
     QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     const QString choice = settings.value("Streaming/CookiesBrowser", "None").toString();
-    if (choice.isEmpty() || choice == "None") return {};
-    // The combo labels map straight to yt-dlp's browser keywords once lowercased
-    // (Firefox -> firefox, Chrome -> chrome, Edge -> edge, Brave -> brave).
-    return { "--cookies-from-browser", choice.toLower() };
+    // Firefox is the only supported source: yt-dlp reads its cookie store reliably, while
+    // Chromium browsers encrypt theirs in a way it can't read on current Windows builds.
+    // Anything else (None, or a stale Chrome/Edge/Brave value) means no cookies.
+    if (choice.compare("Firefox", Qt::CaseInsensitive) != 0) return {};
+    return { "--cookies-from-browser", "firefox" };
 }
 
 int SgOptions::defaultStreamHeight() {

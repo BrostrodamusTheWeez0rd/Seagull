@@ -66,7 +66,16 @@ public:
     // root object yields the channel header (name, avatar, subscribers); the
     // entries are normal video results. Answers on channelVideosReady. Paging
     // works like search: call again with a larger limit.
-    void fetchChannelVideos(const QString& channelUrl, int limit = 30);
+    // shorts=true targets the channel's /shorts tab instead of /videos. PornHub channels
+    // ignore it (no shorts). The home feed's Shorts mode uses fetchChannelShorts (below)
+    // instead, since yt-dlp can't list a channel's /shorts tab reliably.
+    void fetchChannelVideos(const QString& channelUrl, int limit = 30, bool shorts = false);
+
+    // Home-feed Shorts: pull up to `limit` Shorts for one favourite channel by
+    // searching its name (yt-dlp can't list a channel's /shorts tab reliably), tagging
+    // each result with the channel's name/url. Reuses the Shorts search API path but
+    // answers on channelVideosReady, so the home build consumes it exactly like /videos.
+    void fetchChannelShorts(const QString& channelUrl, const QString& channelName, int limit);
 
     void cancel();
 
@@ -94,6 +103,9 @@ private:
     void startShortsSearch(const QString& query, int limit);
     void fetchShortsPage();
     void handleShortsReply();
+    // Finish a Shorts pull: emit resultsReady (live search) or, in home mode, tag the
+    // results with the favourite's name/url and emit channelVideosReady instead.
+    void emitShortsDone();
     void fetchChannelSearchPage();
     void handleChannelSearchReply();
     static void collectObjects(const QJsonValue& v, const QString& key,
@@ -138,6 +150,12 @@ private:
     QString                m_shortsContinuation;  // next-page token, empty = none yet/exhausted
     bool                   m_shortsExhausted = false;
     int                    m_shortsLimit = 20;
+    // Home-feed mode for the Shorts path: when set, the pull is one favourite channel's
+    // Shorts for the landing feed, so it answers on channelVideosReady (tagged with the
+    // channel name/url below) rather than the live-view resultsReady.
+    bool                   m_shortsHome = false;
+    QString                m_shortsHomeUrl;
+    QString                m_shortsHomeName;
 
     // Channel search state (YouTube internal API path, single page, cached per query).
     QNetworkReply*         m_channelReply = nullptr;

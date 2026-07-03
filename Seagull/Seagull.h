@@ -16,6 +16,7 @@
 #include "Modules/UI/MediaLibrary.h"
 #include "Modules/UI/Search.h"
 #include "Modules/UI/Settings.h"
+#include "Modules/UI/DownloadManager.h"
 #include "Modules/UI/EQ.h"
 #include "Modules/Backend/SgYtDlp.h"
 #include "Modules/Backend/SgSearch.h"
@@ -53,10 +54,6 @@ private:
     // Library = the card-grid media library; Explorer = the file-manager tab.
     enum class ActiveSource { None, Library, Explorer, Queue, Search };
 
-    // Sequential downloader for ad-hoc downloads (e.g. Search cards). Files land in
-    // the library; the Library tab shows a spinner while the queue drains.
-    void pumpDownloads();
-
     // Brief seagull on the Library tab once a recording/clip is saved + playable.
     void flashLibraryTab();
 
@@ -74,6 +71,7 @@ private:
     FileExplorer* explorerModule;  // the file-manager tab (was "Library")
     Search* searchModule;
     Settings* settingsModule;
+    DownloadManager* downloadManagerModule; // the Downloads tab (owns the ad-hoc download FIFO)
     EQ* eqModule;                  // 10-band equalizer (per-kind presets); embedded as the Settings "Audio" page
     QTextBrowser* descriptionView; // the dynamic "Description" tab's page
     QTextBrowser* commentsView;    // the dynamic "Comments" tab's page (opens right of Description)
@@ -246,8 +244,6 @@ private:
     // thread instead of letting it idle for the whole session.
     void shutdownUpdater();
 
-    QStringList m_downloadQueue; // pending ad-hoc download URLs (FIFO)
-    bool        m_downloading = false;
     bool        m_setupActive = false; // first-run dialog owns the updater right now
 
     // The tool updater does slow, blocking work (network fetches, hashing, unzip),

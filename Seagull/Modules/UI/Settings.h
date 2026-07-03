@@ -92,6 +92,7 @@ private:
 
     // General Tab elements
     QCheckBox* autoUpdateCheck;  // install tool updates silently vs ask first
+    QCheckBox* rememberPositionCheck; // remember playback position (resume where you left off)
     QPushButton* checkUpdatesBtn; // General "Check Now" -> manual app update check
     QPushButton* defenderExclusionBtn; // add/remove app folder in Defender exclusions (faster cold start)
     bool defenderExcluded = false;     // last known state, drives the button's Add/Remove label
@@ -165,6 +166,10 @@ private:
         QString      shuffleKey;           // randomize toggle: "Search/HomeRandomize<Site>" (empty for Chaturbate)
         QPushButton* shuffleBtn = nullptr; // checked = mix by recency (default); unchecked = favourites order. null for Chaturbate
         int          amountDefault = 5;    // per-site default for the "Max homepage videos" spin
+        QString      continueKey;          // per-site Continue Watching row: "Search/ShowContinueWatching<Site>"
+        QCheckBox*   continueCheck = nullptr; // show this site's Continue Watching row on its home page
+        QString      lazyKey;              // per-site lazy-load toggle: "Search/HomeLazyLoad<Site>" (empty for Chaturbate)
+        QCheckBox*   lazyCheck = nullptr;  // scroll-to-load-more on this site's home feed (default off, warn on enable)
     };
     QList<HomePicker> m_homePickers;
     bool m_rebuildingPickers = false; // true while rebuildHomePickers repopulates (suppresses save)

@@ -14,9 +14,11 @@ namespace SgOptions {
     // (or unset) -> -1 (no cap); "1080p" / "2160p (4K)" -> 1080 / 2160.
     int defaultStreamHeight();
 
-    // yt-dlp `--cookies-from-browser <b>` args from the "Streaming/CookiesBrowser"
-    // setting, or empty when it's "None". Authenticated requests are challenged as
-    // a bot far less often. Appended (before the URL) to every yt-dlp invocation.
+    // yt-dlp `--cookies-from-browser firefox` args when the "Streaming/CookiesBrowser"
+    // setting is "Firefox", else empty. Firefox is the only supported source (yt-dlp
+    // can't read Chromium cookie stores on current Windows builds). Authenticated
+    // requests are challenged as a bot far less often. Appended before the URL on every
+    // yt-dlp invocation.
     QStringList cookieArgs();
 
 }

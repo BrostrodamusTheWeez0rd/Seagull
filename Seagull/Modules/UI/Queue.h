@@ -130,6 +130,7 @@ private:
     void    applyHeroPixmap(const QPixmap& pm); // swap the banner for the loaded hero thumbnail
     void    showLoading(const QString& text); // show the fetching message + seagull spinner
     void    hideLoading();                     // hide the message and stop the spinner
+    void    setSealog(bool on);                // enable/disable verbose logging + notify (SEALOG trigger)
 
     // Widgets
     QLabel* banner;

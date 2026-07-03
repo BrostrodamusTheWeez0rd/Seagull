@@ -181,6 +181,9 @@ void Theme::apply(const QString& name) {
         "QToolTip { background-color:%1; color:%2; border:1px solid %3; }"
         "QProgressBar { border:1px solid %3; border-radius:4px; text-align:center; background:%4; }"
         "QProgressBar::chunk { background-color:%5; border-radius:4px; }"
+        // Thin flat loading bar on the Downloads tab header (no border/track/radius).
+        "QProgressBar#tabProgressBar { border:none; background:transparent; }"
+        "QProgressBar#tabProgressBar::chunk { background-color:%5; border-radius:0; }"
         "QLabel#metaUploader, QLabel#metaStats { color:%6; }"
         "QTextEdit#logConsole { background-color:%4; color:%6; }"
         // Tabs: outlined tiles with rounded tops. Unselected sit in the alt
@@ -220,6 +223,16 @@ void Theme::apply(const QString& name) {
         "QFrame#searchStatusPill { background-color:%2; border:1px solid %3; border-radius:14px; }"
         "QLabel#searchStatus { background:transparent; color:%4; }"
         "QFrame#searchSeparator { background-color:%3; border:none; min-height:1px; max-height:1px; }"
+        // Download Manager: the outer list box and each download row (a rounded themed
+        // tile, hover-accented like the search cards). Row buttons match the card buttons.
+        "QScrollArea#downloadList, QWidget#downloadListHost { background-color:%1; border:none; }"
+        "QFrame#downloadRow { background-color:%1; border:1px solid %3; border-radius:12px; }"
+        "QFrame#downloadRow:hover { border:1px solid %5; }"
+        "QLabel#downloadRowThumb { background-color:%2; color:%7; border-radius:8px; }"
+        "QLabel#downloadRowTitle { color:%4; background:transparent; font-weight:600; }"
+        "QLabel#downloadRowStatus { background:transparent; font-weight:600; }"
+        "QPushButton#downloadRowButton { background-color:%2; color:%4; border:1px solid %3; border-radius:8px; padding:4px 10px; }"
+        "QPushButton#downloadRowButton:hover { background-color:%5; color:%6; border:1px solid %5; }"
     ).arg(c.base.name(), c.alt.name(), c.border.name(), c.text.name(),
           c.accent.name(), c.accentText.name(), c.subtext.name());
 

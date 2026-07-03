@@ -15,6 +15,7 @@ class QSpinBox;
 class QPropertyAnimation;
 class QLabel;
 class QMovie;
+class QProgressBar;
 class QMenu;
 class QKeyEvent;
 class QResizeEvent;
@@ -73,11 +74,23 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
 
     void addTab(QWidget* tab, const QString& label);
+    // Reorder the docked tabs to match the user's saved left-to-right order (persisted by
+    // saveOpenTabs as Tabs/Order). Called at startup after all tabs are in place, before
+    // restoreActiveTab. No-op on a fresh config (keeps the registration/default order).
+    void applyStoredTabOrder();
+    // Re-select the tab the user last had open (persisted by saveOpenTabs). Called by
+    // the orchestrator at startup, after the base + duplicate tabs are all in place.
+    void restoreActiveTab();
     void setVideoPlayer(VideoPlayer* player); // host the player in the splitter
 
     // Show/hide an animated spinner on a tab's header (e.g. Library while a
-    // download runs). Identified by the page widget so it survives tab reordering.
+    // recording lands). Identified by the page widget so it survives tab reordering.
     void setTabBusy(QWidget* tab, bool busy);
+
+    // Show a thin determinate progress bar along the bottom of a tab's header (the
+    // Downloads tab while a download runs). percent 0-100 sets/updates it; percent < 0
+    // clears it. Identified by the page widget, like setTabBusy.
+    void setTabProgress(QWidget* tab, double percent);
 
     // Dynamic tabs: pages that come and go with app state (e.g. the playing
     // video's Description). They sit at the end of the bar, close like any tab,
@@ -203,6 +216,8 @@ private:
     QHash<QWidget*, QToolButton*> m_closeButtons; // open tab wrapper -> its manual close x
     QLabel* m_tabSpinner = nullptr;       // busy spinner shown in place of the busy tab's x
     QMovie* m_tabSpinnerMovie = nullptr;  // the seagull animation driving m_tabSpinner
+    QProgressBar* m_tabProgress = nullptr; // thin progress bar along the bottom of a tab header
+    QWidget* m_progressTab = nullptr;      // page whose tab currently shows m_tabProgress, if any
     QToolButton* m_plusBtn = nullptr;      // "+" corner button (reopen menu)
     QToolButton* m_autoplayBtn = nullptr;  // autoplay toggle, between "+" and Share
     bool         m_autoplayEnabled = true;
@@ -224,6 +239,7 @@ private:
     QWidget* m_settlingWrapper = nullptr; // tab whose x is mid slide-home (skip in positioning)
     QPointer<QPropertyAnimation> m_settleAnim; // the running slide-home animation, if any
     QWidget* m_busyTab = nullptr;         // page currently showing the spinner, if any
+    bool m_applyingOrder = false;         // true while applyStoredTabOrder reorders (suppress the tabMoved save)
     VideoPlayer* videoPlayer = nullptr; // hosted; owned by the widget tree
     PlayerWindow* m_playerPopout = nullptr; // the floating player window, when popped out
     bool m_wasMaximized = false;        // window state before going fullscreen

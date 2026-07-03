@@ -59,7 +59,8 @@ public:
 signals:
     void playRequested(const QUrl& url, const QString& title);
     void queueRequested(const QUrl& url, const QString& title);
-    void downloadRequested(const QUrl& url, const QString& title);
+    // Carries the thumbnail too, so the Download Manager can show it on the row.
+    void downloadRequested(const QUrl& url, const QString& title, const QString& thumbUrl);
     // The uploader name (video card) or "View Channel" (channel card) was clicked.
     void channelRequested(const QString& channelUrl, const QString& channelName);
     // The card was clicked while selection mode was armed (its selected state just flipped).
@@ -80,6 +81,10 @@ private:
     void updateStarIcon(bool favorited);
 
     void toggleSelected(); // called by the overlay on click; flips + emits selectionToggled
+
+    // Paint the watched indicator (bottom progress bar + dim when finished) from the
+    // card's SgWatchHistory entry. Re-run whenever watch progress changes.
+    void refreshWatchState();
 
     class SelectionOverlay; // full-card selection layer (defined in the .cpp)
 

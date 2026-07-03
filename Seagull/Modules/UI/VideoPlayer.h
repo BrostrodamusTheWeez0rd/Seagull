@@ -200,6 +200,16 @@ private:
     void onPlaybackError();
     void showStreamFailed(); // pin the "stream failed — replay" message + ended mode
     void closePlayer();
+
+    // Watch history / resume-from-where-you-left-off (SgWatchHistory).
+    // currentWatchKey() is the stable id for the loaded media (page URL for a
+    // stream, file path for a local file; empty for photos / nothing / live).
+    // saveWatchProgress() snapshots the current position — called on every
+    // transition away from the media (pause / stop / EOF / close / new media).
+    QString currentWatchKey() const;
+    void    saveWatchProgress(bool atEnd = false); // atEnd forces a "finished" record (EOF)
+    static bool rememberPositionEnabled();         // Settings: Playback/RememberPosition (default on)
+
     void applyEqualizerForCurrentKind(); // load + apply Eq/<Audio|Video>/* for m_kind on play
     void applyNormalizationForCurrentKind(); // load + apply Eq/<kind>/NormEnabled for m_kind on play
 
@@ -279,6 +289,13 @@ private:
     QString currentVideoTitle;
     QString lastRequestedFormatId;
     qint64  savedStreamTimestamp = -1;
+
+    // Resume: a saved position (ms) staged when new media starts and consumed once
+    // playback loads (into loadStream's / loadLocalFile's start-time). -1 = none.
+    qint64  m_pendingResumeMs = -1;
+    // Last resolved thumbnail URL for the playing media, stored alongside its
+    // watch-history entry so the Continue Watching card has artwork.
+    QString m_lastThumbUrl;
 
     // The resolved stream URLs currently feeding VLC — handed to the recorder so it
     // captures the exact same (ad-free, for Twitch) stream. For Twitch this is the

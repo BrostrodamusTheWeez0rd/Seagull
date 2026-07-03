@@ -1,6 +1,7 @@
 #include "VideoCard.h"
 #include "../../Backend/SgFavorites.h"
 #include "../../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
+#include "../../Backend/SgWatchHistory.h" // watched indicator (progress bar + dim)
 
 #include <QDateTime>
 #include <QEvent>
@@ -73,6 +74,13 @@ public:
 
     QSize minimumSizeHint() const override { return QSize(40, 23); }
 
+    // Watch state (from SgWatchHistory), painted over the thumbnail: a themed progress
+    // bar hugging the bottom edge (width = fraction watched), and a dim wash when the
+    // item is finished. frac < 0 clears it. Set by VideoCard::refreshWatchState.
+    void setWatchProgress(double frac, bool completed) {
+        m_watchFrac = frac; m_watchDone = completed; update();
+    }
+
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
@@ -92,19 +100,41 @@ protected:
                 const int s = qMax(16, qMin(r.width(), r.height()) / 2);
                 const QRect ir(r.center().x() - s / 2, r.center().y() - s / 2, s, s);
                 p.drawPixmap(ir, m_placeholderIcon);
-                return;
+            } else {
+                p.setPen(palette().color(QPalette::PlaceholderText));
+                QFont f = p.font();
+                f.setPixelSize(qMax(12, r.height() / 3));
+                p.setFont(f);
+                p.drawText(r, Qt::AlignCenter, m_placeholder);
             }
-            p.setPen(palette().color(QPalette::PlaceholderText));
-            QFont f = p.font();
-            f.setPixelSize(qMax(12, r.height() / 3));
-            p.setFont(f);
-            p.drawText(r, Qt::AlignCenter, m_placeholder);
-            return;
+        } else {
+            p.drawPixmap(r, m_rounded); // scaled from the reference render
         }
-        p.drawPixmap(r, m_rounded); // scaled from the reference render
+        paintWatchOverlay(p, r);
     }
 
 private:
+    // Dim wash (finished) + bottom progress bar, clipped to the thumbnail's rounding
+    // so it never spills past the rounded corners.
+    void paintWatchOverlay(QPainter& p, const QRect& r) {
+        if (m_watchFrac < 0.0) return;
+        const double frac = qBound(0.0, m_watchDone ? 1.0 : m_watchFrac, 1.0);
+        const int radius = qMax(4, kRefRadius * r.height() / kRefThumbH);
+        QPainterPath clip;
+        clip.addRoundedRect(r, radius, radius);
+        p.save();
+        p.setClipPath(clip);
+        if (m_watchDone) p.fillRect(r, QColor(0, 0, 0, 90)); // "already watched" dim
+        const int barH = qMax(3, r.height() / 20);
+        const QRect track(r.left(), r.bottom() - barH + 1, r.width(), barH);
+        p.fillRect(track, QColor(0, 0, 0, 130));             // subtle track for contrast
+        const int fillW = int(r.width() * frac);
+        if (fillW > 0)
+            p.fillRect(QRect(track.left(), track.top(), fillW, barH),
+                       palette().color(QPalette::Highlight)); // themed fill
+        p.restore();
+    }
+
     // Render once: scale to cover, centre-crop to 16:9, round the corners.
     static QPixmap roundedReference(const QPixmap& src) {
         const QSize sz(kRefThumbW, kRefThumbH);
@@ -127,6 +157,8 @@ private:
     QPixmap m_rounded; // rounded render at reference size
     QString m_placeholder = QStringLiteral("…");
     QPixmap m_placeholderIcon; // optional SVG glyph (channel avatar fallback)
+    double  m_watchFrac = -1.0; // -1 = no watch state; else 0..1 fraction watched
+    bool    m_watchDone = false; // finished -> dim + full bar
 };
 
 // Full-card selection layer used only in the Library's delete mode. While shown it
@@ -344,12 +376,46 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
             };
         if (buttons & PlayButton)     addButton(playLabel.isEmpty() ? QStringLiteral("▶ Play") : playLabel, &VideoCard::playRequested);
         if (buttons & QueueButton)    addButton("Queue", &VideoCard::queueRequested);
-        if (buttons & DownloadButton) addButton("Download", &VideoCard::downloadRequested);
+        if (buttons & DownloadButton) {
+            // Download carries the thumbnail (3 args), so it can't share the 2-arg emitter.
+            auto* b = new QPushButton("Download", this);
+            b->setObjectName("videoCardButton");
+            b->setCursor(Qt::PointingHandCursor);
+            btnRow->addWidget(b, 1);
+            connect(b, &QPushButton::clicked, this, [this]() {
+                emit downloadRequested(QUrl(m_result.url), m_result.title, m_result.thumbnail);
+            });
+        }
     }
     lay->addLayout(btnRow);
 
     setCardWidth(cardWidth);
     if (nam) loadThumbnail(nam);
+
+    // Watched indicator: reflect this item's watch progress now, and keep it live as
+    // the user watches (finishing a video dims its card the next time it's on screen).
+    refreshWatchState();
+    connect(SgWatchHistory::instance(), &SgWatchHistory::changed,
+            this, &VideoCard::refreshWatchState);
+}
+
+void VideoCard::refreshWatchState() {
+    if (!m_thumb) return;
+    // Channel tiles aren't watchable; never mark them.
+    if (m_result.isChannel) { m_thumb->setWatchProgress(-1.0, false); return; }
+    // Normalise to the same key the player stores: local files are keyed by their
+    // plain path (toLocalFile), but library cards carry the file:/// URL string.
+    const QUrl u(m_result.url);
+    const QString key = u.isLocalFile() ? u.toLocalFile() : m_result.url;
+    SgWatchHistory* hist = SgWatchHistory::instance();
+    if (!key.isEmpty() && hist->hasEntry(key)) {
+        const SgWatchHistory::Entry e = hist->entry(key);
+        const double frac = e.durationMs > 0
+            ? double(e.positionMs) / double(e.durationMs) : 0.0;
+        m_thumb->setWatchProgress(frac, e.completed);
+    } else {
+        m_thumb->setWatchProgress(-1.0, false); // unwatched -> no bar, no dim
+    }
 }
 
 void VideoCard::setThumbnail(const QPixmap& pm) {

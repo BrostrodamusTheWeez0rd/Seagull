@@ -2,6 +2,8 @@
 #include "../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP fallback)
 #include "../Backend/SgYtDlp.h"
 #include "../Backend/SgPaths.h"
+#include "../Backend/SgLog.h"
+#include <QProcess>
 #include <QFont>
 #include <QPixmap>
 #include <QHeaderView>
@@ -686,6 +688,11 @@ void Queue::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl& aud
 
 void Queue::onUrlTextChanged(const QString& text) {
     if (text == "Bdev") { logConsole->setVisible(!logConsole->isVisible()); urlInput->clear(); return; }
+    // Hidden support trigger: "SEALOG" toggles verbose diagnostic logging to a text
+    // file the user can send in. It captures every yt-dlp command + output line, the
+    // other backend workers, and Qt debug/warnings, and persists across restarts so a
+    // startup bug is caught from the first line too. A modal reports the new state.
+    if (text == "SEALOG") { setSealog(!SgLog::instance().isEnabled()); return; }
     // Any edit invalidates a still-loading thumbnail from the previous link and
     // restores the banner until a new thumbnail is fetched.
     m_currentThumbUrl.clear();
@@ -964,6 +971,24 @@ void Queue::hideLoading() {
     loadingLabel->hide();
     if (m_loadingSpinner) m_loadingSpinner->hide();
     if (m_loadingMovie) m_loadingMovie->stop();
+}
+
+void Queue::setSealog(bool on) {
+    SgLog& lg = SgLog::instance();
+    lg.setEnabled(on);
+    urlInput->clear();
+    if (on) {
+        const QString path = QDir::toNativeSeparators(lg.filePath());
+        QMessageBox::information(this, "Verbose Logging Active",
+            "Verbose logging is now ACTIVE.\n\nA detailed log is being written to:\n" + path +
+            "\n\nReproduce the issue, then send that file over. It stays on across restarts. "
+            "Type SEALOG again to deactivate it.");
+        // Reveal the file in Explorer so it's easy to find and attach.
+        QProcess::startDetached("explorer.exe", { QStringLiteral("/select,"), path });
+    } else {
+        QMessageBox::information(this, "Verbose Logging Deactivated",
+            "Verbose logging is now DEACTIVATED.");
+    }
 }
 
 void Queue::handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {

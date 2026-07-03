@@ -3,6 +3,7 @@
 #include "../Backend/SgYtDlp.h"          // StreamOption
 #include "../Backend/SgThumbnailer.h"    // decodeViaFfmpeg (WebP fallback)
 #include "../Backend/SgPaths.h"
+#include "../Backend/SgWatchHistory.h"  // resume-from-where-you-left-off
 #include "Widgets/PlayerControls.h"
 #include "Widgets/PlayerTitleBar.h"
 #include "Widgets/Visualizer.h"
@@ -81,6 +82,9 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(engine, &PlaybackEngine::paused, this, [this]() {
         if (visualizer) visualizer->setPaused(true); // freeze the sky/sea while paused
         emit smtcStateChanged(2); // SMTC: Paused
+        // NB: we deliberately do NOT record progress on pause — a pause can happen many
+        // times mid-watch. Continue Watching is only updated on EXIT (stop / close / X /
+        // end / switching media), where saveWatchProgress() captures the live position.
         });
     connect(engine, &PlaybackEngine::errorOccurred, this, &VideoPlayer::onPlaybackError);
 
@@ -335,6 +339,9 @@ void VideoPlayer::onMediaEndReached() {
         return;
     }
 
+    // Played to the end — record it finished so it drops off Continue Watching.
+    saveWatchProgress(/*atEnd*/true);
+
     // The track ended: if the visualizer is up and the setting allows, send the
     // gulls into their dramatic spin-and-fall (otherwise they keep flying).
     if (m_visualizerActive && visualizer && m_killGullsOnEnd) visualizer->triggerDeath();
@@ -360,10 +367,12 @@ void VideoPlayer::onMediaEndReached() {
 }
 
 void VideoPlayer::playLocalFile(const QUrl& url) {
+    saveWatchProgress();     // checkpoint the OUTGOING media before we overwrite its state
     setMediaKind(kindForLocalFile(url));
     if (m_kind == MediaKind::Photo) { openPhoto(url); return; } // still image — no VLC
 
     stopRecordingIfActive(); // switching media — finalise any recording first
+    m_lastThumbUrl.clear();  // new media — the thumbnailer/probe brings a fresh one
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear();
     m_currentLocalUrl = url; // Record clips the watched range straight from this file
     m_isLive = false;
@@ -392,7 +401,11 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     // cache is keyed on the raw path STRING, so the native (backslash) form
     // would never hit the Library's cached entry and re-run ffmpeg every time.
     emit localPosterRequested(url.toLocalFile());
-    engine->loadLocalFile(nativePath);
+    // Resume from the last watched position for this file, if any (near-complete
+    // and never-really-started items return -1 and start from the top).
+    const qint64 resumeMs = rememberPositionEnabled()
+        ? SgWatchHistory::instance()->resumePosition(url.toLocalFile()) : -1;
+    engine->loadLocalFile(nativePath, resumeMs > 0 ? resumeMs : 0);
 
     QTimer::singleShot(50, this, [this]() {
         engine->play();
@@ -419,8 +432,10 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
 }
 
 void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const QUrl& cdnAudioUrl, const QString& title) {
+    saveWatchProgress();     // checkpoint the OUTGOING media before we overwrite its state
     stopRecordingIfActive(); // switching media — finalise any recording first
     m_recordVideoUrl.clear(); m_recordAudioUrl.clear(); m_currentLocalUrl.clear();
+    m_lastThumbUrl.clear();  // new media — the probe/resolve brings a fresh thumbnail
 
     // SoundCloud is audio-only — show the artwork poster instead of a black frame.
     setMediaKind(rawUrl.host().contains(QStringLiteral("soundcloud.com"), Qt::CaseInsensitive)
@@ -480,6 +495,11 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     currentBaseUrl = rawUrl;
     currentVideoTitle = title;
 
+    // Stage a resume position for this page (consumed by onStreamUrlReady once the
+    // CDN resolves). Live streams never have a stored position, so this is -1 there.
+    m_pendingResumeMs = rememberPositionEnabled()
+        ? SgWatchHistory::instance()->resumePosition(rawUrl.toString()) : -1;
+
     if (cdnVideoUrl.isValid() && !cdnVideoUrl.isEmpty()) {
         // CDN already resolved (Queue prefetch): probe only fills the quality menu /
         // thumbnail / info, and we start the provided stream straight away.
@@ -501,6 +521,7 @@ void VideoPlayer::handleStopRequest() {
     // stop with nothing loaded): tear the player down and release the media.
     if (!m_stopped && engine->hasMedia()) {
         m_stopped = true;
+        saveWatchProgress();     // capture the position before engine->stop() resets the clock
         stopRecordingIfActive();
         retryTimer->stop();
         osdTimer->stop();
@@ -526,6 +547,7 @@ void VideoPlayer::handleStopRequest() {
 
 void VideoPlayer::onThumbnailResolved(const QString& thumbUrl) {
     if (thumbUrl.isEmpty()) return;
+    m_lastThumbUrl = thumbUrl; // remembered for this media's Continue Watching card
     QNetworkRequest req((QUrl(thumbUrl)));
     req.setRawHeader("User-Agent", "Seagull-Player");
     // Hotlink-protected CDNs (phncdn etc.) want the page URL as Referer.
@@ -663,6 +685,7 @@ void VideoPlayer::closePlayer() {
     updateOverlayTimer->stop();
     if (playerControls) { playerControls->stopPolling(); playerControls->setEndedMode(false); }
     m_fetching = false;
+    saveWatchProgress();    // final checkpoint before we release the media (clock resets)
     m_stopped = false;
     engine->releaseMedia(); // stop AND unload — space bar must not resurrect it
     hidePosterOverlay();
@@ -683,6 +706,44 @@ void VideoPlayer::closePlayer() {
     m_visualizerActive = false;
     if (visualizer) visualizer->hide();
     emit closed(); // host hides the video area + leaves fullscreen
+}
+
+QString VideoPlayer::currentWatchKey() const {
+    if (m_kind == MediaKind::Photo) return QString();           // stills have no resume point
+    if (m_isStreaming)
+        return currentBaseUrl.isEmpty() ? QString() : currentBaseUrl.toString();
+    return (m_currentLocalUrl.isValid() && !m_currentLocalUrl.isEmpty())
+        ? m_currentLocalUrl.toLocalFile() : QString();
+}
+
+bool VideoPlayer::rememberPositionEnabled() {
+    QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
+    return cfg.value("Playback/RememberPosition", true).toBool();
+}
+
+void VideoPlayer::saveWatchProgress(bool atEnd) {
+    if (!engine || !engine->hasMedia()) return;
+    if (!rememberPositionEnabled()) return;        // user turned resume/history off
+    if (m_isLive) return;                          // live streams have no meaningful resume
+    // A real position only exists while Playing/Paused. Once the engine is stopped or
+    // ended the clock reads ~0, so skip (except the forced EOF record) — this keeps a
+    // second Stop press or a post-stop teardown from clobbering the saved position.
+    if (!atEnd) {
+        const auto st = engine->state();
+        if (st != PlaybackEngine::State::Playing && st != PlaybackEngine::State::Paused) return;
+    }
+    const QString key = currentWatchKey();
+    if (key.isEmpty()) return;
+    const qint64 dur = engine->length();
+    if (dur <= 0) return;                          // unknown length — SgWatchHistory ignores it anyway
+    // At EOF, VLC's clock can already be draining back toward 0; force the position
+    // to the end so the entry is recorded as finished (drops off Continue Watching).
+    const qint64 pos = atEnd ? dur : engine->time();
+    QString title = currentVideoTitle;
+    if (title.isEmpty() && !m_isStreaming)
+        title = QFileInfo(m_currentLocalUrl.toLocalFile()).completeBaseName();
+    SgWatchHistory::instance()->record(key, title, pos, dur, !m_isStreaming,
+                                       static_cast<int>(m_kind), m_lastThumbUrl);
 }
 
 void VideoPlayer::onSingleClickTimeout() {
@@ -1115,7 +1176,12 @@ void VideoPlayer::onStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl) {
     m_recordVideoUrl = videoUrl;
     m_recordAudioUrl = audioUrl;
 
-    const qint64 startMs = (savedStreamTimestamp > 0) ? savedStreamTimestamp : 0;
+    // Priority: a quality-switch timestamp (mid-playback) wins; otherwise a staged
+    // resume position from watch history; otherwise start from the top.
+    qint64 startMs = 0;
+    if (savedStreamTimestamp > 0)      startMs = savedStreamTimestamp;
+    else if (m_pendingResumeMs > 0)    startMs = m_pendingResumeMs;
+    m_pendingResumeMs = -1; // consumed — an auto-advance/re-resolve must not re-seek
     // Pass the page URL as Referer so hotlink-protected CDNs accept the stream.
     engine->loadStream(videoUrl, audioUrl, startMs, currentBaseUrl.toString());
     savedStreamTimestamp = -1;

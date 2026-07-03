@@ -5,6 +5,7 @@
 #include "Modules/Backend/SgFavorites.h"
 #include "Modules/Backend/SgPaths.h"
 #include "Modules/Backend/SgThumbnailer.h"
+#include "Modules/Backend/SgLog.h"
 #include <QApplication>
 #include <QSettings>
 #include <QCoreApplication>
@@ -151,11 +152,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     explorerModule = new FileExplorer(spellChecker);
     queueModule = new Queue(downloaderWorker, resolverWorker, prefetcherWorker);
     searchModule = new Search(searchWorker, spellChecker);
+    downloadManagerModule = new DownloadManager(downloadWorker);
     settingsModule = new Settings();
     eqModule = new EQ();
 
     mainWindow->addTab(libraryModule, "Library");
     mainWindow->addTab(explorerModule, "File Explorer");
+    mainWindow->addTab(downloadManagerModule, "Downloads");
     mainWindow->addTab(queueModule, "Queue");
     mainWindow->addTab(searchModule, "Search");
     mainWindow->addTab(settingsModule, "Settings");
@@ -516,18 +519,28 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
             searchModule->clearSearchHistory();
         });
 
-    // Each finished ad-hoc download advances the FIFO; the Library spinner stays up
-    // until the queue drains.
-    connect(downloadWorker, &SgYtDlp::finished, this, [this](bool /*ok*/) {
-        if (!m_downloadQueue.isEmpty()) m_downloadQueue.removeFirst();
-        m_downloading = false;
-        if (!m_downloadQueue.isEmpty()) pumpDownloads();
-        else mainWindow->setTabBusy(libraryModule, false);
+    // The Download Manager owns the ad-hoc download FIFO now; mirror its activity onto its
+    // own tab header (a progress bar while downloading, cleared when the queue drains) and
+    // reveal a finished file in Explorer on request.
+    connect(downloadManagerModule, &DownloadManager::activity, this, [this](bool busy, double pct) {
+        mainWindow->setTabProgress(downloadManagerModule, busy ? qMax(0.0, pct) : -1.0);
+    });
+    connect(downloadManagerModule, &DownloadManager::openFileRequested, this,
+        [](const QString& path) {
+            if (path.isEmpty()) return;
+            QProcess::startDetached("explorer.exe",
+                { QStringLiteral("/select,"), QDir::toNativeSeparators(path) });
         });
 
     // Surface the search/download workers' logs in the same dev console as the rest.
     connect(searchWorker, &SgSearch::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
     connect(downloadWorker, &SgYtDlp::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+
+    // Mirror the non-yt-dlp backends into the verbose log too (the yt-dlp workers
+    // self-log via SgYtDlp::logLine; SgSearch/SgRecorder/SgUpdater don't, so tap
+    // them here). No-ops when verbose logging is off.
+    connect(searchWorker, &SgSearch::logMessage, this,
+        [](const QString& m) { SgLog::instance().log(QStringLiteral("search"), m); });
 
     // Any worker that hits a bot-check / throttling block warns the user (debounced).
     // Queued so the modal opens from the event loop, not re-entrantly inside the
@@ -726,6 +739,8 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
         if (ok && !file.isEmpty()) flashLibraryTab(); // the clip is on disk + playable
         }, Qt::QueuedConnection);
     connect(recorder, &SgRecorder::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+    connect(recorder, &SgRecorder::logMessage, this,
+        [](const QString& m) { SgLog::instance().log(QStringLiteral("recorder"), m); });
 
     // --- Tool auto-update, off the main thread ---
     // Checking and downloading yt-dlp / Deno / ffmpeg means blocking network calls,
@@ -739,6 +754,8 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
 
     // Status lines still show up in the Queue log, hopping back to the UI thread.
     connect(updaterWorker, &SgUpdater::updateStatus, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+    connect(updaterWorker, &SgUpdater::updateStatus, this,
+        [](const QString& m) { SgLog::instance().log(QStringLiteral("updater"), m); }, Qt::QueuedConnection);
 
     // Tear the worker down with its thread.
     connect(updaterThread, &QThread::finished, updaterWorker, &QObject::deleteLater);
@@ -833,12 +850,11 @@ void Seagull::wireSearchTab(Search* s) {
             if (isShort) armShortsPrefetch(s->peekForwardUrls(kShortsLookahead));
             else         clearShortsPrefetch();
         });
-    // Card "Queue" adds to the Queue tab; "Download" goes to the dedicated download
-    // worker's FIFO (files land in the library).
+    // Card "Queue" adds to the Queue tab; "Download" goes to the Download Manager tab, which
+    // owns the ad-hoc download FIFO (files land in the library).
     connect(s, &Search::enqueueRequested, queueModule,
         [this](const QUrl& url, const QString& title) { queueModule->addUrlToQueue(url.toString(), title); });
-    connect(s, &Search::downloadRequested, this,
-        [this](const QUrl& url, const QString& /*title*/) { m_downloadQueue.append(url.toString()); pumpDownloads(); });
+    connect(s, &Search::downloadRequested, downloadManagerModule, &DownloadManager::enqueue);
     // Live "Card size" + the Search settings' "Clear History Now" reach every tab.
     connect(settingsModule, &Settings::cardWidthChanged,      s, &Search::setCardWidth);
     connect(settingsModule, &Settings::clearHistoryRequested, s, &Search::clearSearchHistory);
@@ -860,6 +876,8 @@ void Seagull::openDuplicateTab(const QString& kind, bool switchTo) {
     if (kind == QStringLiteral("Search")) {
         auto* worker = new SgSearch(this);
         connect(worker, &SgSearch::logMessage, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+        connect(worker, &SgSearch::logMessage, this,
+            [](const QString& m) { SgLog::instance().log(QStringLiteral("search"), m); });
         auto* s = new Search(worker, spellChecker);
         m_searchWorkers.insert(s, worker);
         m_searchTabs.append(s);
@@ -906,6 +924,8 @@ void Seagull::ensureUpdater() {
     updaterWorker = new SgUpdater(nullptr);
     updaterWorker->moveToThread(updaterThread);
     connect(updaterWorker, &SgUpdater::updateStatus, downloaderWorker, &SgYtDlp::logMessage, Qt::QueuedConnection);
+    connect(updaterWorker, &SgUpdater::updateStatus, this,
+        [](const QString& m) { SgLog::instance().log(QStringLiteral("updater"), m); }, Qt::QueuedConnection);
     connect(updaterThread, &QThread::finished, updaterWorker, &QObject::deleteLater);
     updaterThread->start();
 }
@@ -934,13 +954,6 @@ Seagull::~Seagull() {
         updaterThread->wait();
     }
     delete mainWindow;
-}
-
-void Seagull::pumpDownloads() {
-    if (m_downloading || m_downloadQueue.isEmpty()) return;
-    m_downloading = true;
-    mainWindow->setTabBusy(libraryModule, true); // spin the Library tab while downloading
-    downloadWorker->download(m_downloadQueue.first());
 }
 
 bool Seagull::eventFilter(QObject* obj, QEvent* event) {
@@ -1082,10 +1095,10 @@ void Seagull::setCommentsStatus(const QString& text, bool busy) {
 
 void Seagull::flashLibraryTab() {
     // Brief seagull on the Library tab: a recording/clip just landed and is playable.
+    // (Downloads spin the Downloads tab now, so nothing else contends for this spinner.)
     mainWindow->setTabBusy(libraryModule, true);
     QTimer::singleShot(4000, this, [this]() {
-        // Don't clear a spinner a still-draining download queue owns.
-        if (m_downloadQueue.isEmpty()) mainWindow->setTabBusy(libraryModule, false);
+        mainWindow->setTabBusy(libraryModule, false);
         });
 }
 
@@ -1358,6 +1371,11 @@ bool Seagull::run() {
     for (const QString& kind : cfg.value("Tabs/ExtraTabs").toStringList())
         openDuplicateTab(kind, false /*switchTo*/);
 
+    // All base + duplicate tabs are in place now — restore the user's saved tab order,
+    // then re-select the one they last had open.
+    mainWindow->applyStoredTabOrder();
+    mainWindow->restoreActiveTab();
+
     finishStartupUpdates(); // release thumbnail holds + shut the updater thread
 
     // Now that the update flow has settled (tool swaps done, yt-dlp.exe stable),
@@ -1545,6 +1563,11 @@ int main(int argc, char* argv[]) {
     // Ensure the Config directory exists even on a clean install (migration above handles
     // upgrades; mkpath is a no-op when the folder is already there).
     QDir().mkpath(SgPaths::configDir());
+
+    // Bring verbose diagnostic logging up before anything else spins up, so a startup
+    // bug is captured from the first line. Off unless the user left it on (SEALOG in
+    // the Queue URL bar toggles it and persists the state).
+    SgLog::instance().initFromConfig();
 
     // Apply the saved theme before any widgets are built so the whole UI is themed.
     QSettings settings(SgPaths::configFile(), QSettings::IniFormat);

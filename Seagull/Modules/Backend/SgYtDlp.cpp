@@ -2,6 +2,7 @@
 #include "SgOptions.h"
 #include "SgHlsProxy.h"
 #include "SgMetaCache.h"
+#include "SgLog.h"
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -53,14 +54,19 @@ SgYtDlp::SgYtDlp(QObject* parent) : QObject(parent) {
 
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
-            emit logMessage("CRITICAL ERROR: Could not find yt-dlp.exe!");
-            emit logMessage("Looked in: " + QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe");
+            logLine("CRITICAL ERROR: Could not find yt-dlp.exe!");
+            logLine("Looked in: " + QCoreApplication::applicationDirPath() + "/tools/yt-dlp.exe");
         }
         });
 }
 
 SgYtDlp::~SgYtDlp() {
     cancel();
+}
+
+void SgYtDlp::logLine(const QString& message) {
+    emit logMessage(message);                          // dev console / UI, as before
+    SgLog::instance().log(QStringLiteral("yt-dlp"), message); // verbose file (no-op when off)
 }
 
 void SgYtDlp::download(const QString& url) {
@@ -82,7 +88,8 @@ void SgYtDlp::download(const QString& url) {
     // where downloaded files land.
     m_process->setWorkingDirectory(QCoreApplication::applicationDirPath() + "/tools");
 
-    emit logMessage("Starting download: " + url);
+    logLine("Starting download: " + url);
+    logLine("CMD: yt-dlp " + args.join(QLatin1Char(' ')));
     m_process->start(exePath, args);
 }
 
@@ -96,7 +103,7 @@ void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& forma
     // from the cached format list and replays skip the whole yt-dlp launch.
     const QJsonObject cached = cachedMetadata(url);
     if (!cached.isEmpty()) {
-        emit logMessage("Metadata cache hit — resolving stream locally: " + url);
+        logLine("Metadata cache hit — resolving stream locally: " + url);
         m_pendingFormatId = formatId;
         processMetadata(cached);
         return;
@@ -123,9 +130,10 @@ void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& forma
     args += SgOptions::cookieArgs();
     args << url;
 
-    emit logMessage("Fetching metadata for: " + url
+    logLine("Fetching metadata for: " + url
         + (formatId.isEmpty() ? QString("  [format: default]")
                               : QString("  [format: %1]").arg(formatId)));
+    logLine("CMD: yt-dlp " + args.join(QLatin1Char(' ')));
     m_process->start(exePath, args);
 }
 
@@ -150,7 +158,8 @@ void SgYtDlp::probeAvailableQualities(const QString& url) {
     args += SgOptions::cookieArgs();
     args << url;
 
-    emit logMessage("Probing qualities for: " + url);
+    logLine("Probing qualities for: " + url);
+    logLine("CMD: yt-dlp " + args.join(QLatin1Char(' ')));
     m_process->start(exePath, args);
 }
 
@@ -189,7 +198,8 @@ void SgYtDlp::fetchPlaylistEntries(const QString& playlistUrl) {
     args += SgOptions::cookieArgs();
     args << playlistUrl;
 
-    emit logMessage("Fetching playlist entries...");
+    logLine("Fetching playlist entries...");
+    logLine("CMD: yt-dlp " + args.join(QLatin1Char(' ')));
     m_process->start(exePath, args);
 }
 
@@ -212,7 +222,8 @@ void SgYtDlp::fetchComments(const QString& url, int maxComments) {
     args += SgOptions::cookieArgs();
     args << url;
 
-    emit logMessage(QString("Fetching up to %1 comments for: %2").arg(maxComments).arg(url));
+    logLine(QString("Fetching up to %1 comments for: %2").arg(maxComments).arg(url));
+    logLine("CMD: yt-dlp " + args.join(QLatin1Char(' ')));
     m_process->start(exePath, args);
 }
 
@@ -242,22 +253,47 @@ void SgYtDlp::handleReadyRead() {
         QString text = QString::fromLocal8Bit(output).trimmed();
         QStringList lines = text.split('\n');
 
+        // Percent, plus optional speed / ETA off the same "[download] 53.2% of 10MiB at
+        // 1.50MiB/s ETA 00:03" line (speed/ETA are absent on the 100% / "already
+        // downloaded" lines, so they're captured optionally).
         static QRegularExpression progressRegex("\\[download\\]\\s+([0-9.]+)\\%");
+        static QRegularExpression speedRegex("at\\s+([0-9.]+\\s*[KMGT]?i?B/s)");
+        static QRegularExpression etaRegex("ETA\\s+([0-9:]+)");
+        // The final output path: "[download] Destination: X", "[Merger] Merging formats
+        // into \"X\"", "[ExtractAudio] Destination: X", or the already-downloaded line.
+        static QRegularExpression destRegex(
+            "(?:Destination:\\s*|Merging formats into \")(.+?)(?:\"|$)");
+        static QRegularExpression alreadyRegex("\\[download\\]\\s+(.+?) has already been downloaded");
 
         for (const QString& line : lines) {
             QString cleanLine = line.trimmed();
             if (cleanLine.isEmpty()) continue;
 
-            emit logMessage(cleanLine);
+            logLine(cleanLine);
 
             QRegularExpressionMatch match = progressRegex.match(cleanLine);
             if (match.hasMatch()) {
-                emit progressUpdated(match.captured(1).toDouble());
-            } else {
-                // Keep the non-progress lines (errors/warnings) so a failed download
-                // can still be classified as a bot/throttle block at the end.
-                processBuffer.append(cleanLine.toLocal8Bit()).append('\n');
+                const double pct = match.captured(1).toDouble();
+                emit progressUpdated(pct);
+                const QString speed = speedRegex.match(cleanLine).captured(1);
+                const QString eta   = etaRegex.match(cleanLine).captured(1);
+                emit downloadProgress(pct, speed, eta);
+                continue;
             }
+
+            // Surface the output file path where yt-dlp announces it (so a finished
+            // download can offer "Open folder"); the line still falls through to the buffer.
+            if (cleanLine.contains("Destination:") || cleanLine.contains("Merging formats into")) {
+                const QString path = destRegex.match(cleanLine).captured(1).trimmed();
+                if (!path.isEmpty()) emit downloadDestination(path);
+            } else if (cleanLine.contains("has already been downloaded")) {
+                const QString path = alreadyRegex.match(cleanLine).captured(1).trimmed();
+                if (!path.isEmpty()) emit downloadDestination(path);
+            }
+
+            // Keep the non-progress lines (errors/warnings) so a failed download can still
+            // be classified as a bot/throttle block at the end.
+            processBuffer.append(cleanLine.toLocal8Bit()).append('\n');
         }
     }
 }
@@ -267,12 +303,12 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
     currentMode = JobMode::Idle;
 
     if (exitStatus == QProcess::CrashExit || exitCode != 0) {
-        emit logMessage("Operation failed (yt-dlp). Code: " + QString::number(exitCode));
+        logLine("Operation failed (yt-dlp). Code: " + QString::number(exitCode));
         // Surface yt-dlp's own error text (merged stdout+stderr) so failures like a
         // broken extractor / age gate are diagnosable instead of silently swallowed.
         const QString errOut = QString::fromLocal8Bit(processBuffer).trimmed();
         if (!errOut.isEmpty())
-            emit logMessage("yt-dlp: " + errOut.right(800));
+            logLine("yt-dlp: " + errOut.right(800));
         // If the source is blocking us (bot challenge / throttling), let the
         // orchestrator warn the user — these aren't fixable by a retry.
         const QString block = classifyBlock(errOut);
@@ -289,7 +325,7 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
     int jsonStart = processBuffer.indexOf('{');
     if (jsonStart == -1) {
-        emit logMessage("No valid JSON found in output.");
+        logLine("No valid JSON found in output.");
         emit finished(false);
         return;
     }
@@ -299,7 +335,7 @@ void SgYtDlp::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
     QJsonDocument doc = QJsonDocument::fromJson(jsonData, &err);
 
     if (err.error != QJsonParseError::NoError || doc.isNull()) {
-        emit logMessage("JSON parse failed: " + err.errorString());
+        logLine("JSON parse failed: " + err.errorString());
         emit finished(false);
         return;
     }
@@ -387,7 +423,7 @@ void SgYtDlp::processMetadata(const QJsonObject& obj) {
     int targetH = wantId.isEmpty() ? SgOptions::defaultStreamHeight()
                                    : SgFormat::heightForFormatId(formats, wantId);
 
-    emit logMessage("Resolving stream [extractor: " + obj["extractor_key"].toString() + "]");
+    logLine("Resolving stream [extractor: " + obj["extractor_key"].toString() + "]");
 
     QString videoUrl, audioUrl;
     if (SgFormat::resolveStream(obj, targetH, videoUrl, audioUrl)) {
@@ -402,13 +438,13 @@ void SgYtDlp::processMetadata(const QJsonObject& obj) {
             if (login.isEmpty()) login = obj["display_id"].toString();
             if (!login.isEmpty()) {
                 videoUrl = m_hlsProxy->proxifyTwitch(login, targetH, QUrl(videoUrl), "https://www.twitch.tv/").toString();
-                emit logMessage("Twitch live: resolving ad-free stream via embed token (login=" + login + ").");
+                logLine("Twitch live: resolving ad-free stream via embed token (login=" + login + ").");
             }
         }
-        emit logMessage(QString("Stream resolved%1: %2")
+        logLine(QString("Stream resolved%1: %2")
             .arg(audioUrl.isEmpty() ? QString() : QString(" (+separate audio)"), videoUrl.left(160)));
         emit streamUrlReady(QUrl(videoUrl), audioUrl.isEmpty() ? QUrl() : QUrl(audioUrl));
     }
     else
-        emit logMessage("No playable stream format found.");
+        logLine("No playable stream format found.");
 }

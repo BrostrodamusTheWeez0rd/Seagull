@@ -126,6 +126,32 @@ void Settings::setupUI() {
         "at startup. When off, Seagull asks before updating.");
     generalLayout->addRow("Auto Update:", autoUpdateCheck);
 
+    rememberPositionCheck = new QCheckBox("Resume videos and audio where I left off");
+    rememberPositionCheck->setToolTip("Remember how far you watched or listened, and pick back up from "
+        "there next time. When off, nothing is remembered and Continue Watching rows stay empty.");
+    generalLayout->addRow("Playback:", rememberPositionCheck);
+    connect(rememberPositionCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
+
+    // Browser cookies: the most effective fix for the "confirm you're not a bot" wall.
+    // When set, yt-dlp reuses that browser's logged-in session so the requests look like
+    // a normal viewer. Off by default; turning it on pops a warning about not using your
+    // main account (see onCookiesBrowserChanged). Firefox only — Chromium browsers encrypt
+    // their cookie store in a way yt-dlp can't read on current Windows builds.
+    cookiesBrowserCombo = new QComboBox();
+    cookiesBrowserCombo->addItems({ "None", "Firefox" });
+    cookiesBrowserCombo->setToolTip(
+        "Reuse Firefox's login to cut down on \"confirm you're not a bot\" errors. "
+        "yt-dlp can read Firefox's cookies reliably; Chromium browsers (Chrome, Edge, "
+        "Brave) encrypt theirs in a way it can't currently read on Windows. Use a spare "
+        "account, never your main one.");
+    generalLayout->addRow("Cookies from browser:", cookiesBrowserCombo);
+
+    deleteCookiesBtn = new QPushButton("Delete Cached Cookie Data");
+    deleteCookiesBtn->setMaximumWidth(220);
+    deleteCookiesBtn->setToolTip("Clears yt-dlp's cache, including any login/session tokens it "
+        "derived from your browser cookies. Use this after turning cookies off to leave nothing behind.");
+    generalLayout->addRow("", deleteCookiesBtn);
+
     checkUpdatesBtn = new QPushButton("Check for Updates");
     checkUpdatesBtn->setToolTip("Check now for a newer version of Seagull.");
     generalLayout->addRow("", checkUpdatesBtn);
@@ -376,25 +402,6 @@ void Settings::setupUI() {
     dlLayout->addRow("Stream Quality:", streamQualityCombo);
     dlLayout->addRow("Recording Type:", recTypeRow);
     dlLayout->addRow("Recording Format:", recFormatCombo);
-
-    // Browser cookies: the most effective fix for the "confirm you're not a bot" wall.
-    // When set, yt-dlp reuses that browser's logged-in session so the requests look like
-    // a normal viewer. Off by default; turning it on pops a warning about not using your
-    // main account (see onCookiesBrowserChanged).
-    cookiesBrowserCombo = new QComboBox();
-    cookiesBrowserCombo->addItems({ "None", "Firefox", "Chrome", "Edge", "Brave" });
-    cookiesBrowserCombo->setToolTip(
-        "Reuse a browser's YouTube login to cut down on \"confirm you're not a bot\" "
-        "errors. Firefox is the most reliable on Windows. Chrome, Edge, and Brave can "
-        "fail to read cookies while the browser is open or due to their cookie "
-        "encryption. Use a spare account, never your main one.");
-    dlLayout->addRow("Cookies from browser:", cookiesBrowserCombo);
-
-    deleteCookiesBtn = new QPushButton("Delete Cached Cookie Data");
-    deleteCookiesBtn->setMaximumWidth(220);
-    deleteCookiesBtn->setToolTip("Clears yt-dlp's cache, including any login/session tokens it "
-        "derived from your browser cookies. Use this after turning cookies off to leave nothing behind.");
-    dlLayout->addRow("", deleteCookiesBtn);
 
     stackedWidget->addWidget(dlWidget);
 
@@ -821,15 +828,60 @@ void Settings::buildHomeSection(QFormLayout* form) {
             connect(shuffleBtn, &QPushButton::toggled, this, &Settings::saveSettings);
         }
 
+        // Per-site "Continue Watching" row toggle. Every site has a home page, so all
+        // three get one. Off hides the row on that site's home; playback position is
+        // still remembered silently (governed by the global Playback toggle).
+        auto* continueCheck = new QCheckBox("Show Continue Watching");
+        continueCheck->setToolTip("Offer a Continue Watching option on this site's home page, "
+                                  "listing videos you've partly watched.");
+        continueCheck->hide();
+        form->addRow(continueCheck);
+        connect(continueCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
+
+        // Lazy-load toggle (video-listing sites only — Chaturbate's live rooms are a fixed
+        // list). Off by default; enabling it makes the home feed keep pulling more from your
+        // favourites as you scroll, which is extra requests, so we warn on the way on.
+        QCheckBox* lazyCheck = nullptr;
+        if (s.hasVideos) {
+            lazyCheck = new QCheckBox("Load more as I scroll");
+            lazyCheck->setToolTip("Keep loading more videos from your favourites as you reach the "
+                                  "bottom of this site's home page. Off by default: it makes repeated "
+                                  "requests, which can trigger rate-limiting or bot checks.");
+            lazyCheck->hide();
+            form->addRow(lazyCheck);
+            connect(lazyCheck, &QCheckBox::toggled, this, [this, lazyCheck](bool on) {
+                if (m_loading) return; // programmatic load: no prompt, no save
+                if (on) {
+                    QMessageBox box(QMessageBox::Warning, "Load more as you scroll",
+                        "This keeps requesting more videos from your favourites every time you "
+                        "reach the bottom of the home page. On sites that watch for automated "
+                        "traffic, those repeated requests can lead to rate-limiting or "
+                        "\"confirm you're not a bot\" checks. Turn it on only if you want a "
+                        "longer home feed and accept that risk.",
+                        QMessageBox::Ok | QMessageBox::Cancel, this);
+                    box.button(QMessageBox::Ok)->setText("Enable anyway");
+                    if (box.exec() != QMessageBox::Ok) {
+                        lazyCheck->blockSignals(true);
+                        lazyCheck->setChecked(false);
+                        lazyCheck->blockSignals(false);
+                        return; // declined: leave it off, nothing to save
+                    }
+                }
+                saveSettings();
+            });
+        }
+
         m_homePickers.append({ s.store, "Search/HomeChannels" + suffix, "Search/HomeAmount" + suffix,
                                s.hasVideos ? ("Search/HomeVideosPerChannel" + suffix) : QString(),
                                list, amountSpin, videosSpin, warning,
                                s.hasVideos ? ("Search/HomeRandomize" + suffix) : QString(), shuffleBtn,
-                               s.defaultAmount });
+                               s.defaultAmount,
+                               "Search/ShowContinueWatching" + suffix, continueCheck,
+                               s.hasVideos ? ("Search/HomeLazyLoad" + suffix) : QString(), lazyCheck });
 
         if (amountSpin) connect(amountSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
         connect(toggle, &QPushButton::toggled, this,
-                [toggle, list, amountSpin, amountLabel, videosSpin, videosLabel, warning, shuffleBtn, label](bool on) {
+                [toggle, list, amountSpin, amountLabel, videosSpin, videosLabel, warning, shuffleBtn, continueCheck, lazyCheck, label](bool on) {
             list->setVisible(on);
             if (amountSpin)  amountSpin->setVisible(on);
             if (amountLabel) amountLabel->setVisible(on);
@@ -837,6 +889,8 @@ void Settings::buildHomeSection(QFormLayout* form) {
             if (videosLabel) videosLabel->setVisible(on);
             if (warning) warning->setVisible(on && amountSpin && amountSpin->value() > 10);
             if (shuffleBtn) shuffleBtn->setVisible(on);
+            if (continueCheck) continueCheck->setVisible(on);
+            if (lazyCheck) lazyCheck->setVisible(on);
             toggle->setText((on ? QStringLiteral("▾  ") : QStringLiteral("▸  ")) + label); // ▾/▸
         });
         // Persist the new priority whenever a drag reorders the rows. QListWidget's
@@ -993,6 +1047,7 @@ void Settings::loadSettings() {
     m_loading = true;
 
     autoUpdateCheck->setChecked(iniSettings->value("General/AutoUpdate", true).toBool());
+    rememberPositionCheck->setChecked(iniSettings->value("Playback/RememberPosition", true).toBool());
     clearHistoryOnCloseCheck->setChecked(iniSettings->value("Search/ClearHistoryOnExit", false).toBool());
 
     // Theme: coerce an unknown name (old/legacy config) back to Seagull, derive the
@@ -1036,7 +1091,14 @@ void Settings::loadSettings() {
     dlQualityCombo->setCurrentText(iniSettings->value("Download/Quality", "Best Available").toString());
 
     streamQualityCombo->setCurrentText(iniSettings->value("Streaming/Quality", "Best Available").toString());
-    cookiesBrowserCombo->setCurrentText(iniSettings->value("Streaming/CookiesBrowser", "None").toString());
+    // Firefox is the only supported browser now. Coerce a stale Chrome/Edge/Brave choice
+    // (from before the change) back to None so the combo and the saved value agree — else
+    // cookieArgs() would keep passing the broken Chromium keyword read straight from the INI.
+    const QString savedCookies = iniSettings->value("Streaming/CookiesBrowser", "None").toString();
+    if (savedCookies != "None" && savedCookies != "Firefox")
+        iniSettings->setValue("Streaming/CookiesBrowser", "None");
+    cookiesBrowserCombo->setCurrentText(
+        (savedCookies == "Firefox") ? QStringLiteral("Firefox") : QStringLiteral("None"));
     m_prevCookiesChoice = cookiesBrowserCombo->currentText(); // baseline for the activation warning
 
     // Recording: type drives the format list; the old Streaming/RecordFormat key
@@ -1069,6 +1131,10 @@ void Settings::loadSettings() {
             p.shuffleBtn->setText(on ? QStringLiteral("Randomize order: On")
                                      : QStringLiteral("Randomize order: Off"));
         }
+        if (p.continueCheck)
+            p.continueCheck->setChecked(iniSettings->value(p.continueKey, true).toBool()); // default: show
+        if (p.lazyCheck)
+            p.lazyCheck->setChecked(iniSettings->value(p.lazyKey, false).toBool()); // default: off
         if (p.warning) p.warning->setVisible(false); // collapsed sections hide it; toggle re-evaluates
     }
 
@@ -1104,6 +1170,7 @@ void Settings::saveSettings() {
 
     // Write values to INI groups
     iniSettings->setValue("General/AutoUpdate", autoUpdateCheck->isChecked());
+    iniSettings->setValue("Playback/RememberPosition", rememberPositionCheck->isChecked());
     iniSettings->setValue("Search/ClearHistoryOnExit", clearHistoryOnCloseCheck->isChecked());
     iniSettings->setValue("Display/Theme", themeCombo->currentText());
     iniSettings->setValue("Display/CardWidth", currentCardWidth());
@@ -1125,6 +1192,8 @@ void Settings::saveSettings() {
         if (p.amountSpin) iniSettings->setValue(p.amountKey, p.amountSpin->value());
         if (p.videosSpin) iniSettings->setValue(p.videosKey, p.videosSpin->value());
         if (p.shuffleBtn) iniSettings->setValue(p.shuffleKey, p.shuffleBtn->isChecked());
+        if (p.continueCheck) iniSettings->setValue(p.continueKey, p.continueCheck->isChecked());
+        if (p.lazyCheck) iniSettings->setValue(p.lazyKey, p.lazyCheck->isChecked());
     }
     iniSettings->setValue("Paths/HomeFolder", homeFolderEdit->text());
     iniSettings->setValue("Paths/DownloadFolder", dlFolderEdit->text());
@@ -1229,6 +1298,7 @@ void Settings::resetDefaults() {
     // Set everything quietly, then write + apply once.
     m_loading = true;
     autoUpdateCheck->setChecked(true);
+    rememberPositionCheck->setChecked(true);
     clearHistoryOnCloseCheck->setChecked(false);
     darkModeBtn->setChecked(true);          // Seagull is a dark theme
     populateThemeCombo(true, "Seagull");
@@ -1261,6 +1331,8 @@ void Settings::resetDefaults() {
             p.shuffleBtn->setChecked(true);
             p.shuffleBtn->setText(QStringLiteral("Randomize order: On"));
         }
+        if (p.continueCheck) p.continueCheck->setChecked(true);
+        if (p.lazyCheck) p.lazyCheck->setChecked(false); // lazy loading off by default
         if (p.warning) p.warning->setVisible(false);
     }
     homeFolderEdit->setText(QCoreApplication::applicationDirPath());

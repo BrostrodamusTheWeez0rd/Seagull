@@ -393,9 +393,13 @@ void PlaybackEngine::setOutputWindow(void* hwnd) {
     m_player->setKeyInput(false);
 }
 
-void PlaybackEngine::loadLocalFile(const QString& path) {
+void PlaybackEngine::loadLocalFile(const QString& path, qint64 startMs) {
     m_loadPath = path; // remembered so replay can rebuild a fresh Media (see reloadLastMedia)
     m_lastMedia = std::make_shared<VLC::Media>(*m_instance, path.toUtf8().constData(), VLC::Media::FromPath);
+    // Resume support: seek straight to a saved position on load (watch history).
+    // Same mechanism the stream path and the video-normalization reload use.
+    if (startMs > 0)
+        m_lastMedia->addOption(QString(":start-time=%1").arg(startMs / 1000.0).toUtf8().constData());
     // Local disk doesn't need the 5s instance-level file-caching (that's for network
     // streams). An oversized cache lets the decoder front-run the output clock on a
     // restart, widening the "playback way too early -> inserting zeroes" silence pad

@@ -5,6 +5,7 @@
 #include <QUrl>
 #include <QList>
 #include <QSet>
+#include <QHash>
 #include <QStringList>
 #include <QElapsedTimer>
 #include "../Backend/SgSearch.h"  // SearchResult (full definition needed for m_allResults)
@@ -73,7 +74,7 @@ signals:
     void playMediaRequested(const QUrl& rawUrl, const QUrl& cdnVideoUrl,
         const QUrl& cdnAudioUrl, const QString& title);
     void enqueueRequested(const QUrl& url, const QString& title);
-    void downloadRequested(const QUrl& url, const QString& title);
+    void downloadRequested(const QUrl& url, const QString& title, const QString& thumbUrl);
 
 private slots:
     void performSearch();
@@ -89,7 +90,7 @@ protected:
     void changeEvent(QEvent* event) override; // re-tint the magnifier/sort icons on theme change
 
 private:
-    enum class FilterMode { All, Videos, Shorts };
+    enum class FilterMode { All, Videos, Shorts, ContinueWatching };
     // Grid ordering, mirroring the Library tab's sort. Relevance keeps YouTube's
     // ranking (the arrival order, via SearchResult::seq).
     enum class SortMode { Relevance, NameAsc, NameDesc, Newest, Oldest };
@@ -144,6 +145,8 @@ private:
     QString siteName() const; // "YouTube" / "PornHub" for the active site
     static QString historyFilePath(SgSearch::Site site); // per-site history file
     void setFilterMode(FilterMode mode);
+    void updatePillChecked();          // sync the pill buttons' checked state to m_filterMode
+    void loadContinueWatchingHome();   // fill the home grid with this site's Continue Watching items
     bool passesFilter(const SearchResult& r) const;
     void positionFilterPill();
     void updateFilterPillVisibility();
@@ -171,12 +174,23 @@ private:
     // store (see favStore) and the feed rebuilds when switching to another such site.
     QStringList homeChannels() const;    // resolve the channels to feed the home page (Settings order/amount)
     int         homeVideosPerChannel() const; // videos pulled per channel (Settings; default kHomePerChannel)
-    bool        homeRandomize() const;   // on: mix the feed by recency; off: keep favourites (list) order
+    bool        homeRandomize() const;   // on: shuffle the feed; off: keep favourites (list) order
+    bool        homeLazyLoad() const;    // on: scroll-to-load-more on this site's home feed (default off)
     void        loadHomeFeed();          // (re)build the feed for the resolved channels
     void        maybeBuildHomeFeed();    // build for the current site's landing if needed
     void        handleHomeBatch(const SearchResult& info, const QList<SearchResult>& videos);
     void        pumpHomeFeed();          // fetch the next queued channel, or finalise the feed
+    void        loadMoreHome();          // scroll-driven paging: pull more per channel, append the tail
     QString     emptyStateText() const;  // landing message (favourites prompt vs "search ...")
+
+    // Continue Watching: partly-watched items for the current site, shown in the grid
+    // when the Continue Watching pill is selected on a home landing. Per-site (home
+    // pages are site-specific), fed from SgWatchHistory.
+    bool        isHomeView() const;                       // on the current site's home landing?
+    bool        continueRowEnabledForSite(SgSearch::Site s) const; // per-site Settings toggle (pill visible?)
+    QList<SearchResult> continueWatchingResults() const;  // history entries -> grid cards for this site
+    static QString historySiteFor(SgSearch::Site s);      // SgSearch::Site -> SgWatchHistory site string
+    static constexpr int kContinueMax = 60;               // most items in the Continue Watching view
     // The favourites store backing the current site (YouTube / PornHub / Chaturbate),
     // or nullptr for sites without favourites.
     SgFavorites* favStore() const;
@@ -187,6 +201,10 @@ private:
     bool        m_homeBuilt   = false;   // a home feed has been built this session
     SgSearch::Site m_homeFeedSite = SgSearch::Site::YouTube; // site the current feed was built for
     QStringList m_homeQueue;             // channels still to fetch in the current build
+    QHash<QString, QString> m_homeChannelNames; // favourite url -> display name (Shorts feed searches by name)
+    bool        m_homeLoadingMore = false; // this build is a scroll-driven "load more", not the first page
+    int         m_homeAppendStart = 0;   // index the current load-more's new items start at (tail shuffle/addCard)
+    static constexpr int kHomeDepthCap = 60; // most videos we'll ever pull per channel (paging stops here)
     QList<SearchResult> m_homeCache;     // last-built home feed, so back/Home restore it instantly
 
     static constexpr int kPillTopMargin = 8;
@@ -206,6 +224,7 @@ private:
     QFrame*      m_filterPill;
     QPushButton* m_filterVideosBtn;
     QPushButton* m_filterShortsBtn;
+    QPushButton* m_filterContinueBtn = nullptr; // "Continue Watching" (home landings)
     QTimer*      pillHoverTimer;
 
     // Top-right chips over the grid: a magnifier that reveals a title filter, a sort
