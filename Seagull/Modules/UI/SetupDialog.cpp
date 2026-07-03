@@ -11,6 +11,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QGroupBox>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QSettings>
@@ -117,30 +118,57 @@ SetupDialog::SetupDialog(SgUpdater* updater, QWidget* parent)
         lay->addWidget(depNote);
     }
 
+    // The three optional actions live in their own titled box so they read as
+    // deliberate choices the user is making, not fine print slipped past them. The
+    // heading spells out that these are opt-in, every box is pre-ticked but clearly
+    // toggleable, and each carries a one-line explanation of what it does and why.
+    auto* optionsBox = new QGroupBox("A few things Seagull can set up (all optional)", this);
+    auto* optionsLay = new QVBoxLayout(optionsBox);
+    optionsLay->setContentsMargins(16, 14, 16, 14);
+    optionsLay->setSpacing(6);
+
+    auto* optionsIntro = new QLabel(
+        "These are all on by default. Untick anything you'd rather skip. You can "
+        "change any of them later in Settings.", optionsBox);
+    optionsIntro->setWordWrap(true);
+    optionsIntro->setObjectName("metaStats"); // theme's dimmed text styling
+    optionsLay->addWidget(optionsIntro);
+
+    // A slightly larger, bold font so the choices themselves catch the eye rather
+    // than blending into the surrounding body text.
+    QFont optFont = font();
+    optFont.setBold(true);
+
     // Shortcuts (default on). The Start-menu one also gives Windows our app
     // identity, so the media controls card shows "Seagull" instead of "unknown app".
-    desktopShortcutCheck = new QCheckBox("Add a desktop shortcut", this);
+    desktopShortcutCheck = new QCheckBox("Add a desktop shortcut", optionsBox);
+    desktopShortcutCheck->setFont(optFont);
     desktopShortcutCheck->setChecked(true);
-    lay->addWidget(desktopShortcutCheck);
-    startMenuShortcutCheck = new QCheckBox("Add a Start menu shortcut", this);
+    optionsLay->addWidget(desktopShortcutCheck);
+
+    startMenuShortcutCheck = new QCheckBox("Add a Start menu shortcut", optionsBox);
+    startMenuShortcutCheck->setFont(optFont);
     startMenuShortcutCheck->setChecked(true);
-    lay->addWidget(startMenuShortcutCheck);
+    optionsLay->addWidget(startMenuShortcutCheck);
 
     // Defender exclusion (recommended). After a reboot or a long idle, Windows
     // Defender rescans Seagull's many DLLs and VLC plugins on launch, which is the
     // main reason the first start can be slow before later ones are instant. The
     // exclusion needs admin, so accepting raises a UAC prompt (see onGetStarted).
     defenderExclusionCheck = new QCheckBox(
-        "Speed up startup by adding Seagull to Windows Defender's exclusions (recommended)", this);
+        "Speed up startup by adding Seagull to Windows Defender's exclusions (recommended)", optionsBox);
+    defenderExclusionCheck->setFont(optFont);
     defenderExclusionCheck->setChecked(true);
-    lay->addWidget(defenderExclusionCheck);
+    optionsLay->addWidget(defenderExclusionCheck);
     auto* defenderNote = new QLabel(
         "Windows Defender rescans Seagull's files after every restart, which can make "
         "the first launch slow. Excluding the app folder lets Seagull start quickly "
-        "every time. Windows will ask for permission.", this);
+        "every time. Windows will ask for permission.", optionsBox);
     defenderNote->setWordWrap(true);
     defenderNote->setObjectName("metaStats"); // theme's dimmed text styling
-    lay->addWidget(defenderNote);
+    optionsLay->addWidget(defenderNote);
+
+    lay->addWidget(optionsBox);
 
     statusLabel = new QLabel(this);
     statusLabel->setObjectName("metaStats");

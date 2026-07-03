@@ -23,6 +23,7 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QSvgRenderer>
+#include <QPolygonF>
 
 namespace {
 constexpr int kCardMargin = 8;    // QVBoxLayout content margin (left+right)
@@ -126,6 +127,71 @@ private:
     QPixmap m_rounded; // rounded render at reference size
     QString m_placeholder = QStringLiteral("…");
     QPixmap m_placeholderIcon; // optional SVG glyph (channel avatar fallback)
+};
+
+// Full-card selection layer used only in the Library's delete mode. While shown it
+// sits on top of the whole card (buttons included) and swallows every click, so the
+// card becomes one big multi-select toggle. It draws a corner indicator — a filled
+// check when selected, a hollow ring when not — plus a highlight wash + outline on
+// the selected card.
+class VideoCard::SelectionOverlay : public QWidget {
+public:
+    explicit SelectionOverlay(VideoCard* card) : QWidget(card), m_card(card) {
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_NoSystemBackground);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* e) override {
+        if (e->button() == Qt::LeftButton) m_card->toggleSelected();
+        // Swallow: never let the click reach the card's play/queue actions.
+    }
+
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool sel = m_card->isSelected();
+
+        if (sel) {
+            QColor wash = palette().color(QPalette::Highlight);
+            wash.setAlpha(55);
+            QPainterPath path;
+            path.addRoundedRect(QRectF(rect()).adjusted(1, 1, -1, -1), 10, 10);
+            p.fillPath(path, wash);
+            QPen border(palette().color(QPalette::Highlight));
+            border.setWidth(3);
+            p.setPen(border);
+            p.drawPath(path);
+        }
+
+        // Corner indicator, top-right of the thumbnail region.
+        const int d = 22;
+        const QRect ring(width() - d - 12, 12, d, d);
+        if (sel) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(palette().color(QPalette::Highlight));
+            p.drawEllipse(ring);
+            QPen tick(palette().color(QPalette::HighlightedText));
+            tick.setWidth(2);
+            tick.setCapStyle(Qt::RoundCap);
+            tick.setJoinStyle(Qt::RoundJoin);
+            p.setPen(tick);
+            QPolygonF check;
+            check << QPointF(ring.left() + 5,  ring.center().y() + 1)
+                  << QPointF(ring.center().x() - 1, ring.bottom() - 6)
+                  << QPointF(ring.right() - 4, ring.top() + 6);
+            p.drawPolyline(check);
+        } else {
+            p.setBrush(QColor(0, 0, 0, 70)); // slight scrim so the ring reads on any thumbnail
+            QPen ringPen(QColor(255, 255, 255, 235));
+            ringPen.setWidth(2);
+            p.setPen(ringPen);
+            p.drawEllipse(ring);
+        }
+    }
+
+private:
+    VideoCard* m_card;
 };
 
 VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int cardWidth,
@@ -298,6 +364,32 @@ void VideoCard::setCardWidth(int width) {
     setFixedSize(width, heightForCardWidth(width));
     const int tw = width - 2 * kCardMargin;
     m_thumb->setFixedHeight(thumbHeightFor(tw)); // the thumb just scales its cached render
+    if (m_selOverlay) m_selOverlay->setGeometry(rect()); // keep the selection layer card-sized
+}
+
+void VideoCard::setSelectionMode(bool on) {
+    m_selectionMode = on;
+    if (on) {
+        if (!m_selOverlay) m_selOverlay = new SelectionOverlay(this);
+        m_selOverlay->setGeometry(rect());
+        m_selOverlay->show();
+        m_selOverlay->raise();
+    } else {
+        m_selected = false; // leaving the mode drops any selection visual
+        if (m_selOverlay) m_selOverlay->hide();
+    }
+}
+
+void VideoCard::setSelected(bool on) {
+    if (m_selected == on) return;
+    m_selected = on;
+    if (m_selOverlay) m_selOverlay->update();
+}
+
+void VideoCard::toggleSelected() {
+    m_selected = !m_selected;
+    if (m_selOverlay) m_selOverlay->update();
+    emit selectionToggled();
 }
 
 int VideoCard::chromeHeight() {

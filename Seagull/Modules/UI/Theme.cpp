@@ -281,6 +281,15 @@ void Theme::apply(const QString& name) {
         // the type switcher; the glyph itself is tinted in code).
         "QPushButton#librarySearchButton { background-color:%1; border:1px solid %6; border-radius:17px; }"
         "QPushButton#librarySearchButton:hover { background-color:%5; }"
+        // Floating trash toggle (same round pill as the magnifier). When armed it
+        // lights red; the glyph itself is tinted to match in code.
+        "QPushButton#libraryDeleteButton { background-color:%1; border:1px solid %6; border-radius:17px; }"
+        "QPushButton#libraryDeleteButton:hover { background-color:%5; }"
+        "QPushButton#libraryDeleteButton[deleteActive=\"true\"] { background-color:rgba(226,85,85,45); border:1px solid #e25555; }"
+        // The confirm "Delete" button revealed beside an armed trash: red = destructive.
+        "QPushButton#libraryDeleteConfirm { background-color:#e25555; color:#ffffff; border:none; border-radius:14px; padding:4px 16px; font-weight:bold; }"
+        "QPushButton#libraryDeleteConfirm:hover { background-color:#d64545; }"
+        "QPushButton#libraryDeleteConfirm:disabled { background-color:%4; color:%8; }"
         "QLabel#libraryEmptyLabel { color:%2; background:transparent; }"
         // Search tab: small filter pill (All / Videos / Shorts) — same pill idiom.
         "QFrame#searchFilterPill { background-color:%1; border:1px solid %6; border-radius:14px; }"

@@ -34,6 +34,8 @@
 #include <QEvent>
 #include <QShowEvent>
 #include <QTimer>
+#include <QStyle>
+#include <QMessageBox>
 
 namespace {
 constexpr int kGridSpacing = 12;
@@ -127,6 +129,24 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     tintSortIcon();
     connect(sortButton, &QPushButton::clicked, this, &MediaLibrary::showSortMenu);
 
+    // Floating trash toggle, sitting to the left of the magnifier. Clicking it arms
+    // delete mode (glyph + outline go red) and turns every card into a select toggle.
+    deleteButton = new QPushButton(this);
+    deleteButton->setObjectName("libraryDeleteButton"); // themed in Theme::apply (armed = red)
+    deleteButton->setCursor(Qt::PointingHandCursor);
+    deleteButton->setFixedSize(34, 34);
+    deleteButton->setToolTip("Select items to delete");
+    tintDeleteIcon(false);
+    connect(deleteButton, &QPushButton::clicked, this, [this] { setDeleteMode(!m_deleteMode); });
+
+    // The destructive "Delete" action, revealed to the left of the trash while armed.
+    confirmDeleteButton = new QPushButton(QStringLiteral("Delete"), this);
+    confirmDeleteButton->setObjectName("libraryDeleteConfirm"); // red styling in Theme::apply
+    confirmDeleteButton->setCursor(Qt::PointingHandCursor);
+    confirmDeleteButton->setToolTip("Delete the selected items");
+    confirmDeleteButton->hide();
+    connect(confirmDeleteButton, &QPushButton::clicked, this, &MediaLibrary::deleteSelected);
+
     sortMenu = new QMenu(this);
     auto* sortGroup = new QActionGroup(sortMenu);
     sortGroup->setExclusive(true);
@@ -197,6 +217,8 @@ void MediaLibrary::updatePillVisibility() {
     const bool show = atTop || hovered;
     typePill->setVisible(show);
     sortButton->setVisible(show); // always paired with the pill/magnifier strip
+    deleteButton->setVisible(show); // trash rides the same strip as the magnifier/sort
+    confirmDeleteButton->setVisible(show && m_deleteMode); // only meaningful while armed
 
     // While the search bar is open it takes the magnifier's place. Keep it only
     // while it's actually in use: focused (typing), holding a query, or just
@@ -282,6 +304,7 @@ VideoCard* MediaLibrary::addCardForEntry(const QFileInfo& fi) {
             });
         cardsFlow->addWidget(card);
         m_cards.append({ card, r.title.toLower() });
+        armCardForSelection(card, path); // playlists are deletable too
         return card; // no m_files entry (advance is the Queue's job), no thumbnail
     }
 
@@ -313,10 +336,25 @@ VideoCard* MediaLibrary::addCardForEntry(const QFileInfo& fi) {
         });
     cardsFlow->addWidget(card);
     m_cards.append({ card, r.title.toLower() });
+    armCardForSelection(card, path);
 
     m_pendingThumbs.insert(path, card);
     thumbnailer->requestThumbnail(path);
     return card;
+}
+
+void MediaLibrary::armCardForSelection(VideoCard* card, const QString& path) {
+    // If delete mode is live (e.g. the user switched type while armed), the freshly
+    // built card starts in selection mode and restores its picked state from the set.
+    if (m_deleteMode) {
+        card->setSelectionMode(true);
+        card->setSelected(m_selected.contains(path));
+    }
+    connect(card, &VideoCard::selectionToggled, this, [this, path, card]() {
+        if (card->isSelected()) m_selected.insert(path);
+        else                    m_selected.remove(path);
+        updateDeleteControls();
+    });
 }
 
 void MediaLibrary::setBuildBusy(bool busy) {
@@ -515,6 +553,19 @@ void MediaLibrary::positionSearch() {
     librarySearch->move(searchRight - librarySearch->width(),
         kPillTopMargin + (searchButton->height() - librarySearch->height()) / 2);
     librarySearch->raise();
+
+    // Trash sits just left of the search control. With the bar open it's far wider
+    // than the magnifier, so anchor off whichever is actually showing — that's the
+    // "push the trash over to make room for the entry bar" detail.
+    const int searchLeft = m_searchOpen ? librarySearch->x() : searchButton->x();
+    deleteButton->move(searchLeft - gap - deleteButton->width(), kPillTopMargin);
+    deleteButton->raise();
+
+    // The red confirm button, left of the trash, vertically centred on the round pill.
+    confirmDeleteButton->adjustSize();
+    confirmDeleteButton->move(deleteButton->x() - gap - confirmDeleteButton->width(),
+        kPillTopMargin + (deleteButton->height() - confirmDeleteButton->height()) / 2);
+    confirmDeleteButton->raise();
 }
 
 void MediaLibrary::toggleSearch() {
@@ -530,6 +581,66 @@ void MediaLibrary::toggleSearch() {
     }
     positionSearch();
     updatePillVisibility();
+}
+
+void MediaLibrary::setDeleteMode(bool on) {
+    if (m_deleteMode == on) return;
+    m_deleteMode = on;
+    m_selected.clear(); // arming or disarming both start from a clean selection
+
+    // Flip every currently-built card into (or out of) selection mode.
+    for (const auto& entry : m_cards) {
+        if (VideoCard* c = entry.first) {
+            c->setSelected(false);
+            c->setSelectionMode(on);
+        }
+    }
+
+    tintDeleteIcon(on);       // red + armed outline, or back to quiet
+    updateDeleteControls();   // label/enable the confirm button
+    positionSearch();         // the confirm button just appeared/left
+    updatePillVisibility();   // show/hide it with the strip
+}
+
+void MediaLibrary::updateDeleteControls() {
+    const int n = m_selected.size();
+    confirmDeleteButton->setText(n > 0 ? QStringLiteral("Delete (%1)").arg(n)
+                                       : QStringLiteral("Delete"));
+    confirmDeleteButton->setEnabled(n > 0);
+    positionSearch(); // the label width changed; keep it anchored to the trash
+}
+
+void MediaLibrary::deleteSelected() {
+    if (m_selected.isEmpty()) return;
+    const int n = m_selected.size();
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Delete media"));
+    box.setText(QStringLiteral("Delete %1 selected item%2?").arg(n).arg(n == 1 ? "" : "s"));
+    box.setInformativeText(QStringLiteral("They'll be moved to the Recycle Bin."));
+    box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Yes) return;
+
+    // Recycle Bin, not a hard delete: recoverable if a pick was a mistake, and it
+    // still clears the file from the library. A file open elsewhere (e.g. the one
+    // currently playing) can refuse — collect those and report at the end.
+    QStringList failed;
+    for (const QString& path : m_selected) {
+        if (!QFile::moveToTrash(path) && !QFile::remove(path))
+            failed << QFileInfo(path).fileName();
+    }
+    m_selected.clear();
+    setDeleteMode(false); // disarm; leaves selection cleared
+    rebuild();            // re-list the folder without the removed files
+
+    if (!failed.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Delete media"),
+            QStringLiteral("%1 item%2 couldn't be deleted (in use or protected):\n%3")
+                .arg(failed.size()).arg(failed.size() == 1 ? "" : "s")
+                .arg(failed.join("\n")));
+    }
 }
 
 void MediaLibrary::tintSearchIcon() {
@@ -561,6 +672,26 @@ void MediaLibrary::tintSortIcon() {
     sortButton->setIconSize(sz);
 }
 
+void MediaLibrary::tintDeleteIcon(bool armed) {
+    if (!deleteButton) return;
+    // Same flat-tint trick as the magnifier/sort glyphs. Red while armed so the
+    // trash reads as "live"; otherwise it sits quiet at the theme text colour.
+    const QSize sz(18, 18);
+    QPixmap pm = QIcon(QStringLiteral(":/Assets/icons/trash.svg")).pixmap(sz);
+    if (pm.isNull()) return;
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), armed ? QColor("#e25555") : palette().color(QPalette::WindowText));
+    p.end();
+    deleteButton->setIcon(QIcon(pm));
+    deleteButton->setIconSize(sz);
+
+    // Re-evaluate the red-outline QSS state (dynamic property drives the selector).
+    deleteButton->setProperty("deleteActive", armed);
+    deleteButton->style()->unpolish(deleteButton);
+    deleteButton->style()->polish(deleteButton);
+}
+
 void MediaLibrary::showSortMenu() {
     // Drop the menu flush under the button's bottom-left corner.
     sortMenu->popup(sortButton->mapToGlobal(QPoint(0, sortButton->height())));
@@ -579,6 +710,7 @@ void MediaLibrary::changeEvent(QEvent* event) {
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
         tintSearchIcon();
         tintSortIcon();
+        tintDeleteIcon(m_deleteMode);
     }
 }
 

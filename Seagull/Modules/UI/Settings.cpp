@@ -141,6 +141,23 @@ void Settings::setupUI() {
     // The label's Add/Remove state is resolved lazily in showEvent (the query is slow
     // to start, so we keep it off the cold-start path).
 
+    // Shortcuts: the same offer the first-run setup makes, available any time here so
+    // a user who declined (or wants one back) isn't stuck. One button per location;
+    // each toggles Add/Remove based on whether its .lnk currently exists.
+    desktopShortcutBtn = new QPushButton("Add Desktop Shortcut");
+    desktopShortcutBtn->setToolTip("Create (or remove) a Seagull shortcut on your desktop.");
+    startMenuShortcutBtn = new QPushButton("Add Start Menu Shortcut");
+    startMenuShortcutBtn->setToolTip("Create (or remove) a Seagull shortcut in your Start menu. "
+        "This also gives Windows Seagull's name and icon on the media controls card.");
+    auto* shortcutRow = new QHBoxLayout();
+    shortcutRow->setContentsMargins(0, 0, 0, 0);
+    shortcutRow->addWidget(desktopShortcutBtn);
+    shortcutRow->addWidget(startMenuShortcutBtn);
+    shortcutRow->addStretch();
+    generalLayout->addRow("Shortcuts:", shortcutRow);
+    connect(desktopShortcutBtn, &QPushButton::clicked, this, &Settings::onDesktopShortcutClicked);
+    connect(startMenuShortcutBtn, &QPushButton::clicked, this, &Settings::onStartMenuShortcutClicked);
+
     stackedWidget->addWidget(generalWidget);
 
     // === Appearance Tab ===
@@ -944,10 +961,31 @@ void Settings::refreshDefenderButton() {
                                   SgMediaControls::defenderExclusionQueryCommand() });
 }
 
+void Settings::onDesktopShortcutClicked() {
+    if (SgMediaControls::desktopShortcutExists()) SgMediaControls::removeDesktopShortcut();
+    else                                          SgMediaControls::createDesktopShortcut();
+    refreshShortcutButtons();
+}
+
+void Settings::onStartMenuShortcutClicked() {
+    if (SgMediaControls::startMenuShortcutExists()) SgMediaControls::removeStartMenuShortcut();
+    else                                            SgMediaControls::createStartMenuShortcut();
+    refreshShortcutButtons();
+}
+
+void Settings::refreshShortcutButtons() {
+    // Cheap file check (no COM/elevation), so it's fine to run on every show.
+    desktopShortcutBtn->setText(
+        SgMediaControls::desktopShortcutExists() ? "Remove Desktop Shortcut" : "Add Desktop Shortcut");
+    startMenuShortcutBtn->setText(
+        SgMediaControls::startMenuShortcutExists() ? "Remove Start Menu Shortcut" : "Add Start Menu Shortcut");
+}
+
 void Settings::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     rebuildHomePickers();    // favourites may have changed since the page was built
     refreshDefenderButton(); // re-check in case the exclusion changed outside the app
+    refreshShortcutButtons(); // re-check in case a shortcut was added/deleted outside the app
 }
 
 void Settings::loadSettings() {

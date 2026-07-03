@@ -49,12 +49,21 @@ public:
     // Card height for a given width (16:9 thumbnail + the fixed chrome below it).
     static int heightForCardWidth(int cardWidth);
 
+    // Selection ("delete") mode: the Library arms this and the whole card becomes a
+    // multi-select toggle (iPhone-gallery style) instead of a play target. A full-card
+    // overlay captures every click and draws the check/empty indicator.
+    void setSelectionMode(bool on);
+    void setSelected(bool on);
+    bool isSelected() const { return m_selected; }
+
 signals:
     void playRequested(const QUrl& url, const QString& title);
     void queueRequested(const QUrl& url, const QString& title);
     void downloadRequested(const QUrl& url, const QString& title);
     // The uploader name (video card) or "View Channel" (channel card) was clicked.
     void channelRequested(const QString& channelUrl, const QString& channelName);
+    // The card was clicked while selection mode was armed (its selected state just flipped).
+    void selectionToggled();
 
 protected:
     void mousePressEvent(QMouseEvent* event) override; // click anywhere = play (or open channel)
@@ -70,11 +79,18 @@ private:
     // Apply the correct star icon (filled/outline) based on current favorite state.
     void updateStarIcon(bool favorited);
 
+    void toggleSelected(); // called by the overlay on click; flips + emits selectionToggled
+
+    class SelectionOverlay; // full-card selection layer (defined in the .cpp)
+
     SearchResult  m_result;
     QString       m_channelUrl; // cached from m_result.channelUrl for signal handler
     RoundedThumb* m_thumb;
     QWidget*      m_title    = nullptr; // click-to-play target (with the thumbnail)
     QToolButton*  m_starBtn  = nullptr; // null when not a YouTube card
+    SelectionOverlay* m_selOverlay = nullptr; // created lazily when selection mode arms
+    bool          m_selected = false;
+    bool          m_selectionMode = false;
 };
 
 #endif // VIDEOCARD_H

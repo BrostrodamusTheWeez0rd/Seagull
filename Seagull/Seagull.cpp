@@ -1227,6 +1227,17 @@ bool Seagull::run() {
         cfg.sync();
     }
 
+    // The first-run Setup modal already downloads the tools, so the update modal has
+    // no business appearing on the first run OR the launch right after it — the flow
+    // is Terms -> Setup -> app, then quiet once more. Setup stamps this one-shot flag
+    // for that second launch; honour it once, then clear it so every launch after
+    // that checks as usual. (The first run itself is suppressed via firstRunTools below.)
+    const bool skipNextStartup = cfg.value("Updates/SkipNextStartupCheck", false).toBool();
+    if (skipNextStartup) {
+        cfg.remove("Updates/SkipNextStartupCheck");
+        cfg.sync();
+    }
+
     // Throttle the automatic startup check to once an hour. The Settings "Check for
     // Updates" button is the manual override and ignores this entirely. (LastChecked
     // is also written by the tool check itself; writing it here means even declining
@@ -1236,24 +1247,26 @@ bool Seagull::run() {
     const qint64 lastCheck = cfg.value("Updates/LastChecked", 0).toLongLong();
     const bool   checkCooldown = (nowSecs - lastCheck) < kStartupCheckIntervalSecs;
 
-    const bool runStartupCheck = m_autoUpdateStartup && !justSelfUpdated && !checkCooldown;
+    // First run is fully owned by Setup (Terms -> Setup -> app), so the update modal
+    // is suppressed there outright — Setup downloads the tools, and an app-version
+    // check on a machine that just installed is noise.
+    const bool runStartupCheck = m_autoUpdateStartup && !justSelfUpdated
+        && !checkCooldown && !skipNextStartup && !firstRunTools;
 
     // Two-stage updater modal, BEFORE the window (the window stays hidden until it
     // closes), but ONLY when the startup check is due. AutoUpdate means "ask on
     // startup, then run the check on Yes" — it never installs without a prompt. Off
-    // (or within the hourly cooldown, or right after a self-update) skips the startup
-    // check entirely; the Settings "Check for Updates" button is the only path then.
-    // Stage 1 checks Seagull; stage 2 checks the tools — except on first run, where
-    // SetupDialog below is the tool stage (runToolStage=false), which also sidesteps
-    // re-probing freshly-extracted tool exes (they'd misread their versions and
-    // silently re-download). The thumbnail ffmpeg queues stay held until
+    // (or within the hourly cooldown, right after a self-update, on first run, or the
+    // launch right after first-run Setup) skips the startup check entirely; the
+    // Settings "Check for Updates" button is the only path then. Stage 1 checks
+    // Seagull; stage 2 checks the tools. The thumbnail ffmpeg queues stay held until
     // finishStartupUpdates() so a tool swap can't race a running grab.
     m_selfUpdateChosen = false;
     if (runStartupCheck) {
         cfg.setValue("Updates/LastChecked", nowSecs);
         cfg.sync();
         UpdateDialog dlg(appUpdate, updaterWorker, /*autoInstall=*/true,
-                         /*skipAsk=*/false, /*runToolStage=*/!firstRunTools, nullptr);
+                         /*skipAsk=*/false, /*runToolStage=*/true, nullptr);
         connect(&dlg, &UpdateDialog::selfUpdateRequested, this,
                 [this]() { m_selfUpdateChosen = true; });
         dlg.exec();
@@ -1272,8 +1285,9 @@ bool Seagull::run() {
         return true;
     }
 
-    // First run (or tools missing): folder confirmation + dependency download.
-    // This is stage 2 on first run, shown before the window like the rest.
+    // First run: folder confirmation + dependency download. On first run this is the
+    // only pre-window modal after Terms (the update modal is suppressed above), shown
+    // before the window like the rest.
     if (firstRunTools) {
         m_setupActive = true;
         SetupDialog setup(updaterWorker, nullptr);
@@ -1283,6 +1297,16 @@ bool Seagull::run() {
         // The Library already scanned with the pre-setup default folders;
         // rescan now that the user confirmed (possibly different) paths.
         libraryModule->refresh();
+
+        // Setup completed: arm the one-shot skip so the launch right after first run
+        // stays quiet too (no update modal on the first run OR the one after). Only
+        // when it completed — a declined setup is still a first run next time, which
+        // suppresses the modal on its own. SetupDialog::isNeeded() re-reads the flag
+        // it just wrote, so this reflects completion this launch.
+        if (!SetupDialog::isNeeded()) {
+            cfg.setValue("Updates/SkipNextStartupCheck", true);
+            cfg.sync();
+        }
     }
 
     // Now reveal the window, bind VLC's output to the render frame's HWND, and bind

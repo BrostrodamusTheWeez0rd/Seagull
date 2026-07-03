@@ -30,9 +30,21 @@ public:
 
     // Create .lnk shortcuts to this exe. The Start-menu one carries the same
     // AppUserModelID, which is what lets Windows resolve our name/icon on the SMTC
-    // card (instead of "unknown app"). Best-effort; failures are silent.
-    static void createDesktopShortcut();
-    static void createStartMenuShortcut();
+    // card (instead of "unknown app"). Best-effort; return true only if the .lnk
+    // was written (Settings uses this to confirm the action to the user).
+    static bool createDesktopShortcut();
+    static bool createStartMenuShortcut();
+
+    // Delete the .lnk written by the create* calls above, so Settings can offer a
+    // symmetric Add/Remove toggle. Returns true if the file is gone afterwards
+    // (including the already-absent case). Best-effort.
+    static bool removeDesktopShortcut();
+    static bool removeStartMenuShortcut();
+
+    // Whether the corresponding .lnk currently exists. Cheap file check (no COM),
+    // so it's safe to call on show to label the Settings buttons Add vs Remove.
+    static bool desktopShortcutExists();
+    static bool startMenuShortcutExists();
 
     // Outcome of an attempt to change Defender's exclusion list. The elevated step
     // re-reads the list after the change and only reports Success if it actually

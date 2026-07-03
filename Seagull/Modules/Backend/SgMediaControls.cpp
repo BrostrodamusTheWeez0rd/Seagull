@@ -1,6 +1,7 @@
 #include "SgMediaControls.h"
 
 #include <QDir>
+#include <QFile>
 #include <QUrl>
 #include <QDesktopServices>
 #include <QMetaObject>
@@ -120,22 +121,42 @@ void SgMediaControls::registerAppIdentity() {
     SetCurrentProcessExplicitAppUserModelID(kAumid);
 }
 
-void SgMediaControls::createDesktopShortcut() {
-    const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
-    const QString dir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
-    const QString lnk = QDir(QStandardPaths::writableLocation(QStandardPaths::DesktopLocation))
-                            .filePath(QStringLiteral("Seagull.lnk"));
-    writeShortcut(QDir::toNativeSeparators(lnk), exe, dir);
+namespace {
+QString desktopShortcutPath() {
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::DesktopLocation))
+        .filePath(QStringLiteral("Seagull.lnk"));
+}
+// ApplicationsLocation on Windows == the per-user Start Menu\Programs folder.
+QString startMenuShortcutPath() {
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation))
+        .filePath(QStringLiteral("Seagull.lnk"));
+}
 }
 
-void SgMediaControls::createStartMenuShortcut() {
+bool SgMediaControls::createDesktopShortcut() {
     const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
     const QString dir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
-    // ApplicationsLocation on Windows == the per-user Start Menu\Programs folder.
-    const QString lnk = QDir(QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation))
-                            .filePath(QStringLiteral("Seagull.lnk"));
-    writeShortcut(QDir::toNativeSeparators(lnk), exe, dir);
+    return writeShortcut(QDir::toNativeSeparators(desktopShortcutPath()), exe, dir);
 }
+
+bool SgMediaControls::createStartMenuShortcut() {
+    const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    const QString dir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    return writeShortcut(QDir::toNativeSeparators(startMenuShortcutPath()), exe, dir);
+}
+
+bool SgMediaControls::removeDesktopShortcut() {
+    const QString lnk = desktopShortcutPath();
+    return !QFile::exists(lnk) || QFile::remove(lnk);
+}
+
+bool SgMediaControls::removeStartMenuShortcut() {
+    const QString lnk = startMenuShortcutPath();
+    return !QFile::exists(lnk) || QFile::remove(lnk);
+}
+
+bool SgMediaControls::desktopShortcutExists()   { return QFile::exists(desktopShortcutPath()); }
+bool SgMediaControls::startMenuShortcutExists() { return QFile::exists(startMenuShortcutPath()); }
 
 namespace {
 // This app's install folder, with any single quote escaped so it can't break out

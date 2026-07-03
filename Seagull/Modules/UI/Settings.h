@@ -71,6 +71,9 @@ private:
     void saveHomePickerFor(QListWidget* list); // persist one site's order (row order = priority)
     void onDefenderExclusionClicked(); // toggle the Defender exclusion (elevated), then refresh
     void refreshDefenderButton();      // query Defender state -> set Add/Remove Exclusion label
+    void onDesktopShortcutClicked();   // toggle the desktop .lnk, then refresh the button
+    void onStartMenuShortcutClicked(); // toggle the Start-menu .lnk, then refresh the button
+    void refreshShortcutButtons();     // label each shortcut button Add/Remove from its .lnk state
 
     bool m_loading = false; // suppresses auto-save while loadSettings populates controls
 
@@ -92,6 +95,8 @@ private:
     QPushButton* checkUpdatesBtn; // General "Check Now" -> manual app update check
     QPushButton* defenderExclusionBtn; // add/remove app folder in Defender exclusions (faster cold start)
     bool defenderExcluded = false;     // last known state, drives the button's Add/Remove label
+    QPushButton* desktopShortcutBtn;   // add/remove the desktop .lnk
+    QPushButton* startMenuShortcutBtn; // add/remove the Start-menu .lnk
 
     // Display Tab elements
     QButtonGroup* appearanceGroup; // Light | Dark — filters the theme list

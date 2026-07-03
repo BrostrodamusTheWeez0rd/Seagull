@@ -24,10 +24,11 @@ class SgAppUpdate;
 //      runToolStage is true. On first run the orchestrator owns the tool stage via
 //      SetupDialog, so the dialog closes after stage 1.
 //
-// AutoUpdate on:  opens straight into stage 1, then auto-installs tools.
-// AutoUpdate off: opens on an ask-first stage ("Check for updates?"); nothing
-//                 touches the network until the user says Check Now, and any tool
-//                 updates found get a second Update Now / Not Now prompt.
+// The dialog always opens on the ask-first stage ("Check for updates?") unless the
+// caller passes skipAsk — nothing touches the network until the user says Check Now,
+// so a startup check never runs without their go-ahead. autoInstall then governs
+// only what happens once they've said yes: on it installs any found tool updates
+// straight away; off gives them a second Update Now / Not Now prompt first.
 // Either way: "Up to date" and successful installs auto-close; Escape and the
 // (removed) titlebar close are swallowed while checking/installing. The tool
 // updater lives on its own thread; calls go over queued invokes and its signals

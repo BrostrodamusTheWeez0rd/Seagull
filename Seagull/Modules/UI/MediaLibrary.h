@@ -8,6 +8,7 @@
 
 #include <QList>
 #include <QPair>
+#include <QSet>
 #include <QElapsedTimer>
 #include <QFileInfoList>
 
@@ -76,6 +77,7 @@ private:
     void rebuild();                 // folder listing -> kick off the incremental card build
     void buildNextBatch();          // create the next chunk of cards (keeps the UI responsive)
     VideoCard* addCardForEntry(const QFileInfo& fi); // build one card for a file/playlist entry
+    void armCardForSelection(VideoCard* card, const QString& path); // wire delete-mode selection
     void clearCards();
     void filterCards();             // hide cards not matching the search query
     void applyCardWidth();
@@ -84,8 +86,16 @@ private:
     QStringList extensionsForType() const;
     void positionTypePill();
     void updatePillVisibility(); // visible at scroll-top or when its strip is hovered
-    void positionSearch();       // place the sort + magnifier buttons / bar at the top-right
+    void positionSearch();       // place the sort + magnifier + trash buttons / bar at the top-right
     void toggleSearch();         // magnifier click: reveal the search bar (or collapse)
+
+    // Delete mode: arm the trash toggle, turn every card into a multi-select toggle,
+    // then remove whatever's picked. Selections are keyed by absolute path so they
+    // survive switching the grid's type (delete across Videos/Audio/Images at once).
+    void setDeleteMode(bool on);
+    void updateDeleteControls();      // enable/label the confirm button from the selection count
+    void tintDeleteIcon(bool armed);  // recolour the trash glyph (red when armed, theme text otherwise)
+    void deleteSelected();            // confirm, then send the selected files to the Recycle Bin
     void tintSearchIcon();       // recolour the magnifier glyph to the theme text colour
     void tintSortIcon();         // recolour the sort glyph to the theme text colour
     void showSortMenu();         // sort click: drop the ordering menu under the button
@@ -97,6 +107,10 @@ private:
     QButtonGroup* typeGroup = nullptr;
     QPushButton*  searchButton = nullptr;  // floating magnifier at the top-right
     QPushButton*  sortButton = nullptr;    // floating sort/order button, right of the magnifier
+    QPushButton*  deleteButton = nullptr;  // floating trash toggle, left of the magnifier
+    QPushButton*  confirmDeleteButton = nullptr; // red "Delete" action, shown while armed
+    bool          m_deleteMode = false;    // is the trash armed (cards are selectable)?
+    QSet<QString> m_selected;              // absolute paths picked for deletion (across types)
     QMenu*        sortMenu = nullptr;       // ordering options dropped under the sort button
     SortMode      m_sortMode = SortMode::DateNewest; // active grid ordering
     SpellCheckLineEdit* librarySearch = nullptr; // revealed on click; filters the active type
