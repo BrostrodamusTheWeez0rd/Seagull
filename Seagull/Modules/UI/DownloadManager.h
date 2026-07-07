@@ -17,7 +17,9 @@ class QNetworkAccessManager;
 // progress and status, restart, and cancel. It owns the ad-hoc download FIFO (moved out of
 // the orchestrator) and drives the dedicated download worker sequentially — one at a time,
 // matching the app's avoidance of yt-dlp process contention. Records persist via
-// SgDownloadHistory (keyed by page URL, so a restart re-resolves a fresh CDN).
+// SgDownloadHistory, keyed by a unique per-download id (the same page URL downloaded as
+// video and again as audio is two rows); a restart re-runs the record's stored page URL,
+// which re-resolves a fresh CDN.
 class DownloadManager : public QWidget {
     Q_OBJECT
 public:
@@ -43,22 +45,22 @@ private:
     void onDestination(const QString& path);
     void onFinished(bool ok);
 
-    // Row action handlers.
-    void restart(const QString& pageUrl);
-    void cancel(const QString& pageUrl);
-    void removeOne(const QString& pageUrl);
+    // Row action handlers (record ids).
+    void restart(const QString& id);
+    void cancel(const QString& id);
+    void removeOne(const QString& id);
 
     SgYtDlp*               m_worker = nullptr;
     QNetworkAccessManager* m_nam = nullptr;
 
-    QStringList m_queue;          // page URLs pending; the active one stays at front while running
+    QStringList m_queue;          // record ids pending; the active one stays at front while running
     bool        m_downloading = false;
-    QString     m_activeKey;      // page URL of the in-flight download ("" = none)
+    QString     m_activeKey;      // record id of the in-flight download ("" = none)
     bool        m_canceling = false; // the active download is being user-canceled (mark Canceled)
 
     QVBoxLayout* m_listLayout = nullptr; // holds the DownloadRow widgets + the empty-state label
     QLabel*      m_emptyLabel = nullptr;
-    QHash<QString, DownloadRow*> m_rows; // page URL -> live row (rebuilt each structural change)
+    QHash<QString, DownloadRow*> m_rows; // record id -> live row (rebuilt each structural change)
 };
 
 #endif // DOWNLOADMANAGER_H

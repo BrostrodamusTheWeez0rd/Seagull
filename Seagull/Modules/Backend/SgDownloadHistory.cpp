@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,6 +18,26 @@ bool isTerminal(int status) {
     return status == SgDownloadHistory::Completed
         || status == SgDownloadHistory::Failed
         || status == SgDownloadHistory::Canceled;
+}
+
+// Unique record id: creation timestamp + a session counter (two clicks inside the
+// same millisecond stay distinct).
+QString freshId() {
+    static quint64 s_seq = 0;
+    return QString::number(QDateTime::currentMSecsSinceEpoch())
+         + QLatin1Char('-') + QString::number(++s_seq);
+}
+
+// Video/Audio bucket for a file extension — used to backfill kind on records
+// from before kind/fmt were captured at enqueue time. "" when unrecognised.
+QString kindForExt(const QString& ext) {
+    static const QStringList audio = { "mp3", "m4a", "flac", "wav", "opus",
+                                       "aac", "ogg", "oga", "wma" };
+    static const QStringList video = { "mp4", "mkv", "webm", "mov", "avi",
+                                       "m4v", "ts", "flv" };
+    if (audio.contains(ext)) return QStringLiteral("Audio");
+    if (video.contains(ext)) return QStringLiteral("Video");
+    return QString();
 }
 }
 
@@ -39,30 +60,55 @@ QString SgDownloadHistory::siteForUrl(const QString& url) {
     return QStringLiteral("other");
 }
 
-void SgDownloadHistory::record(const QString& pageUrl, const QString& title,
-                               const QString& thumbUrl) {
-    if (pageUrl.isEmpty()) return;
+QString SgDownloadHistory::add(const QString& pageUrl, const QString& title,
+                               const QString& thumbUrl, const QString& kind,
+                               const QString& fmt) {
+    if (pageUrl.isEmpty()) return QString();
 
-    Record r = m_records.value(pageUrl); // existing (to preserve thumb/path) or a default
-    r.pageUrl    = pageUrl;
-    if (!title.isEmpty())    r.title    = title;
-    if (!thumbUrl.isEmpty()) r.thumbUrl = thumbUrl; // keep the prior thumbnail if none supplied
-    r.site       = siteForUrl(pageUrl);
-    r.status     = Queued;
-    r.addedAt    = QDateTime::currentMSecsSinceEpoch();
-    r.finishedAt = 0;
-    r.filePath.clear(); // a fresh run resolves a new file
+    Record r;
+    r.id       = freshId();
+    r.pageUrl  = pageUrl;
+    r.title    = title;
+    r.thumbUrl = thumbUrl;
+    r.site     = siteForUrl(pageUrl);
+    r.kind     = kind;
+    r.fmt      = fmt;
+    r.status   = Queued;
+    r.addedAt  = QDateTime::currentMSecsSinceEpoch();
 
-    m_records.insert(pageUrl, r);
-    m_order.removeOne(pageUrl);
-    m_order.prepend(pageUrl); // most recent first
+    m_records.insert(r.id, r);
+    m_order.prepend(r.id); // most recent first
     trim();
+    save();
+    emit changed();
+    return r.id;
+}
+
+void SgDownloadHistory::requeue(const QString& id) {
+    const auto it = m_records.find(id);
+    if (it == m_records.end()) return;
+    it->status     = Queued;
+    it->addedAt    = QDateTime::currentMSecsSinceEpoch();
+    it->finishedAt = 0;
+    it->filePath.clear(); // a fresh run resolves a new file
+    m_order.removeOne(id);
+    m_order.prepend(id);
     save();
     emit changed();
 }
 
-void SgDownloadHistory::setStatus(const QString& pageUrl, int status) {
-    const auto it = m_records.find(pageUrl);
+QString SgDownloadHistory::pendingDuplicate(const QString& pageUrl, const QString& kind,
+                                            const QString& fmt) const {
+    for (const Record& r : m_records) {
+        if ((r.status == Queued || r.status == Downloading)
+            && r.pageUrl == pageUrl && r.kind == kind && r.fmt == fmt)
+            return r.id;
+    }
+    return QString();
+}
+
+void SgDownloadHistory::setStatus(const QString& id, int status) {
+    const auto it = m_records.find(id);
     if (it == m_records.end()) return;
     if (it->status == status) return;
     it->status = status;
@@ -71,20 +117,16 @@ void SgDownloadHistory::setStatus(const QString& pageUrl, int status) {
     emit changed();
 }
 
-void SgDownloadHistory::setFilePath(const QString& pageUrl, const QString& filePath) {
-    const auto it = m_records.find(pageUrl);
+void SgDownloadHistory::setFilePath(const QString& id, const QString& filePath) {
+    const auto it = m_records.find(id);
     if (it == m_records.end() || filePath.isEmpty() || it->filePath == filePath) return;
     it->filePath = filePath;
     save();
     // No emit changed(): the path lands mid-download; the row's live update covers display.
 }
 
-bool SgDownloadHistory::hasRecord(const QString& pageUrl) const {
-    return m_records.contains(pageUrl);
-}
-
-SgDownloadHistory::Record SgDownloadHistory::recordFor(const QString& pageUrl) const {
-    return m_records.value(pageUrl);
+SgDownloadHistory::Record SgDownloadHistory::recordFor(const QString& id) const {
+    return m_records.value(id);
 }
 
 QList<SgDownloadHistory::Record> SgDownloadHistory::records() const {
@@ -94,10 +136,10 @@ QList<SgDownloadHistory::Record> SgDownloadHistory::records() const {
     return out;
 }
 
-void SgDownloadHistory::remove(const QString& pageUrl) {
-    if (!m_records.contains(pageUrl)) return;
-    m_records.remove(pageUrl);
-    m_order.removeOne(pageUrl);
+void SgDownloadHistory::remove(const QString& id) {
+    if (!m_records.contains(id)) return;
+    m_records.remove(id);
+    m_order.removeOne(id);
     save();
     emit changed();
 }
@@ -144,10 +186,13 @@ void SgDownloadHistory::load() {
     for (const QJsonValue& v : doc.array()) {
         const QJsonObject obj = v.toObject();
         Record r;
+        r.id         = obj.value("id").toString();
         r.pageUrl    = obj.value("pageUrl").toString();
         r.title      = obj.value("title").toString();
         r.thumbUrl   = obj.value("thumbUrl").toString();
         r.site       = obj.value("site").toString();
+        r.kind       = obj.value("kind").toString();
+        r.fmt        = obj.value("fmt").toString();
         r.filePath   = obj.value("filePath").toString();
         r.status     = obj.value("status").toInt();
         r.addedAt    = static_cast<qint64>(obj.value("addedAt").toDouble());
@@ -156,9 +201,19 @@ void SgDownloadHistory::load() {
         // running, so present it as Failed — restartable from its page URL.
         if (r.status == Downloading || r.status == Queued) r.status = Failed;
         if (r.site.isEmpty()) r.site = siteForUrl(r.pageUrl); // backfill older entries
-        if (r.pageUrl.isEmpty() || m_records.contains(r.pageUrl)) continue;
-        m_records.insert(r.pageUrl, r);
-        m_order.append(r.pageUrl);
+        if (r.id.isEmpty()) r.id = freshId(); // entries from before id-keying
+        // Entries from before kind/fmt were captured: derive both from the saved
+        // file's extension so old users' rows show a type too. No file recorded
+        // (e.g. an old failed download) means there's nothing to derive — the
+        // row's type label stays hidden for those.
+        if (r.kind.isEmpty() && !r.filePath.isEmpty()) {
+            const QString ext = QFileInfo(r.filePath).suffix().toLower();
+            r.kind = kindForExt(ext);
+            if (r.fmt.isEmpty() && !ext.isEmpty()) r.fmt = ext;
+        }
+        if (r.pageUrl.isEmpty() || m_records.contains(r.id)) continue;
+        m_records.insert(r.id, r);
+        m_order.append(r.id);
     }
     trim();
 }
@@ -173,10 +228,13 @@ void SgDownloadHistory::save() const {
     for (const QString& k : m_order) {
         const Record& r = m_records[k];
         QJsonObject obj;
+        obj["id"]         = r.id;
         obj["pageUrl"]    = r.pageUrl;
         obj["title"]      = r.title;
         obj["thumbUrl"]   = r.thumbUrl;
         obj["site"]       = r.site;
+        obj["kind"]       = r.kind;
+        obj["fmt"]        = r.fmt;
         obj["filePath"]   = r.filePath;
         obj["status"]     = r.status;
         obj["addedAt"]    = static_cast<double>(r.addedAt);

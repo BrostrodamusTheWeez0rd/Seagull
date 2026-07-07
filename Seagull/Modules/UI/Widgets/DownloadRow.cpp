@@ -14,6 +14,9 @@
 #include <QPixmapCache>
 #include <QPalette>
 #include <QStringList>
+#include <QFileInfo>
+#include <QDateTime>
+#include <QLocale>
 
 namespace {
 constexpr int kThumbW = 96;
@@ -35,11 +38,30 @@ QString statusText(int s) {
     }
     return QString();
 }
+
+// The row's file-type label: the real extension once the file exists (handles
+// "Best Available" resolving to whatever it resolves to), else the format the
+// download was queued with, else just Video/Audio. Empty for legacy records.
+QString typeText(const SgDownloadHistory::Record& r) {
+    const QString ext = QFileInfo(r.filePath).suffix();
+    if (!ext.isEmpty()) return ext.toUpper();
+    if (!r.fmt.isEmpty() && r.fmt.compare(QStringLiteral("Best Available"), Qt::CaseInsensitive) != 0)
+        return r.fmt.toUpper();
+    return r.kind;
+}
+
+// Date/time for the row: when it finished for done/failed/canceled entries,
+// otherwise when it was queued.
+QString whenText(const SgDownloadHistory::Record& r) {
+    const qint64 ms = (r.finishedAt > 0) ? r.finishedAt : r.addedAt;
+    if (ms <= 0) return QString(); // legacy records may predate the timestamps
+    return QLocale().toString(QDateTime::fromMSecsSinceEpoch(ms), QLocale::ShortFormat);
+}
 }
 
 DownloadRow::DownloadRow(const SgDownloadHistory::Record& rec, QNetworkAccessManager* nam,
                          QWidget* parent)
-    : QFrame(parent), m_pageUrl(rec.pageUrl), m_thumbUrl(rec.thumbUrl),
+    : QFrame(parent), m_id(rec.id), m_thumbUrl(rec.thumbUrl),
       m_filePath(rec.filePath), m_status(rec.status) {
     setObjectName("downloadRow");
     // Fixed, compact height so entries don't stretch to fill the list (and stay uniform).
@@ -77,11 +99,20 @@ DownloadRow::DownloadRow(const SgDownloadHistory::Record& rec, QNetworkAccessMan
     infoRow->setSpacing(10);
     m_statusLabel = new QLabel();
     m_statusLabel->setObjectName("downloadRowStatus");
+    // File type (e.g. MP4 / MP3), then speed/ETA while downloading; the queued/finished
+    // date-time sits pinned at the info line's right edge. All dim themed text.
+    auto* typeLabel = new QLabel(typeText(rec));
+    typeLabel->setObjectName("metaStats");
+    typeLabel->setVisible(!typeLabel->text().isEmpty()); // legacy records have no type
     m_meta = new QLabel();
     m_meta->setObjectName("metaStats"); // themed dim text
     m_meta->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); // clip long paths
+    auto* whenLabel = new QLabel(whenText(rec));
+    whenLabel->setObjectName("metaStats");
     infoRow->addWidget(m_statusLabel);
+    infoRow->addWidget(typeLabel);
     infoRow->addWidget(m_meta, 1);
+    infoRow->addWidget(whenLabel, 0, Qt::AlignRight);
     mid->addLayout(infoRow);
 
     m_bar = new QProgressBar();
@@ -111,9 +142,9 @@ DownloadRow::DownloadRow(const SgDownloadHistory::Record& rec, QNetworkAccessMan
     m_removeBtn  = makeBtn(QStringLiteral("Remove"));
     row->addLayout(actions, 0);
 
-    connect(m_restartBtn, &QPushButton::clicked, this, [this]() { emit restartRequested(m_pageUrl); });
-    connect(m_cancelBtn,  &QPushButton::clicked, this, [this]() { emit cancelRequested(m_pageUrl); });
-    connect(m_removeBtn,  &QPushButton::clicked, this, [this]() { emit removeRequested(m_pageUrl); });
+    connect(m_restartBtn, &QPushButton::clicked, this, [this]() { emit restartRequested(m_id); });
+    connect(m_cancelBtn,  &QPushButton::clicked, this, [this]() { emit cancelRequested(m_id); });
+    connect(m_removeBtn,  &QPushButton::clicked, this, [this]() { emit removeRequested(m_id); });
     connect(m_openBtn,    &QPushButton::clicked, this, [this]() { emit openFolderRequested(m_filePath); });
 
     applyStatus(m_status);

@@ -334,9 +334,18 @@ the shared spell checker.
 ### Downloads — the DownloadManager tab
 
 Persistent download list backed by `SgDownloadHistory`. Owns the ad-hoc download FIFO
-(moved out of the orchestrator) and drives `downloadWorker` strictly one-at-a-time. Rows
-(`Widgets/DownloadRow`: thumbnail, title, status, progress bar with yt-dlp's own speed/ETA
-strings) rebuild on structural changes; live progress goes straight into the active row.
+(moved out of the orchestrator) and drives `downloadWorker` strictly one-at-a-time. Records
+are keyed by a unique per-download id, NOT the page URL — the same link downloaded as video
+and again as audio is two separate rows. `enqueue` captures the Settings download shape
+(`Download/Type` + `Download/Format`) onto the record; the only dedup rule is that an
+identical url+type+format is ignored while one is already Queued/Downloading. Rows
+(`Widgets/DownloadRow`: thumbnail, title, then an info line with status, file type — real
+extension once the file exists, else the queued format — yt-dlp's own speed/ETA while
+downloading, and the queued/finished date-time pinned right) rebuild on structural changes;
+live progress goes straight into the active row. Restart re-queues the SAME record (id
+kept, timestamps/path reset). Loading a pre-id-keying history migrates in place: ids are
+synthesized, and kind/fmt are derived from the saved file's extension so old rows show a
+type too (an old record with no file recorded stays typeless — nothing to derive from).
 Row titles are `Widgets/MarqueeLabel`s — the shared elide-at-rest / marquee-on-hover title
 label also used by the video cards (two-line elide collapsing to a one-line marquee on
 card hover) and the player's title pill. Long titles never overflow or widen a layout:

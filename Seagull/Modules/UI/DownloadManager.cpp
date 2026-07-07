@@ -13,6 +13,8 @@
 #include <QFont>
 #include <QTimer>
 #include <QUrl>
+#include <QSettings>
+#include "../Backend/SgPaths.h"
 
 DownloadManager::DownloadManager(SgYtDlp* downloadWorker, QWidget* parent)
     : QWidget(parent), m_worker(downloadWorker) {
@@ -95,9 +97,20 @@ DownloadManager::DownloadManager(SgYtDlp* downloadWorker, QWidget* parent)
 
 void DownloadManager::enqueue(const QUrl& pageUrl, const QString& title, const QString& thumbUrl) {
     const QString url = pageUrl.toString();
-    if (url.isEmpty() || url == m_activeKey) return; // ignore a re-click on the active download
-    SgDownloadHistory::instance()->record(url, title, thumbUrl); // -> Queued, moved to front
-    if (!m_queue.contains(url)) m_queue.append(url);
+    if (url.isEmpty()) return;
+
+    // The download's shape is whatever the Settings download section says right now —
+    // capture it on the record, both for the row's type label and so the same link can
+    // be downloaded again as something else (video AND audio = two separate rows).
+    QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
+    const QString kind = settings.value("Download/Type", "Video").toString();
+    const QString fmt  = settings.value("Download/Format", "mp4").toString();
+
+    // Ignore a re-click while the identical download is already queued or running.
+    if (!SgDownloadHistory::instance()->pendingDuplicate(url, kind, fmt).isEmpty()) return;
+
+    const QString id = SgDownloadHistory::instance()->add(url, title, thumbUrl, kind, fmt);
+    m_queue.append(id);
     pump();
 }
 
@@ -107,7 +120,7 @@ void DownloadManager::pump() {
     m_downloading = true;
     m_canceling   = false;
     SgDownloadHistory::instance()->setStatus(m_activeKey, SgDownloadHistory::Downloading);
-    m_worker->download(m_activeKey);
+    m_worker->download(SgDownloadHistory::instance()->recordFor(m_activeKey).pageUrl);
     emit activity(true, 0.0);
 }
 
@@ -140,25 +153,27 @@ void DownloadManager::onFinished(bool ok) {
     else emit activity(false, -1.0);
 }
 
-void DownloadManager::restart(const QString& pageUrl) {
-    const SgDownloadHistory::Record r = SgDownloadHistory::instance()->recordFor(pageUrl);
-    enqueue(QUrl(pageUrl), r.title, r.thumbUrl);
+void DownloadManager::restart(const QString& id) {
+    if (id == m_activeKey) return; // already running
+    SgDownloadHistory::instance()->requeue(id); // same row, back to Queued
+    if (!m_queue.contains(id)) m_queue.append(id);
+    pump();
 }
 
-void DownloadManager::cancel(const QString& pageUrl) {
-    if (pageUrl == m_activeKey) {
+void DownloadManager::cancel(const QString& id) {
+    if (id == m_activeKey) {
         // Kill the running process; onFinished sees m_canceling and marks it Canceled.
         m_canceling = true;
         if (m_worker) m_worker->cancel();
     } else {
-        m_queue.removeOne(pageUrl);
-        SgDownloadHistory::instance()->setStatus(pageUrl, SgDownloadHistory::Canceled);
+        m_queue.removeOne(id);
+        SgDownloadHistory::instance()->setStatus(id, SgDownloadHistory::Canceled);
     }
 }
 
-void DownloadManager::removeOne(const QString& pageUrl) {
-    m_queue.removeOne(pageUrl);
-    SgDownloadHistory::instance()->remove(pageUrl);
+void DownloadManager::removeOne(const QString& id) {
+    m_queue.removeOne(id);
+    SgDownloadHistory::instance()->remove(id);
 }
 
 void DownloadManager::rebuild() {
@@ -179,6 +194,6 @@ void DownloadManager::rebuild() {
         connect(row, &DownloadRow::openFolderRequested, this,
                 [this](const QString& path) { if (!path.isEmpty()) emit openFileRequested(path); });
         m_listLayout->insertWidget(idx++, row);
-        m_rows.insert(rec.pageUrl, row);
+        m_rows.insert(rec.id, row);
     }
 }
