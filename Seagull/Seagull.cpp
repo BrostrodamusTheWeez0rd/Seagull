@@ -430,6 +430,11 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // A fresh playlist file landed in the playlist folder — flash the Library tab.
     connect(queueModule, &Queue::playlistSaved, this, [this](const QString&) { flashLibraryTab(); });
 
+    // Queue downloads (Download now / Download Queue / right-click Download) go to the
+    // Download Manager tab, which owns the download FIFO and shows per-item progress —
+    // same route the Search cards' Download buttons take.
+    connect(queueModule, &Queue::downloadRequested, downloadManagerModule, &DownloadManager::enqueue);
+
     // Shorts-feed scroll: wheel over the playing short = next/previous result of
     // whichever search tab is the active feed. (Search card play wiring lives in
     // wireSearchTab so every search tab — primary or duplicate — behaves the same.)

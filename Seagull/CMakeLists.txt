@@ -50,6 +50,8 @@ add_executable(Seagull
     Modules/UI/Widgets/PlayerControls.cpp
     Modules/UI/Widgets/PlayerControls.h
     Modules/UI/Widgets/ClickSlider.h
+    Modules/UI/Widgets/MarqueeLabel.cpp
+    Modules/UI/Widgets/MarqueeLabel.h
     Modules/UI/Widgets/PlayerTitleBar.cpp
     Modules/UI/Widgets/PlayerTitleBar.h
     Modules/UI/Widgets/VideoCard.cpp

@@ -46,7 +46,6 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     titleResolver = resolverWorker;
     cdnPrefetcher = prefetcherWorker;
 
-    isProcessingQueue = false;
     isStreamingQueue = false;
 
     banner = new QLabel();
@@ -131,17 +130,13 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     btnLayout->addWidget(clearQueueBtn);
     btnLayout->addStretch();
 
-    queueTable = new QTableWidget(0, 3);
-    queueTable->setHorizontalHeaderLabels({ "Title", "Status", "Progress" });
+    queueTable = new QTableWidget(0, 2);
+    queueTable->setHorizontalHeaderLabels({ "Title", "Status" });
     queueTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     queueTable->setMinimumHeight(200);
     queueTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     queueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     queueTable->setContextMenuPolicy(Qt::CustomContextMenu);
-
-    progressBar = new QProgressBar();
-    progressBar->setRange(0, 100);
-    progressBar->hide();
 
     logConsole = new QTextEdit();
     logConsole->setReadOnly(true);
@@ -164,7 +159,7 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     layout->addWidget(loadingRow);
     layout->addWidget(metadataContainer); layout->addWidget(urlInput);
     layout->addLayout(btnLayout); layout->addWidget(queueTable);
-    layout->addWidget(progressBar); layout->addWidget(logConsole);
+    layout->addWidget(logConsole);
 
     debounceTimer = new QTimer(this);
     debounceTimer->setSingleShot(true);
@@ -172,7 +167,6 @@ Queue::Queue(SgYtDlp* downloaderWorker, SgYtDlp* resolverWorker, SgYtDlp* prefet
     resolverTimer->setSingleShot(true);
 
     connect(downloader, &SgYtDlp::logMessage, this, &Queue::handleLogMessage);
-    connect(downloader, &SgYtDlp::progressUpdated, this, &Queue::handleProgress);
     connect(downloader, &SgYtDlp::finished, this, &Queue::handleFinished);
     connect(downloader, &SgYtDlp::metadataReady, this, &Queue::handleMetadataReady);
     connect(downloader, &SgYtDlp::streamUrlReady, this, &Queue::handleStreamUrlReady);
@@ -325,10 +319,9 @@ void Queue::offerPlaylistQueue(const QString& fullUrl) {
 }
 
 void Queue::onClearQueueClicked() {
-    // Clear state flags FIRST so that killing an in-flight download doesn't
-    // trigger queue advancement in handleFinished (which checks isProcessingQueue).
+    // Clear the playback-session flags before killing the worker so a canceled
+    // in-flight fetch can't act on stale state.
     isStreamingQueue = false;
-    isProcessingQueue = false;
     m_waitingForCdn = false;
     m_queuePlayIndex = -1;
     m_queueDrained = false;
@@ -343,7 +336,6 @@ void Queue::onClearQueueClicked() {
 
     processQueueBtn->setEnabled(true);
     streamQueueBtn->setEnabled(true);
-    progressBar->hide();
     updateQueueButtonVisibility();
 }
 
@@ -444,7 +436,6 @@ void Queue::loadPlaylistFile(const QString& path, bool autoPlay) {
         item->setData(Qt::UserRole, target);
         queueTable->setItem(row, 0, item);
         queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
-        queueTable->setItem(row, 2, new QTableWidgetItem(local ? "-" : "0%"));
     }
     updateQueueButtonVisibility();
     if (queueTable->rowCount() == 0) {
@@ -590,7 +581,6 @@ void Queue::addLocalFilesToQueue(const QStringList& paths) {
         item->setData(Qt::UserRole, fi.absoluteFilePath());
         queueTable->setItem(row, 0, item);
         queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
-        queueTable->setItem(row, 2, new QTableWidgetItem("-")); // no download progress for local
     }
     updateQueueButtonVisibility();
 }
@@ -734,10 +724,11 @@ void Queue::triggerMetadataFetch() {
 }
 
 void Queue::onDownloadClicked() {
-    isProcessingQueue = false; progressBar->show(); logConsole->clear();
     // Single-download button: always download just the one video, never the
-    // whole playlist, even when the URL carries a &list= parameter.
-    downloader->download(stripToVideoUrl(urlInput->text()));
+    // whole playlist, even when the URL carries a &list= parameter. The Download
+    // Manager tab owns the download FIFO and shows the progress/history row.
+    emit downloadRequested(QUrl(stripToVideoUrl(urlInput->text())),
+                           cachedTitle, m_currentThumbUrl);
 }
 
 void Queue::onAddToQueueClicked() {
@@ -750,7 +741,6 @@ void Queue::onAddToQueueClicked() {
     item->setData(Qt::UserRole, urlInput->text());
     queueTable->setItem(row, 0, item);
     queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
-    queueTable->setItem(row, 2, new QTableWidgetItem("0%"));
     urlInput->clear(); metadataContainer->hide(); cachedTitle.clear(); m_pendingPlaylistUrl.clear();
     updateQueueButtonVisibility();
     prefetchNextInQueue();
@@ -766,19 +756,23 @@ void Queue::addUrlToQueue(const QString& url, const QString& title) {
     item->setData(Qt::UserRole, url);
     queueTable->setItem(row, 0, item);
     queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
-    queueTable->setItem(row, 2, new QTableWidgetItem("0%"));
     updateQueueButtonVisibility();
     prefetchNextInQueue();
 }
 
 void Queue::onProcessQueueClicked() {
     if (queueTable->rowCount() == 0) return;
-    isProcessingQueue = true;
-    processQueueBtn->setEnabled(false); streamQueueBtn->setEnabled(false);
-    QString url = queueTable->item(0, 0)->data(Qt::UserRole).toString();
-    if (url.isEmpty()) url = queueTable->item(0, 0)->text();
-    downloader->download(url);
-    progressBar->show();
+    // Hand every row to the Download Manager (its FIFO downloads them one at a
+    // time, with per-item progress in the Downloads tab) and empty the queue —
+    // same end state as the old in-tab flow, which drained the table as it went.
+    for (int i = 0; i < queueTable->rowCount(); ++i) {
+        QTableWidgetItem* item = queueTable->item(i, 0);
+        QString url = item->data(Qt::UserRole).toString();
+        if (url.isEmpty()) url = item->text();
+        emit downloadRequested(QUrl(stripToVideoUrl(url)), item->text(), QString());
+    }
+    queueTable->setRowCount(0);
+    updateQueueButtonVisibility();
 }
 
 void Queue::onStreamClicked() {
@@ -875,7 +869,7 @@ void Queue::downloadSelectedItems() {
         QTableWidgetItem* item = queueTable->item(index.row(), 0);
         QString url = item->data(Qt::UserRole).toString();
         if (url.isEmpty()) url = item->text();
-        downloader->download(url);
+        emit downloadRequested(QUrl(stripToVideoUrl(url)), item->text(), QString());
     }
 }
 
@@ -1014,7 +1008,6 @@ void Queue::handlePlaylistEntriesReady(const QList<QString>& urls) {
         item->setData(Qt::UserRole, url);
         queueTable->setItem(row, 0, item);
         queueTable->setItem(row, 1, new QTableWidgetItem("Queued"));
-        queueTable->setItem(row, 2, new QTableWidgetItem("0%"));
     }
 
     urlInput->clear();
@@ -1040,26 +1033,9 @@ void Queue::handleFinished(bool success) {
         if (m_loadingSpinner) m_loadingSpinner->hide();
         if (m_loadingMovie) m_loadingMovie->stop();
         loadingLabel->setStyleSheet("color: #ff6b6b; font-style: italic;");
-        loadingLabel->setText("Couldn't fetch link info — check the URL or your connection.");
+        loadingLabel->setText("Couldn't fetch link info. Check the URL or your connection.");
         loadingLabel->show();
-        progressBar->hide();
-        return;
     }
-
-    if (isProcessingQueue) {
-        queueTable->removeRow(0);
-        if (queueTable->rowCount() > 0) {
-            QString url = queueTable->item(0, 0)->data(Qt::UserRole).toString();
-            if (url.isEmpty()) url = queueTable->item(0, 0)->text();
-            downloader->download(url);
-        }
-        else {
-            isProcessingQueue = false;
-            processQueueBtn->setEnabled(true); streamQueueBtn->setEnabled(true);
-            updateQueueButtonVisibility(); progressBar->hide();
-        }
-    }
-    else { progressBar->hide(); }
 }
 
 void Queue::handleLogMessage(const QString& m) {
@@ -1069,13 +1045,3 @@ void Queue::handleLogMessage(const QString& m) {
     logConsole->setTextCursor(c);
 }
 
-void Queue::handleProgress(double p) {
-    progressBar->setValue(static_cast<int>(p));
-    if (isProcessingQueue && queueTable->rowCount() > 0) {
-        queueTable->setItem(0, 2, new QTableWidgetItem(QString::number(p, 'f', 1) + "%"));
-    }
-    else {
-        int last = queueTable->rowCount() - 1;
-        if (last >= 0) queueTable->setItem(last, 2, new QTableWidgetItem(QString::number(p, 'f', 1) + "%"));
-    }
-}

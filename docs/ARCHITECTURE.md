@@ -337,16 +337,24 @@ Persistent download list backed by `SgDownloadHistory`. Owns the ad-hoc download
 (moved out of the orchestrator) and drives `downloadWorker` strictly one-at-a-time. Rows
 (`Widgets/DownloadRow`: thumbnail, title, status, progress bar with yt-dlp's own speed/ETA
 strings) rebuild on structural changes; live progress goes straight into the active row.
+Row titles are `Widgets/MarqueeLabel`s — the shared elide-at-rest / marquee-on-hover title
+label also used by the video cards (two-line elide collapsing to a one-line marquee on
+card hover) and the player's title pill. Long titles never overflow or widen a layout:
+they end in an ellipsis until hovered, then scroll to the end, hold, snap back, repeat.
 Restart re-runs yt-dlp against the stored **page URL** (never a CDN URL — those expire),
 cancel marks Canceled, finished rows offer open-folder. `activity(busy, percent)` drives
-the tab-header progress bar. Only Search-card downloads route here; the Queue tab's own
-downloads use `downloaderWorker` with the Queue's inline progress and never enter this
-history.
+the tab-header progress bar. ALL downloads route here — Search-card Download buttons and
+every Queue-tab download action ("Download now", "Download Queue", the context menu's
+Download) emit a `downloadRequested(pageUrl, title, thumbUrl)` that the orchestrator wires
+to `enqueue`. The Queue no longer downloads on `downloaderWorker` at all (that worker keeps
+metadata/stream-URL/playlist fetches), so it has no inline progress bar or per-row progress
+column; "Download Queue" hands the whole table over and clears it.
 
 ### Queue — preview, stream, download, queue
 
 Paste-a-URL preview (debounced metadata fetch → hero thumbnail + stats), then Stream /
-Download / Add to Queue. The queue holds ONE locality at a time (local or online, never
+Download / Add to Queue. All download actions hand off to the Downloads tab (see above);
+the queue table shows Title + Status only. The queue holds ONE locality at a time (local or online, never
 mixed — crossing the line pops a clear-first modal); a local queue relabels "Stream Queue"
 to "Play Queue" and hides "Download Queue". Playlist URLs offer queueing all entries;
 titles resolve in the background one row at a time; the CDN prefetcher resolves the next
@@ -434,8 +442,11 @@ and swallows Escape while busy so a tool is never replaced while something might
 - `SgYtDlp` — see §7.
 - `SgOptions` — builds yt-dlp's argument list from config: output path (smart-sort routes
   per media type), format/quality, browser cookies. Audio downloads append
-  `--embed-thumbnail --embed-metadata --convert-thumbnails jpg` (ffmpeg embeds for
-  MP3/Opus/FLAC, AtomicParsley for M4A/MP4; jpg because YouTube thumbnails are WebP).
+  `--embed-metadata`, plus `--embed-thumbnail --convert-thumbnails jpg` (ffmpeg embeds for
+  MP3/Opus/FLAC, AtomicParsley for M4A/MP4; jpg because YouTube thumbnails are WebP) —
+  except for WAV/AAC, which have no cover-art container: yt-dlp's embed step would
+  hard-fail the whole download (non-zero exit despite a completed file, orphaned jpg
+  beside it), so those skip the thumbnail args entirely.
 - `SgFormat` — `StreamOption` + the format-selection policy shared by resolve/probe.
 - `SgSearch` — discovery worker (`Site` enum: YouTube / PornHub / Chaturbate / SoundCloud /
   Twitch). yt-dlp for normal search (`ytsearch:` / `scsearch:` — SoundCloud rides the same
@@ -501,11 +512,11 @@ contend:
 
 | Worker | Job |
 |--------|-----|
-| `downloaderWorker` | Queue-tab downloads |
+| `downloaderWorker` | Queue-tab metadata previews / playlist-entry fetches |
 | `resolverWorker` | Stream URL / queue title resolution |
 | `prefetcherWorker` | Next queue item's CDN prefetch |
 | `playerWorker` | The player's probe + stream-url traffic |
-| `downloadWorker` | Search-card downloads, pumped one-at-a-time by the Downloads tab |
+| `downloadWorker` | ALL downloads (Search cards + Queue tab), pumped one-at-a-time by the Downloads tab |
 | `commentsWorker` | Paginated comments fetch — on its own thread |
 | `shortsPrefetcher` | The next TWO shorts' CDN resolves, ahead of the scroll |
 
@@ -590,7 +601,7 @@ install is self-contained and survives the self-update's robocopy swap.
 | `skipRequested` | VideoPlayer | Seagull (`skipActive`) | Skip forward/back, shared with SMTC next/prev |
 | `probeQualitiesRequested` / `streamUrlRequested` | VideoPlayer | playerWorker | Quality probe / format resolve (`freshResolve` bypasses the cache) |
 | `fullscreenToggleRequested` / `popOutRequested` | VideoPlayer | MainWindow | Window-level actions |
-| `downloadRequested` | Search | DownloadManager | Queue a card download (page URL + title + thumb) |
+| `downloadRequested` | Search / Queue | DownloadManager | Queue a download (page URL + title + thumb) |
 | `activity` | DownloadManager | MainWindow `setTabProgress` | Downloads tab-header progress |
 | `downloadProgress` / `downloadDestination` | SgYtDlp | DownloadManager | Per-row live progress / final file path |
 | `mediaKindChanged` | VideoPlayer | Seagull → EQ | Audio page pill follows playback |

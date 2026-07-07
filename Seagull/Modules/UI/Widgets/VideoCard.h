@@ -8,6 +8,7 @@
 class QNetworkAccessManager;
 class QToolButton;
 class RoundedThumb;
+class MarqueeLabel;
 
 // A reusable result tile: thumbnail + title + "channel | length | views", styled
 // by the theme. Clicking the thumbnail or the title (or the Play button) asks to
@@ -69,6 +70,8 @@ signals:
 protected:
     void mousePressEvent(QMouseEvent* event) override; // click anywhere = play (or open channel)
     void changeEvent(QEvent* event) override;          // PaletteChange -> re-tint star icon
+    void enterEvent(QEnterEvent* event) override;      // card hover arms the title marquee
+    void leaveEvent(QEvent* event) override;
 
 private:
     void loadThumbnail(QNetworkAccessManager* nam);
@@ -91,7 +94,7 @@ private:
     SearchResult  m_result;
     QString       m_channelUrl; // cached from m_result.channelUrl for signal handler
     RoundedThumb* m_thumb;
-    QWidget*      m_title    = nullptr; // click-to-play target (with the thumbnail)
+    MarqueeLabel* m_title    = nullptr; // click-to-play target (with the thumbnail); marquees on card hover
     QToolButton*  m_starBtn  = nullptr; // null when not a YouTube card
     SelectionOverlay* m_selOverlay = nullptr; // created lazily when selection mode arms
     bool          m_selected = false;

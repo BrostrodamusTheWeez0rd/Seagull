@@ -1,4 +1,5 @@
 #include "DownloadRow.h"
+#include "MarqueeLabel.h"
 #include "../../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP thumbnails)
 
 #include <QHBoxLayout>
@@ -63,11 +64,11 @@ DownloadRow::DownloadRow(const SgDownloadHistory::Record& rec, QNetworkAccessMan
     mid->setContentsMargins(0, 0, 0, 0);
     mid->setSpacing(3);
 
-    m_title = new QLabel(rec.title.isEmpty() ? rec.pageUrl : rec.title);
+    m_title = new MarqueeLabel(rec.title.isEmpty() ? rec.pageUrl : rec.title);
     m_title->setObjectName("downloadRowTitle");
     m_title->setWordWrap(false);
     m_title->setTextInteractionFlags(Qt::NoTextInteraction);
-    // Ignored width so a long title clips instead of widening the row.
+    // Ignored width so a long title elides instead of widening the row.
     m_title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     mid->addWidget(m_title);
 
@@ -154,6 +155,18 @@ void DownloadRow::setLiveProgress(double percent, const QString& speed, const QS
     if (!speed.isEmpty()) parts << speed;
     if (!eta.isEmpty())   parts << ("ETA " + eta);
     m_meta->setText(parts.join("   "));
+}
+
+// Hovering anywhere on the row starts the title marquee (long titles elide at
+// rest); leaving snaps it back.
+void DownloadRow::enterEvent(QEnterEvent* event) {
+    if (m_title) m_title->setMarqueeOn(true);
+    QFrame::enterEvent(event);
+}
+
+void DownloadRow::leaveEvent(QEvent* event) {
+    if (m_title) m_title->setMarqueeOn(false);
+    QFrame::leaveEvent(event);
 }
 
 void DownloadRow::loadThumbnail(QNetworkAccessManager* nam) {

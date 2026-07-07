@@ -9,6 +9,7 @@ class QLabel;
 class QProgressBar;
 class QPushButton;
 class QNetworkAccessManager;
+class MarqueeLabel;
 
 // One row in the Download Manager's list: thumbnail + title + status + (while downloading)
 // a progress bar and speed/ETA, plus per-status action buttons (Restart / Cancel / Remove /
@@ -32,6 +33,10 @@ signals:
     void removeRequested(const QString& pageUrl);
     void openFolderRequested(const QString& filePath);
 
+protected:
+    void enterEvent(QEnterEvent* event) override; // row hover arms the title marquee
+    void leaveEvent(QEvent* event) override;
+
 private:
     void loadThumbnail(QNetworkAccessManager* nam);
     void applyStatus(int status); // status text/colour + which widgets/buttons show
@@ -42,7 +47,7 @@ private:
     int     m_status = SgDownloadHistory::Queued;
 
     QLabel*       m_thumb  = nullptr;
-    QLabel*       m_title  = nullptr;
+    MarqueeLabel* m_title  = nullptr; // elides at rest, marquees on row hover
     QLabel*       m_statusLabel = nullptr;
     QLabel*       m_meta   = nullptr; // speed / ETA (downloading) or site (otherwise)
     QProgressBar* m_bar    = nullptr;

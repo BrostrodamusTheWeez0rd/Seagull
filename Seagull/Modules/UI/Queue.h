@@ -7,7 +7,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QProgressBar>
 #include <QTextEdit>
 #include <QTableWidget>
 #include <QTimer>
@@ -75,6 +74,11 @@ signals:
     // A .sgpl was written to the playlist folder (the shell flashes the Library).
     void playlistSaved(const QString& path);
 
+    // A download was requested (Download now, Download Queue, or the context
+    // menu) — routed to the Download Manager tab, which owns the download FIFO
+    // and shows per-item progress/history. Signature matches DownloadManager::enqueue.
+    void downloadRequested(const QUrl& pageUrl, const QString& title, const QString& thumbUrl);
+
 private slots:
     void onDownloadClicked();
     void onAddToQueueClicked();
@@ -91,7 +95,6 @@ private slots:
         const QString& viewCount, const QString& uploadDate, const QString& thumbUrl);
     void handleStreamUrlReady(const QUrl& videoUrl, const QUrl& audioUrl);
     void handleLogMessage(const QString& message);
-    void handleProgress(double percentage);
     void handleFinished(bool success);
     void handlePlaylistEntriesReady(const QList<QString>& urls);
 
@@ -151,7 +154,6 @@ private:
     QLabel* metaUploader;
     QLabel* metaStats;
     QTableWidget* queueTable;
-    QProgressBar* progressBar;
     QTextEdit* logConsole;
 
     // Timers
@@ -169,7 +171,6 @@ private:
 
     // State
     bool    isFetchingMetadata = false;
-    bool    isProcessingQueue = false;
     bool    isStreamingQueue = false;
     QString cachedTitle;
     QString m_pendingPlaylistUrl;

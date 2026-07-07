@@ -1,4 +1,5 @@
 #include "VideoCard.h"
+#include "MarqueeLabel.h"
 #include "../../Backend/SgFavorites.h"
 #include "../../Backend/SgThumbnailer.h" // decodeViaFfmpeg (WebP avatars)
 #include "../../Backend/SgWatchHistory.h" // watched indicator (progress bar + dim)
@@ -255,12 +256,13 @@ VideoCard::VideoCard(const SearchResult& result, QNetworkAccessManager* nam, int
         live->raise();
     }
 
-    auto* title = new QLabel(m_result.title, this);
+    // Two-line elide at rest; hovering the card collapses it to a one-line
+    // marquee of the full title (see enterEvent/leaveEvent).
+    auto* title = new MarqueeLabel(m_result.title, this);
     title->setObjectName("videoCardTitle");
     QFont tf = title->font();
     tf.setBold(true);
     title->setFont(tf);
-    title->setWordWrap(true);
     title->setFixedHeight(QFontMetrics(tf).height() * 2 + 2); // exactly 2 lines (deterministic)
     lay->addWidget(title);
     m_title = title; // click-to-play target (with the thumbnail)
@@ -501,6 +503,18 @@ void VideoCard::mousePressEvent(QMouseEvent* event) {
         }
     }
     QWidget::mousePressEvent(event);
+}
+
+// Hovering anywhere on the card starts the title marquee (the title strip alone
+// would be a thin target); leaving snaps it back to the two-line elided state.
+void VideoCard::enterEvent(QEnterEvent* event) {
+    if (m_title) m_title->setMarqueeOn(true);
+    QWidget::enterEvent(event);
+}
+
+void VideoCard::leaveEvent(QEvent* event) {
+    if (m_title) m_title->setMarqueeOn(false);
+    QWidget::leaveEvent(event);
 }
 
 void VideoCard::changeEvent(QEvent* event) {

@@ -53,7 +53,7 @@ DownloadManager::DownloadManager(SgYtDlp* downloadWorker, QWidget* parent)
     m_listLayout->setSpacing(10);
     m_listLayout->addStretch(); // rows insert above this so they stack top-down
 
-    m_emptyLabel = new QLabel(QStringLiteral("No downloads yet. Use the Download button on a search result."));
+    m_emptyLabel = new QLabel(QStringLiteral("No downloads yet. Downloads started from search results or the Queue tab will show up here."));
     m_emptyLabel->setObjectName("metaStats"); // themed dim text
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setWordWrap(true);

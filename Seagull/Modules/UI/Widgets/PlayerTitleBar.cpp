@@ -1,4 +1,5 @@
 #include "PlayerTitleBar.h"
+#include "MarqueeLabel.h"
 #include <QFrame>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -36,7 +37,8 @@ PlayerTitleBar::PlayerTitleBar(QWidget* parent) : QWidget(parent)
     m_spinner->setMovie(m_movie);
     m_spinner->hide();
 
-    titleLabel = new QLabel("", pillFrame);
+    // Long titles elide inside the fixed-width pill and marquee on hover.
+    titleLabel = new MarqueeLabel("", pillFrame);
     titleLabel->setObjectName("playerTitleLabel"); // styled by Theme::apply
     titleLabel->setAlignment(Qt::AlignCenter);
 
