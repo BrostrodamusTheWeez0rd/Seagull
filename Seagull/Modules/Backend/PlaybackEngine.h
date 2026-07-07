@@ -144,6 +144,8 @@ private:
     QElapsedTimer m_beatClock;
     double        m_lpLow       = 0.0;     // one-pole filter states for the band split
     double        m_lpLow2      = 0.0;     // 2nd pole -> steeper bass/mid crossover
+    double        m_lpMidLo     = 0.0;     // mid's own steep ~600Hz low edge (2 poles),
+    double        m_lpMidLo2    = 0.0;     // so kick body/harmonics stop bleeding into mid
     double        m_lpMid       = 0.0;
     // Per-band auto-gain peak followers: each band is normalised to its own recent
     // peak so it never just pins at full (keeps headroom + movement on hot tracks).

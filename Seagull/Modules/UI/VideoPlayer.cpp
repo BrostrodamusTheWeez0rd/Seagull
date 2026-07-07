@@ -319,6 +319,14 @@ void VideoPlayer::hardStop() {
 }
 
 void VideoPlayer::onMediaEndReached() {
+    // VLC's end-reached is queued cross-thread, so it can land AFTER the banner X
+    // tore the player down (closing right as a track ends). Acting on it then
+    // resurrects the pinned banner/controls/poster over a closed player — and its
+    // mediaEnded can even auto-advance into a ghost reopen. Closed = ignore.
+    // (A collapsed video pane keeps isVisible() true, so background-audio
+    // auto-advance still works; only closePlayer()'s hide clears it.)
+    if (!isVisible()) return;
+
     stopRecordingIfActive(); // the live source ended — finalise any recording
 
     // Shorts behave like the feed at end-of-clip, honouring autoplay:
@@ -402,8 +410,10 @@ void VideoPlayer::playLocalFile(const QUrl& url) {
     // would never hit the Library's cached entry and re-run ffmpeg every time.
     emit localPosterRequested(url.toLocalFile());
     // Resume from the last watched position for this file, if any (near-complete
-    // and never-really-started items return -1 and start from the top).
-    const qint64 resumeMs = rememberPositionEnabled()
+    // and never-really-started items return -1 and start from the top). Audio
+    // never resumes — songs start at the top, always — and the gate here also
+    // covers positions saved before audio was excluded from the history.
+    const qint64 resumeMs = (rememberPositionEnabled() && m_kind != MediaKind::Audio)
         ? SgWatchHistory::instance()->resumePosition(url.toLocalFile()) : -1;
     engine->loadLocalFile(nativePath, resumeMs > 0 ? resumeMs : 0);
 
@@ -496,8 +506,10 @@ void VideoPlayer::playVideo(const QUrl& rawUrl, const QUrl& cdnVideoUrl, const Q
     currentVideoTitle = title;
 
     // Stage a resume position for this page (consumed by onStreamUrlReady once the
-    // CDN resolves). Live streams never have a stored position, so this is -1 there.
-    m_pendingResumeMs = rememberPositionEnabled()
+    // CDN resolves). Live streams never have a stored position, and audio never
+    // resumes (songs start at the top — the gate also covers positions saved
+    // before audio was excluded from the history).
+    m_pendingResumeMs = (rememberPositionEnabled() && m_kind != MediaKind::Audio)
         ? SgWatchHistory::instance()->resumePosition(rawUrl.toString()) : -1;
 
     if (cdnVideoUrl.isValid() && !cdnVideoUrl.isEmpty()) {
@@ -622,6 +634,11 @@ void VideoPlayer::hidePosterOverlay() {
 }
 
 void VideoPlayer::onPlaybackError() {
+    // A late VLC error queued behind a banner-X teardown must not pin the failure
+    // banner back over a closed player. m_fetching exempts first-open failures,
+    // where the player widget may not have been shown yet but feedback matters.
+    if (!isVisible() && !m_fetching) return;
+
     // A cached stream URL can go stale (non-YouTube tokens we can't pre-validate),
     // which VLC reports as an open error. Re-resolve the link fresh and try once
     // more before giving up.
@@ -710,6 +727,10 @@ void VideoPlayer::closePlayer() {
 
 QString VideoPlayer::currentWatchKey() const {
     if (m_kind == MediaKind::Photo) return QString();           // stills have no resume point
+    // Audio is excluded on purpose: nobody wants a song to resume from halfway.
+    // An empty key means no progress is saved AND no resume is staged, so music
+    // always starts at the top and never lands in Continue Watching.
+    if (m_kind == MediaKind::Audio) return QString();
     if (m_isStreaming)
         return currentBaseUrl.isEmpty() ? QString() : currentBaseUrl.toString();
     return (m_currentLocalUrl.isValid() && !m_currentLocalUrl.isEmpty())
@@ -957,6 +978,10 @@ void VideoPlayer::suppressOverlaysForTransition() {
 // the window animation has finished. Re-shows the overlays, repositions them
 // to the now-settled frame geometry, and re-stacks them above the VLC surface.
 void VideoPlayer::showOverlaysAfterTransition() {
+    // This runs off a singleShot; if the player was closed while the window
+    // animation played out (X during a fullscreen exit), re-showing now would
+    // leave the banner/controls stuck over a closed player.
+    if (!isVisible()) return;
     if (playerControls) playerControls->show();
     if (titleBar) titleBar->show();
     repositionOverlays();
@@ -1443,11 +1468,12 @@ void VideoPlayer::showAudioArt() {
 void VideoPlayer::applyVisualizerSettings() {
     if (!visualizer) return;
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    const QString type = cfg.value("Visualizer/Type", "Seagull Sky").toString();
-    visualizer->setMode(type);
+    const QString type = cfg.value("Visualizer/Type", "Seagull Morning").toString();
+    visualizer->setMode(type); // a legacy saved "Seagull Sky" maps to Morning
     // Behaviour is global — one key shared by every visualizer.
     visualizer->setBehavior(cfg.value("Visualizer/Behavior", "Drift").toString());
     visualizer->setMaxGulls(cfg.value("Visualizer/MaxGulls", 14).toInt());
+    visualizer->setLighthouseBeats(cfg.value("Visualizer/LighthouseBeats", 1).toInt());
     m_killGullsOnEnd = cfg.value("Visualizer/KillOnEnd", true).toBool();
 }
 
@@ -1473,9 +1499,9 @@ void VideoPlayer::applySeekBarWidth() {
 
 void VideoPlayer::cycleVisualizer(int delta) {
     if (!visualizer) return;
-    static const QStringList kTypes = { "Seagull Sky", "Seagull Waves" };
+    static const QStringList kTypes = { "Seagull Morning", "Seagull Waves", "Seagull Night" };
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    const QString cur = cfg.value("Visualizer/Type", "Seagull Sky").toString();
+    const QString cur = cfg.value("Visualizer/Type", "Seagull Morning").toString();
     int idx = qMax(0, int(kTypes.indexOf(cur)));
     idx = (idx + delta + kTypes.size()) % kTypes.size();
     cfg.setValue("Visualizer/Type", kTypes[idx]);

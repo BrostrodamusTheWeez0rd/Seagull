@@ -105,6 +105,12 @@ protected:
             std::memset(data, 0, size_t(maxlen));
             return maxlen;
         }
+        // Tap for the visualizer BEFORE our EQ + normaliser/limiter run: the
+        // limiter's whole job is to flatten dynamics, so analyzing its output left
+        // the visuals squashed. Same audio, same pull instant, dynamics intact.
+        // (The analysis callback is synchronous, and the DSP below overwrites
+        // chunk in place — so this must stay ahead of it.)
+        if (m_onConsumed) m_onConsumed(chunk);
         const int ch = qMax(1, m_channels);
         const int frames = int(got / (2 * ch));
         const int nSamples = frames * ch;
@@ -129,7 +135,6 @@ protected:
         }
         std::memcpy(data, chunk.constData(), size_t(got));
         if (got < maxlen) std::memset(data + got, 0, size_t(maxlen - got)); // pad a partial tail
-        if (m_onConsumed) m_onConsumed(chunk); // visualizer sees the processed S16 (what's heard)
         return maxlen; // always full so the sink stays Active across brief gaps
     }
     qint64 writeData(const char*, qint64) override { return -1; }
@@ -704,19 +709,24 @@ void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
     if (frames <= 0) return;
     const int16_t* s = reinterpret_cast<const int16_t*>(chunk.constData());
 
-    // Bass/mid crossover ~330Hz, CASCADED to 12dB/oct so kick energy lands in the
-    // bass band instead of bleeding up into mids. Mid/treble split ~2kHz (1-pole).
-    const double aLow = 0.046, aMid = 0.250;
+    // Bass keeps its ~330Hz 12dB/oct lowpass. Mid gets its OWN steep low edge at
+    // ~600Hz (2 poles): subtracting only the 330Hz lowpass left the kick's body
+    // and harmonics inside the mid band, which made mid visually mirror bass —
+    // the two bands read as one. Mid/treble split ~1.4kHz (1-pole; lowered from
+    // 2kHz so vocal presence and consonants drive the treble sheet too).
+    const double aLow = 0.046, aMidLo = 0.085, aMid = 0.180;
     double sumsq = 0.0, eBass = 0.0, eMid = 0.0, eTreb = 0.0;
     for (qint64 f = 0; f < frames; ++f) {
         const double x = (ch >= 2) ? (s[f * ch] + s[f * ch + 1]) * (0.5 / 32768.0)
                                    : s[f * ch] / 32768.0;
         sumsq += x * x;
-        m_lpLow  += aLow * (x - m_lpLow);
-        m_lpLow2 += aLow * (m_lpLow - m_lpLow2);  // second pole -> steeper bass edge
-        m_lpMid  += aMid * (x - m_lpMid);
-        const double bass = m_lpLow2;             // well-defined low band
-        const double mid  = m_lpMid - m_lpLow2;   // bass removed more cleanly
+        m_lpLow    += aLow   * (x - m_lpLow);
+        m_lpLow2   += aLow   * (m_lpLow - m_lpLow2);    // second pole -> steeper bass edge
+        m_lpMidLo  += aMidLo * (x - m_lpMidLo);
+        m_lpMidLo2 += aMidLo * (m_lpMidLo - m_lpMidLo2); // second pole -> steep mid low edge
+        m_lpMid    += aMid   * (x - m_lpMid);
+        const double bass = m_lpLow2;                   // well-defined low band
+        const double mid  = m_lpMid - m_lpMidLo2;       // ~600Hz..2kHz: kick body excluded
         const double treb = x - m_lpMid;
         eBass += bass * bass; eMid += mid * mid; eTreb += treb * treb;
     }
@@ -725,11 +735,17 @@ void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
     // Auto-gain: normalise each band to its OWN recent peak (fast attack, slow
     // decay) so it maps the track's dynamics into 0..1 and never just pins at full
     // on hot/bass-heavy material — there's always headroom and movement left.
+    // Then an expansion stage: dense modern material spends its life at 0.6-0.9 of
+    // its own peak, which reads as near-static on screen, so we stretch that band
+    // across the full range (an upward expander, the inverse of what a limiter
+    // does) and smoothstep it for soft knees at silence and full-scale.
     auto agc = [](double raw, double& peak) -> float {
         constexpr double decay  = 0.9990; // peak falls slowly (~seconds) -> stable auto-range
-        constexpr double floorv = 0.06;   // higher gate so quiet bands don't chatter
+        constexpr double floorv = 0.03;   // low enough that quiet intros still register
         peak = std::max(raw, peak * decay);
-        return float(qBound(0.0, raw / std::max(peak, floorv), 1.0));
+        double v = qBound(0.0, raw / std::max(peak, floorv), 1.0);
+        v = qBound(0.0, (v - 0.12) / 0.78, 1.0);  // 0.12..0.90 of peak -> full swing
+        return float(v * v * (3.0 - 2.0 * v));
     };
     const float level  = agc(std::sqrt(sumsq * inv), m_peakLevel);
     const float bass   = agc(std::sqrt(eBass * inv), m_peakBass);

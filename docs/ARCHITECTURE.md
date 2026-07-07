@@ -157,6 +157,9 @@ VLC decode (its audio thread)
                                                           ▼
                         FifoDevice::readData  — S16 → float scratch (we own the buffer)
                                                           │
+                                                          │──▶ analyzeForVisualizer
+                                                          │    (raw S16 at the pull instant,
+                                                          │     BEFORE the EQ/limiter flatten it)
                                               SgEq   (10-band biquad EQ, may overshoot 0 dBFS)
                                                           │
                                               SgDynamics (loudness normaliser → look-ahead
@@ -165,8 +168,6 @@ VLC decode (its audio thread)
                                               float → S16 (clamped quantise, can't clip)
                                                           │
                               QAudioSink (pull mode, ~100 ms buffer) ──▶ device
-                                                          │
-                                              analyzeForVisualizer (same PCM that's heard)
 ```
 
 Load-bearing details, each one earned the hard way:
@@ -199,9 +200,11 @@ Load-bearing details, each one earned the hard way:
 - **Tap OFF rebuilds the player** — libVLC can't cleanly detach a player from amem
   callbacks, so `createPlayer()` runs again and the caller rebinds the video HWND.
 - The visualizer analysis (RMS level, 3-band spectrum via cascaded one-pole splits, beat
-  onsets via a decaying energy average, each normalised to its own recent peak) runs on
-  the pull thread against the PROCESSED S16 — it tracks what's heard, not what VLC decoded
-  ahead — and marshals its emits to the GUI thread, so a UI freeze pauses the visuals but
+  onsets via a decaying energy average, each normalised to its own recent peak then
+  upward-expanded so dense material still moves on screen) runs on the pull thread against
+  the RAW pre-DSP S16 at the moment it's pulled — same timing as what's heard, but ahead of
+  the normaliser/limiter, whose whole job is to flatten exactly the dynamics the visuals
+  need — and marshals its emits to the GUI thread, so a UI freeze pauses the visuals but
   never the audio.
 
 ### Equalizer and normalization state
@@ -235,8 +238,10 @@ timer). Kind is derived per file/stream and announced via `mediaKindChanged`.
 Resume: `saveWatchProgress` snapshots position into `SgWatchHistory` on every transition
 away from the media (pause, stop, EOF, close, new media); EOF records "completed". When
 media starts, a saved position is staged in `m_pendingResumeMs` and consumed into the
-load's `:start-time`. Keyed by page URL (streams) or file path (local); photos and live
-streams never record. Gated by `Playback/RememberPosition` (default on).
+load's `:start-time`. Keyed by page URL (streams) or file path (local); photos, live
+streams, and AUDIO never record or resume (songs always start at the top and never appear
+in Continue Watching — the resume-staging call sites are also gated on kind, which covers
+positions saved before audio was excluded). Gated by `Playback/RememberPosition` (default on).
 
 Shorts mode (`setShortsMode`): the short loops at EOF when autoplay is off (feed style) or
 auto-advances seamlessly when autoplay is on; wheel deltas over the video accumulate to one
@@ -597,7 +602,7 @@ install is self-contained and survives the self-update's robocopy swap.
 | `Search/` | `ResultLimit`, `SortMode`, `ClearHistoryOnExit`, `WarnDuplicateSite`, `CookiesWarningAck`; per-site families `HomeChannels<Site>`, `HomeAmount<Site>`, `HomeVideosPerChannel<Site>`, `HomeRandomize<Site>`, `HomeLazyLoad<Site>`, `ShowContinueWatching<Site>` |
 | `Tabs/` | `Closed`, `Order`, `ExtraTabs`, `ActiveLabel`, `ActiveOrdinal` |
 | `FileExplorer/` | `AddressHistory` |
-| `Visualizer/` | `Type`, `Active`, `Behavior`, `MaxGulls`, `KillOnEnd` |
+| `Visualizer/` | `Type`, `Active`, `Behavior`, `MaxGulls`, `KillOnEnd`, `LighthouseBeats` (beats per lighthouse flash, Night type only) |
 | `Logging/` | `Verbose` (the SEALOG persist) |
 
 ## 9. Key signals

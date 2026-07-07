@@ -243,7 +243,7 @@ void Settings::setupUI() {
     // Visualizer picker + its settings. Tied to audio playback, but it's a visual
     // customization, so it lives here on Appearance rather than on the Audio (EQ) page.
     visualizerCombo = new QComboBox();
-    visualizerCombo->addItems({ "Seagull Sky", "Seagull Waves" });
+    visualizerCombo->addItems({ "Seagull Morning", "Seagull Waves", "Seagull Night" });
     visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio.");
     displayLayout->addRow("Visualizer:", visualizerCombo);
 
@@ -258,6 +258,24 @@ void Settings::setupUI() {
     behaviorCombo->setToolTip("How the seagulls move: Drift (left to right), "
         "Reverse (right to left), Swooping, or Flocking.");
     vizForm->addRow("Seagull behavior:", behaviorCombo);
+
+    // Lighthouse flash cadence — only meaningful where the lamp is lit, so the
+    // row appears dynamically when the night visualizer is selected.
+    lighthouseCombo = new QComboBox();
+    lighthouseCombo->addItem("Every beat", 1);
+    lighthouseCombo->addItem("Every 2 beats", 2);
+    lighthouseCombo->addItem("Every 4 beats", 4);
+    lighthouseCombo->addItem("Every 8 beats", 8);
+    lighthouseCombo->setToolTip("How often the lighthouse beam faces you and flashes. "
+        "It spins at the song's tempo either way.");
+    vizForm->addRow("Lighthouse flash:", lighthouseCombo);
+    auto updateLighthouseRow = [this, vizForm]() {
+        const bool lit = visualizerCombo->currentText().contains("Night");
+        lighthouseCombo->setVisible(lit);
+        if (QWidget* label = vizForm->labelForField(lighthouseCombo)) label->setVisible(lit);
+    };
+    connect(visualizerCombo, &QComboBox::currentTextChanged, this, updateLighthouseRow);
+    updateLighthouseRow();
 
     maxGullsSpin = new QSpinBox();
     maxGullsSpin->setRange(2, 24);
@@ -548,6 +566,7 @@ void Settings::setupUI() {
     connect(cardSizeSlider, &QSlider::valueChanged, this, &Settings::saveSettings);
     connect(seekBarSizeCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(visualizerCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(lighthouseCombo, &QComboBox::currentIndexChanged, this, &Settings::saveSettings);
     connect(behaviorCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(maxGullsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
     connect(killGullsCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
@@ -1098,7 +1117,11 @@ void Settings::loadSettings() {
 
     seekBarSizeCombo->setCurrentText(iniSettings->value("Display/SeekBarSize", "Small").toString());
 
-    visualizerCombo->setCurrentText(iniSettings->value("Visualizer/Type", "Seagull Sky").toString());
+    // A legacy saved "Seagull Sky" won't match any item, so the combo stays on
+    // index 0 — Seagull Morning, its renamed successor.
+    visualizerCombo->setCurrentText(iniSettings->value("Visualizer/Type", "Seagull Morning").toString());
+    lighthouseCombo->setCurrentIndex(qMax(0,
+        lighthouseCombo->findData(iniSettings->value("Visualizer/LighthouseBeats", 1).toInt())));
     // Behaviour is global — one key shared by every visualizer.
     behaviorCombo->setCurrentText(iniSettings->value("Visualizer/Behavior", "Drift").toString());
     maxGullsSpin->setValue(iniSettings->value("Visualizer/MaxGulls", 14).toInt());
@@ -1205,6 +1228,7 @@ void Settings::saveSettings() {
     iniSettings->setValue("Display/CardWidth", currentCardWidth());
     iniSettings->setValue("Display/SeekBarSize", seekBarSizeCombo->currentText());
     iniSettings->setValue("Visualizer/Type", visualizerCombo->currentText());
+    iniSettings->setValue("Visualizer/LighthouseBeats", lighthouseCombo->currentData().toInt());
     // Behaviour is global — one key shared by every visualizer.
     iniSettings->setValue("Visualizer/Behavior", behaviorCombo->currentText());
     iniSettings->setValue("Visualizer/MaxGulls", maxGullsSpin->value());
@@ -1337,7 +1361,7 @@ void Settings::resetDefaults() {
     cardSizeCombo->setCurrentText("Large");
     cardSizeSlider->hide();
     seekBarSizeCombo->setCurrentText("Small");
-    visualizerCombo->setCurrentText("Seagull Sky");
+    visualizerCombo->setCurrentText("Seagull Morning");
     behaviorCombo->setCurrentText("Drift");
     iniSettings->setValue("Visualizer/Behavior", "Drift");
     maxGullsSpin->setValue(14);
