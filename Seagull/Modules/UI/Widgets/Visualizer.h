@@ -11,13 +11,14 @@
 class QTimer;
 class QResizeEvent;
 
-// The audio visualizer: three Qt-drawn coastal scenes — Seagull Morning (sunrise
-// gradient whose warm bleed is a per-band visual EQ), Seagull Waves (day) and
-// Seagull Night (stars, moon, tempo-locked lighthouse lamp). All three share the
-// distant shore (grass, sand, pines, lighthouse point) behind band-reactive
-// waves, with parallax clouds and seagulls drifting across. The number of gulls
-// tracks loudness; they bob gently and flap at the gif's own native speed. On
-// end-of-file they spin and fall out of the sky.
+// The audio visualizer: four Qt-drawn coastal scenes — Seagull Morning (sunrise
+// gradient whose warm bleed is a per-band visual EQ), Seagull Day (bright blue
+// afternoon), Seagull Dusk (a warm sunset over the sea) and Seagull Night (stars,
+// moon, tempo-locked lighthouse lamp). All four share the distant shore (grass,
+// sand, pines, lighthouse point) behind band-reactive waves, with parallax clouds
+// and seagulls drifting across. The number of gulls tracks loudness; they bob
+// gently and flap at the gif's own native speed. On end-of-file they spin and
+// fall out of the sky.
 //
 // Data-source agnostic: consumes a normalised level, a 3-band spectrum, and beat
 // pulses. setDemoMode(true) self-synthesises them until the real audio tap is on.
@@ -34,7 +35,7 @@ public slots:
     void setDemoMode(bool on);                           // self-drive until real audio
     void setBehavior(const QString& name);               // gull behaviour: Drift/Reverse/Swooping/Flocking
     void setMaxGulls(int n);                             // perf cap on the flock size
-    void setMode(const QString& name);                   // "Seagull Morning", "Seagull Waves", "Seagull Night"
+    void setMode(const QString& name);                   // "Seagull Morning" / "Seagull Day" / "Seagull Dusk" / "Seagull Night"
     void setLighthouseBeats(int n);                      // beats per lighthouse flash (1 = every beat)
     void setPaused(bool on);                             // freeze/resume the animation
     void suspendRendering(bool on);                      // pause the render timer to free the GUI thread (e.g. Library build), independent of playback pause
@@ -48,8 +49,30 @@ protected:
     void resizeEvent(QResizeEvent* event) override; // rescale elements to the new size
 
 private:
-    enum class Mode { Morning, Waves, Night };
+    enum class Mode { Morning, Day, Dusk, Night };
     enum class GullBehavior { Drift, Reverse, Swooping, Flocking };
+
+    // A time-of-day colour set for the sea scene. One table (paletteFor) holds
+    // every colour that changes between the scenes, so retuning one means editing
+    // one place instead of chasing "night ? a : b" ternaries.
+    //   reactiveSky => the per-band EQ sky (drawSky, Morning/Dusk) built from the
+    //                  five skyEq* stops; otherwise a static two/three-stop sky
+    //                  (drawWaves, Day/Night) from skyTop/skyMid/skyBot.
+    //   night       => the night-only extras (stars, moon, swept beam, dark gulls,
+    //                  moonlit crest).
+    //   skyMid invalid => a plain two-stop static sky.
+    struct ScenePalette {
+        bool   night = false;
+        bool   reactiveSky = false;
+        QColor skyTop, skyMid, skyBot;                             // static sky (Day/Night)
+        QColor skyEqTop, skyEqHigh, skyEqRose, skyEqAmb, skyEqGold; // reactive EQ sky (Morning/Dusk)
+        QColor grass, sand, trees; int sandShadowA = 120;
+        QColor waterBack, waterMid, waterFront;
+        QColor crestShimmer; // moonlight glinting along the wave crests at night;
+                             // invalid on the day-lit scenes => a calm, matte sea
+                             // with no crest outline.
+    };
+    ScenePalette paletteFor(Mode m) const;
 
     struct Gull  { qreal x, y, size, speed, phase, flap; int foff;
                    qreal rot, spin, vy, yoff; bool dying;
@@ -67,11 +90,13 @@ private:
     void seedScenery();   // (re)build the shore scene's static geometry (cliff, trees, stars)
     void recycleGull(Gull& g);
     void drawGull(QPainter& p, const Gull& g);
-    void drawSky(QPainter& p);    // Seagull Morning: sunrise gradient bleed over the shore
-    void drawWaves(QPainter& p);  // Seagull Waves / Night: flat day or starry night over the shore
-    void drawShore(QPainter& p, bool night);      // the shared scene: grass/sand/pines/lighthouse + waves
+    void drawSky(QPainter& p);    // Seagull Morning/Dusk: reactive per-band EQ sky over the shore
+    void drawSun(QPainter& p, const QPointF& c, qreal r); // solid gold rippled sun + 3 rotating coronas (Morning draws it behind the veiled sky; Day straight on)
+    void drawWaves(QPainter& p);  // Seagull Day/Night: the sea scene under a static sky
+    void drawShore(QPainter& p, const ScenePalette& pal); // the shared scene: grass/sand/pines/lighthouse + waves
     void drawLighthouse(QPainter& p, bool night); // distant point + rocks + tower (+ swept beam at night)
     void drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltDeg, int dir, bool night);
+    qreal beamLightAt(qreal x, qreal y) const; // lighthouse beam strength at a point (0 = in the dark)
     void drawClouds(QPainter& p);
     void loadGullFrames();
 
@@ -79,7 +104,9 @@ private:
     GullBehavior m_behavior = GullBehavior::Drift;
     int  m_maxGulls = 14;          // perf cap
 
-    QVector<QPixmap> m_gullFrames; // animated gull frames (faces left natively; flipped per direction)
+    QVector<QPixmap> m_gullFrames;     // animated gull frames (faces left natively; flipped per direction)
+    QVector<QPixmap> m_gullFramesDark; // night-shaded copies: gulls fly dark after sundown,
+                                       // lit only where the lighthouse beam catches them
     QVector<int>     m_frameDelays; // per-frame display time (ms) — native gif speed
     int   m_frameIdx = 0;
     qreal m_frameAcc = 0.0;
@@ -101,10 +128,21 @@ private:
     qreal m_waveSpeed = 1.0; // slewed copy of m_tempoSpeed (water pace, no snaps)
 
     // The occasional tugboat: spawns rarely at one side on a random sheet and
-    // chugs across riding the surface. He ALTERNATES direction — never the
-    // same crossing twice in a row.
-    struct Tug { bool active = false; int layer = 0; int dir = 1; qreal x = 0.0, bob = 0.0; };
+    // chugs across, ALTERNATING direction — never the same crossing twice.
+    // He FLOATS on a buoyancy spring (py/vy, lagging and overshooting the
+    // water instead of being glued to it); a hard fast riser flings him clear
+    // into a gravity arc with a little rebound on splashdown. tilt is his
+    // smoothed pitch; lastT gates the physics to one update per animation tick.
+    struct Tug { bool active = false; int layer = 0; int dir = 1;
+                 qreal x = 0.0, bob = 0.0;
+                 qreal py = 0.0, vy = 0.0, tilt = 0.0;
+                 qreal lastT = -1.0, smokeT = 0.0; };
     Tug m_tug;
+    // His smoke: world-space puffs emitted from the funnel's ACTUAL position
+    // each moment (bounces kink the trail), rising and drifting on their own —
+    // they hang in the air and finish fading even after he's gone.
+    struct Puff { qreal x, y, age, drift; };
+    QVector<Puff> m_smoke;
 
     // Static shore-scene geometry (Waves/Night), rebuilt per resize in seedScenery.
     // The whole scene sits far off at the horizon, drawn BEHIND the waves.

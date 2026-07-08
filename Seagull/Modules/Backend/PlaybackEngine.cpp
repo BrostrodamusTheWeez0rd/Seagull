@@ -656,7 +656,7 @@ void PlaybackEngine::setAudioTap(bool on) {
         m_tapOn = true;
         m_energyEma = 0.0;
         m_lastBeatMs = 0;
-        m_lpLow = m_lpLow2 = m_lpMid = 0.0;
+        m_lpLow = m_lpLow2 = m_lpMidLo = m_lpMidLo2 = m_lpMid = m_lpMid2 = 0.0;
         m_peakLevel = m_peakBass = m_peakMid = m_peakTreble = 0.0;
         m_beatClock.restart();
 
@@ -725,9 +725,11 @@ void PlaybackEngine::analyzeForVisualizer(const QByteArray& chunk) {
         m_lpMidLo  += aMidLo * (x - m_lpMidLo);
         m_lpMidLo2 += aMidLo * (m_lpMidLo - m_lpMidLo2); // second pole -> steep mid low edge
         m_lpMid    += aMid   * (x - m_lpMid);
+        m_lpMid2   += aMid   * (m_lpMid - m_lpMid2);    // second pole -> steep mid/treble split:
+                                                        // kick clicks stay OUT of treble
         const double bass = m_lpLow2;                   // well-defined low band
-        const double mid  = m_lpMid - m_lpMidLo2;       // ~600Hz..2kHz: kick body excluded
-        const double treb = x - m_lpMid;
+        const double mid  = m_lpMid2 - m_lpMidLo2;      // ~600Hz..1.4kHz, both edges steep
+        const double treb = x - m_lpMid2;
         eBass += bass * bass; eMid += mid * mid; eTreb += treb * treb;
     }
     const double inv = 1.0 / double(frames);

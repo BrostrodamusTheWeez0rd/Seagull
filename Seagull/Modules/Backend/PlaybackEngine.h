@@ -147,6 +147,8 @@ private:
     double        m_lpMidLo     = 0.0;     // mid's own steep ~600Hz low edge (2 poles),
     double        m_lpMidLo2    = 0.0;     // so kick body/harmonics stop bleeding into mid
     double        m_lpMid       = 0.0;
+    double        m_lpMid2      = 0.0;     // 2nd pole on the mid/treble crossover: kick
+                                           // clicks stop bleeding into treble (separation)
     // Per-band auto-gain peak followers: each band is normalised to its own recent
     // peak so it never just pins at full (keeps headroom + movement on hot tracks).
     double        m_peakLevel   = 0.0;

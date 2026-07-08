@@ -92,6 +92,16 @@ void Visualizer::loadGullFrames() {
         QImage rgba = img.convertToFormat(QImage::Format_ARGB32);
         rgba = rgba.scaledToHeight(160, Qt::SmoothTransformation); // natural facing (left); flipped per direction at draw
         m_gullFrames.push_back(QPixmap::fromImage(rgba));
+        // A night-shaded copy of the frame: the same gull pushed toward a dark
+        // blue silhouette, for flying in the dark (the beam lights the normal
+        // frame back in over it).
+        QImage shaded = rgba;
+        {
+            QPainter dp(&shaded);
+            dp.setCompositionMode(QPainter::CompositionMode_SourceAtop);
+            dp.fillRect(shaded.rect(), QColor(18, 24, 40, 170));
+        }
+        m_gullFramesDark.push_back(QPixmap::fromImage(shaded));
         const int d = reader.nextImageDelay();
         m_frameDelays.push_back(d > 0 ? d : 60); // sane default if unspecified
     }
@@ -180,11 +190,63 @@ void Visualizer::setBehavior(const QString& name) {
 
 void Visualizer::setMaxGulls(int n) { m_maxGulls = qBound(1, n, 30); }
 void Visualizer::setMode(const QString& name) {
-    // Anything unrecognised (including a legacy saved "Seagull Sky") lands on Morning.
+    // Anything unrecognised (including a legacy saved "Seagull Sky") lands on
+    // Morning. "Waves" is the pre-rename name for Dusk, so it maps there.
     if      (name.contains(QStringLiteral("Night"), Qt::CaseInsensitive)) m_mode = Mode::Night;
-    else if (name.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)) m_mode = Mode::Waves;
+    else if (name.contains(QStringLiteral("Dusk"),  Qt::CaseInsensitive) ||
+             name.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)) m_mode = Mode::Dusk;
+    else if (name.contains(QStringLiteral("Day"),   Qt::CaseInsensitive)) m_mode = Mode::Day;
     else                                                                  m_mode = Mode::Morning;
     update();
+}
+
+Visualizer::ScenePalette Visualizer::paletteFor(Mode m) const {
+    ScenePalette s;
+    switch (m) {
+    case Mode::Night:
+        s.night = true;
+        s.skyTop = QColor("#050912"); s.skyBot = QColor("#13293e");
+        s.grass  = QColor("#0a1a20"); s.sand = QColor("#161e2e"); s.trees = QColor("#081420");
+        s.sandShadowA = 130;
+        s.waterBack = QColor("#0b2a3c"); s.waterMid = QColor("#103a4e"); s.waterFront = QColor("#175066");
+        s.crestShimmer = QColor("#b9d7fa"); // cool moonlight on the crests
+        break;
+    case Mode::Dusk:
+        // Sunset over the sea, REACTIVE — its OWN dusk palette, distinct from
+        // Morning's soft sunrise: a deep indigo-purple zenith through a plum high
+        // sky and a hot magenta-rose boundary into a burnt-orange amber horizon.
+        // The water body stays a muted twilight violet; the sunset itself lands as
+        // a warm shimmer glinting off the wave crests (crestShimmer).
+        s.reactiveSky = true;
+        s.skyEqTop  = QColor("#1e1440"); s.skyEqHigh = QColor("#6a2e72");
+        s.skyEqRose = QColor("#d1466e"); s.skyEqAmb  = QColor("#f0743a");
+        s.skyEqGold = QColor("#ffc25c");
+        s.grass  = QColor("#3e5f4d"); s.sand = QColor("#d9b184"); s.trees = QColor("#243f38");
+        s.sandShadowA = 120;
+        s.waterBack = QColor("#2a2c4c"); s.waterMid = QColor("#3f4064"); s.waterFront = QColor("#585a7e");
+        break;
+    case Mode::Morning:
+        // Sunrise EQ sky over a bright, day-lit shore. The water is a calm dawn
+        // blue; the sunrise reflection lands as a soft warm shimmer on the crests.
+        s.reactiveSky = true;
+        s.skyEqTop  = QColor("#1a2350"); s.skyEqHigh = QColor("#5b3f87");
+        s.skyEqRose = QColor("#c75c87"); s.skyEqAmb  = QColor("#f0975a");
+        s.skyEqGold = QColor("#ffd79a");
+        s.grass  = QColor("#4e8266"); s.sand = QColor("#c6b489"); s.trees = QColor("#2f6152");
+        s.sandShadowA = 120;
+        s.waterBack = QColor("#274a63"); s.waterMid = QColor("#3f6b82"); s.waterFront = QColor("#6690a0");
+        break;
+    case Mode::Day:
+    default:
+        // Bright blue afternoon, static sky — a clear azure up top easing to a
+        // light, hazy horizon.
+        s.skyTop = QColor("#1e5e97"); s.skyBot = QColor("#8ccbe0");
+        s.grass  = QColor("#4e8266"); s.sand = QColor("#c6b489"); s.trees = QColor("#2f6152");
+        s.sandShadowA = 120;
+        s.waterBack = QColor("#16566e"); s.waterMid = QColor("#1f7d92"); s.waterFront = QColor("#3aa6b3");
+        break;
+    }
+    return s;
 }
 void Visualizer::setLighthouseBeats(int n) { m_beamBeats = qBound(1, n, 16); }
 
@@ -275,10 +337,12 @@ void Visualizer::resizeEvent(QResizeEvent* event) {
     seedClouds();  // rescale clouds to the new size; the flock keeps flying
     seedScenery(); // and rebuild the shore scene's geometry for the new size
 
-    // Rescale the LIVING flock too: gull sizes/positions/speeds are absolute
-    // pixels seeded from the old dimensions, so a fullscreen jump used to leave
-    // the present gulls tiny while fresh spawns (sized off the new height)
-    // dwarfed them. Proportional rescale keeps everyone consistent.
+    // Rescale the LIVING flock with the scene: gull sizes/positions/speeds are
+    // absolute pixels seeded from the old dimensions, so without this a
+    // fullscreen jump left present gulls tiny beside correctly-sized fresh
+    // spawns. Proportional scaling keeps every gull consistent with the new
+    // screen (the earlier "way too big" complaint was the old oversized spawn
+    // range being amplified, not the rescale itself — the range is smaller now).
     const QSize old = event->oldSize();
     if (old.width() > 0 && old.height() > 0 && width() > 0 && height() > 0) {
         const qreal fx = qreal(width()) / old.width();
@@ -312,9 +376,12 @@ void Visualizer::seedScenery() {
     // phases so every launch rolls a little differently, and trees sit EXACTLY
     // on the sampled line.
     const qreal ph1 = frand(0, 6.28), ph2 = frand(0, 6.28);
+    // A TALL hill: ridge up at ~0.60h, so even when the waves wet its lower
+    // slice at max, the big green mass above stays dry — it can never read
+    // as flooded.
     auto grassEdge = [&](qreal xn) {
-        return h * (0.664 + 0.011 * std::sin(xn * 6.8 + ph1)
-                          + 0.006 * std::sin(xn * 14.7 + ph2));
+        return h * (0.600 + 0.014 * std::sin(xn * 6.8 + ph1)
+                          + 0.007 * std::sin(xn * 14.7 + ph2));
     };
     m_grass.clear();
     const int NG = 24;
@@ -342,15 +409,16 @@ void Visualizer::seedScenery() {
     auto jx = [&](qreal f) { return f * w + frand(-0.004, 0.004) * w; };
     auto jy = [&](qreal f) { return f * h + frand(-0.006, 0.006) * h; };
     m_cliff.clear();
-    m_cliff << QPointF(-4, 0.745 * h)               // closed just under the waterline
-            << QPointF(-4, jy(0.630))
-            << QPointF(jx(0.028), jy(0.612))
-            << QPointF(jx(0.092), jy(0.610))        // the plateau
-            << QPointF(jx(0.112), jy(0.648))        // then a craggy little face
-            << QPointF(jx(0.103), jy(0.682))
-            << QPointF(jx(0.128), jy(0.712))
-            << QPointF(0.132 * w, 0.745 * h);
-    m_lightBase = QPointF(0.058 * w, 0.614 * h);    // on the plateau, clear of its edges
+    m_cliff << QPointF(-4, 0.745 * h)               // far-left, under the waterline
+            << QPointF(-4, jy(0.548))               // a steep face rising straight out of the sea
+            << QPointF(jx(0.020), jy(0.520))        // up to the headland's shoulder
+            << QPointF(jx(0.056), jy(0.512))        // the plateau — sits WELL above the island ridge (~0.60h)
+            << QPointF(jx(0.088), jy(0.534))        // dips to a saddle
+            << QPointF(jx(0.116), jy(0.590))        // then a craggy face plunging back down
+            << QPointF(jx(0.104), jy(0.646))
+            << QPointF(jx(0.134), jy(0.708))
+            << QPointF(0.142 * w, 0.745 * h);       // back into the sea
+    m_lightBase = QPointF(0.038 * w, 0.516 * h);    // on the plateau top, clear of its edges
 
     // A couple of tiny rocks breaking the waterline off the point, settled a few
     // px lower so they sit IN the water rather than hovering at the sand line.
@@ -369,7 +437,8 @@ void Visualizer::seedScenery() {
 void Visualizer::recycleGull(Gull& g) {
     const qreal w = qMax(1, width()), h = qMax(1, height());
     const int dir = (m_behavior == GullBehavior::Reverse) ? -1 : 1; // Reverse flies R->L
-    g.size  = frand(h * 0.02, h * 0.06);          // smaller = farther away
+    g.size  = frand(h * 0.015, h * 0.038);        // smaller = farther away (foreground kept
+                                                  // modest so the tugboat still dwarfs them)
     g.x     = (dir > 0) ? -g.size : (w + g.size); // spawn at the trailing edge
     g.y     = frand(h * 0.08, h * 0.55);          // up in the sky, not close/low
     // Speed scales with size (near = faster) but is FLOORED: a small unlucky
@@ -466,7 +535,8 @@ void Visualizer::step() {
     }
 
     // The tugboat: rare, one at a time, on a random sheet — and he ALTERNATES
-    // direction, never making the same crossing twice in a row.
+    // direction, never making the same crossing twice in a row. His vertical
+    // (buoyancy) physics run in drawShore where the water surface is known.
     if (m_tug.active) {
         m_tug.x   += m_tug.dir * dt * 0.055; // ~18s to cross the water
         m_tug.bob += dt * 2.1;
@@ -477,6 +547,19 @@ void Visualizer::step() {
         m_tug.layer  = QRandomGenerator::global()->bounded(3);
         m_tug.x      = (m_tug.dir > 0) ? -0.05 : 1.05; // enter from the trailing side
         m_tug.bob    = frand(0, 6.28);
+        m_tug.lastT  = -1.0; // settle onto the water on the first physics tick
+        m_tug.vy     = 0.0;
+        m_tug.tilt   = 0.0;
+        m_tug.smokeT = 0.0;
+    }
+    // Age his smoke: the puffs live in world space, rising and drifting on a
+    // light breeze — the trail hangs in the air and outlives his exit.
+    for (int i = 0; i < m_smoke.size(); ++i) {
+        Puff& pf = m_smoke[i];
+        pf.age += dt;
+        pf.y   -= height() * 0.045 * dt;
+        pf.x   += pf.drift * height() * 0.030 * dt;
+        if (pf.age > 1.6) { m_smoke.removeAt(i); --i; }
     }
 
     // Bottom-sky hue: spectral balance (0 bassy .. 1 trebly), eased SLOWLY so the
@@ -605,7 +688,20 @@ void Visualizer::drawGull(QPainter& p, const Gull& g) {
     p.translate(g.x, g.y + vOff);
     if (g.rot != 0.0 || tilt != 0.0) p.rotate(g.rot + tilt);
     if (dir > 0) p.scale(-1.0, 1.0); // frames face left natively; flip to face travel direction
-    p.drawPixmap(QRectF(-tw / 2, -th / 2, tw, th), fr, fr.rect());
+    const QRectF dst(-tw / 2, -th / 2, tw, th);
+    if (m_mode == Mode::Night && fi < m_gullFramesDark.size()) {
+        // Night: the gulls fly as dark shapes — and light back up wherever the
+        // lighthouse beam catches them, fading with the beam's own strength.
+        p.drawPixmap(dst, m_gullFramesDark[fi], fr.rect());
+        const qreal lit = beamLightAt(g.x, g.y + vOff);
+        if (lit > 0.01) {
+            p.setOpacity(lit);
+            p.drawPixmap(dst, fr, fr.rect());
+            p.setOpacity(1.0);
+        }
+    } else {
+        p.drawPixmap(dst, fr, fr.rect());
+    }
     p.restore();
 }
 
@@ -614,8 +710,8 @@ void Visualizer::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    if (m_mode == Mode::Morning) drawSky(p);   // sunrise EQ sky over the shore
-    else                         drawWaves(p); // flat day / starry night over the shore
+    if (paletteFor(m_mode).reactiveSky) drawSky(p);   // Morning/Dusk: reactive per-band EQ sky
+    else                                drawWaves(p); // Day/Night: static day / starry night
 
     drawClouds(p);
     // Draw smallest-first so bigger (nearer) gulls paint OVER smaller (farther)
@@ -629,6 +725,7 @@ void Visualizer::paintEvent(QPaintEvent*) {
 }
 
 void Visualizer::drawSky(QPainter& p) {
+    const ScenePalette pal = paletteFor(m_mode); // Morning (sunrise) or Dusk (sunset) stops + shore
     const qreal w = width(), h = height();
     const qreal e = qBound(0.0, m_level, 1.0);
 
@@ -639,11 +736,11 @@ void Visualizer::drawSky(QPainter& p) {
         l = float(qBound(0.0, double(l) * (0.92 + 0.08 * e), 0.85));
         return QColor::fromHslF(hh, s, l);
     };
-    const QColor cTop  = glow(QColor("#1a2350")); // deep indigo (top)
-    const QColor cHigh = glow(QColor("#5b3f87")); // violet
-    const QColor cRose = glow(QColor("#c75c87")); // pink (the bleed boundary)
-    const QColor cAmb  = glow(QColor("#f0975a")); // orange
-    const QColor cGold = glow(QColor("#ffd79a")); // gold horizon
+    const QColor cTop  = glow(pal.skyEqTop);  // zenith (deep indigo / violet)
+    const QColor cHigh = glow(pal.skyEqHigh); // high sky (violet)
+    const QColor cRose = glow(pal.skyEqRose); // the warm/cool bleed boundary (pink / rose)
+    const QColor cAmb  = glow(pal.skyEqAmb);  // low warmth (orange)
+    const QColor cGold = glow(pal.skyEqGold); // horizon (gold / amber)
 
     // The orange/pink bleeds UP into the indigo in the shape of a visual EQ: per
     // column, the warm/cool boundary sits at the frequency band for that x (bass
@@ -659,10 +756,40 @@ void Visualizer::drawSky(QPainter& p) {
         return qBound(0.0, a + (b - a) * t, 1.0);
     };
 
-    // The gradient now spans only down to the waterline — the gold horizon lands
-    // where sea meets sky, and the shore scene + waves own everything below it
-    // (the gradient's final stop pads the covered remainder).
-    p.setRenderHint(QPainter::Antialiasing, false);
+    // The gradient spans only down to the waterline — the gold horizon lands where
+    // sea meets sky, and the shore + waves own everything below (its final stop
+    // pads the covered remainder).
+    //
+    // Morning: the sun sits BEHIND this glow. Paint an opaque warm base and the
+    // sun onto it first, then lay the reactive sky OVER them on an offscreen layer
+    // with a soft transparency pool punched around the sun (DestinationOut). The
+    // light stays only SLIGHTLY see-through at the sun, so the sun is veiled and
+    // TINTED by the reactive glow — its bright silhouette bleeds through as the
+    // source of the light rather than a disc sitting in front of it.
+    const bool hasSun = (m_mode == Mode::Morning);
+    const QPointF sunC(w * 0.5, h * 0.600); // higher, so the bright core clears the hill (not just a rim)
+    const qreal   sunR = h * 0.088;
+    if (hasSun) {
+        p.fillRect(rect(), cGold);        // opaque warm base: the thinned pool never bares the widget
+        drawSun(p, sunC, sunR);
+    }
+
+    // Build the sky. With a sun behind it, render onto an offscreen layer so its
+    // alpha can be thinned around the sun before compositing; otherwise paint
+    // straight to the widget.
+    const qreal dpr = devicePixelRatioF();
+    QImage layer;
+    QPainter ip;
+    QPainter* sp = &p;
+    if (hasSun) {
+        layer = QImage(QSize(qMax(1, int(w * dpr)), qMax(1, int(h * dpr))),
+                       QImage::Format_ARGB32_Premultiplied);
+        layer.setDevicePixelRatio(dpr);
+        layer.fill(Qt::transparent);
+        ip.begin(&layer);
+        sp = &ip;
+    }
+    sp->setRenderHint(QPainter::Antialiasing, false);
     const int N = 80;
     const qreal colStep = w / N;
     for (int i = 0; i < N; ++i) {
@@ -676,21 +803,101 @@ void Visualizer::drawSky(QPainter& p) {
         g.setColorAt(warmTop, cRose);
         g.setColorAt(qBound(0.0, warmTop + (1.0 - warmTop) * 0.5, 1.0), cAmb);
         g.setColorAt(1.0, cGold);
-        p.fillRect(QRectF(i * colStep, 0, colStep + 1.0, h), g);
+        sp->fillRect(QRectF(i * colStep, 0, colStep + 1.0, h), g);
+    }
+    if (hasSun) {
+        // Thin the sky over the sun: DestinationOut subtracts alpha, most at the
+        // centre (sun shines through), easing back to fully-opaque sky at the pool
+        // edge. Keep the centre alpha WELL under 255 so the light only goes
+        // slightly transparent — the sun stays veiled, not cut out.
+        ip.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+        QRadialGradient hole(sunC, sunR * 1.5);
+        hole.setColorAt(0.00, QColor(0, 0, 0, 255)); // core: sky fully removed -> sun at full brightness
+        hole.setColorAt(0.45, QColor(0, 0, 0, 175)); // then the sky closes back in...
+        hole.setColorAt(0.78, QColor(0, 0, 0,  70));
+        hole.setColorAt(1.00, QColor(0, 0, 0,   0)); // ...to fully opaque, so the rim melts into the glow
+        ip.fillRect(QRectF(0, 0, w, h), hole);
+        ip.end();
+        p.drawImage(0, 0, layer);
     }
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    drawShore(p, /*night=*/false); // the same coast, lit by the sunrise
+    drawShore(p, pal); // the coast under this sky (day-lit for Morning, dusk-lit for Dusk)
+}
+
+void Visualizer::drawSun(QPainter& p, const QPointF& c, qreal r) {
+    // A solid gold sun. It holds its place — no bob, no idle breathing — and its
+    // SIZE punches out on every beat, then eases back before the next. beat = 1 at
+    // the hit, decaying to 0 (from the tempo clock's last-beat time, so it works on
+    // the synthesised demo beats too). Morning draws it BEHIND the reactive sky,
+    // which then veils and tints it; Day draws it straight onto the blue sky.
+    const qreal sinceBeat = m_t - m_lastBeatT;
+    const qreal beat = (m_lastBeatT >= 0.0) ? std::exp(-sinceBeat * 6.5) : 0.0;
+    const qreal rp   = r * (1.0 + 0.17 * beat); // beat-pulsed radius
+
+    // A wobbly closed blob (a real sun's rim is never a clean circle — that's the
+    // moon). `rot` spins the lumps rigidly around the centre; three low harmonics
+    // give an organic, uneven edge. FILLED, never stroked, so it can't leave gaps
+    // or holes.
+    auto blob = [&](qreal radius, qreal rot, qreal amp) {
+        QPainterPath path;
+        const int steps = 128;
+        for (int i = 0; i <= steps; ++i) {
+            const qreal a = (2.0 * kPi * i) / steps;
+            const qreal wob = 1.0
+                + amp * 1.00 * std::sin((a + rot) *  7.0)
+                + amp * 0.60 * std::sin((a - rot) * 13.0)
+                + amp * 0.45 * std::sin((a + rot) *  3.0);
+            const qreal rr = radius * wob;
+            const QPointF pt(c.x() + std::cos(a) * rr, c.y() + std::sin(a) * rr);
+            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+        }
+        path.closeSubpath();
+        return path;
+    };
+
+    p.save();
+    p.setPen(Qt::NoPen);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+
+    // Corona: THREE thin wobbly rings just jutting past the disc, each a slightly
+    // different gold tone and rotating on its own speed + phase, so the flames
+    // churn and interleave. Solid fills (no stroke) => clean flames, no holes.
+    // Drawn largest/deepest first so the tips layer deep-amber -> orange -> gold.
+    auto corona = [&](qreal radius, qreal rot, qreal amp, const QColor& col) {
+        p.setBrush(col);
+        p.drawPath(blob(radius, rot, amp));
+    };
+    corona(rp * 1.075, m_t * 0.035 + 0.0, 0.050, QColor(228, 126, 40));  // outer, deep amber
+    corona(rp * 1.060, m_t * 0.050 + 2.1, 0.048, QColor(255, 150, 54));  // mid, orange
+    corona(rp * 1.045, m_t * 0.065 + 4.2, 0.045, QColor(255, 182, 80));  // inner, bright gold
+
+    // The disc: solid warm gold with a near-WHITE core so it stays the brightest
+    // point (Morning's veil then fades its rim into the sky's own colours). Its
+    // rippled limb churns very slowly; the soft edge melts into the corona.
+    QRadialGradient disc(c, rp);
+    disc.setColorAt(0.00, QColor(255, 251, 230, 255)); // bright warm-white core = THE brightest point
+    disc.setColorAt(0.45, QColor(255, 238, 172, 255));
+    disc.setColorAt(0.82, QColor(255, 210, 112, 235));
+    disc.setColorAt(1.00, QColor(255, 190,  92, 0));
+    p.setBrush(disc);
+    p.drawPath(blob(rp, m_t * 0.022, 0.032)); // gentle limb, very slow churn
+
+    p.restore();
 }
 
 void Visualizer::drawWaves(QPainter& p) {
-    const bool night = (m_mode == Mode::Night);
+    const ScenePalette pal = paletteFor(m_mode);
+    const bool night = pal.night;
     const qreal w = width(), h = height();
 
-    // Sea sky: cool day gradient, or a deep star-field night.
+    // Sea sky: a time-of-day gradient — three stops for dusk's sunset band, two
+    // for the plainer day and night skies.
     QLinearGradient sky(0, 0, 0, h);
-    if (night) { sky.setColorAt(0.0, QColor("#050912")); sky.setColorAt(1.0, QColor("#13293e")); }
-    else       { sky.setColorAt(0.0, QColor("#0d2238")); sky.setColorAt(1.0, QColor("#2a6f86")); }
+    sky.setColorAt(0.0, pal.skyTop);
+    if (pal.skyMid.isValid()) sky.setColorAt(0.55, pal.skyMid);
+    sky.setColorAt(1.0, pal.skyBot);
     p.fillRect(rect(), sky);
 
     if (night) {
@@ -711,10 +918,15 @@ void Visualizer::drawWaves(QPainter& p) {
         p.setBrush(QColor("#e6ebf3")); p.drawEllipse(moon, mr, mr);
     }
 
-    drawShore(p, night);
+    // Day gets the same animated sun, hung high in the top-right sky — straight
+    // onto the blue sky (no veil; Day's static sky doesn't glow on its own).
+    if (m_mode == Mode::Day) drawSun(p, QPointF(w * 0.84, h * 0.17), h * 0.072);
+
+    drawShore(p, pal);
 }
 
-void Visualizer::drawShore(QPainter& p, bool night) {
+void Visualizer::drawShore(QPainter& p, const ScenePalette& pal) {
+    const bool night = pal.night; // gates the lighthouse beam / tug lamp / moonlit crest
     const qreal w = width(), h = height();
 
     // The distant shoreline, all of it AT the horizon behind the water: rolling
@@ -722,18 +934,18 @@ void Visualizer::drawShore(QPainter& p, bool night) {
     // motion touches it), little pines on the grass line, and the lighthouse
     // point far off on the left. The waves are drawn after, in front.
     p.setPen(Qt::NoPen);
-    p.setBrush(night ? QColor("#0a1a20") : QColor("#4e8266"));
+    p.setBrush(pal.grass);
     p.drawPolygon(m_grass);
     // The sand line, with the land's soft shadow falling on its top edge — that
     // shadow is what separates it from the similar-toned horizon sky (Morning's
     // gold sits right on this boundary).
     const QRectF sandR(0, h * 0.700, w, h * 0.028);
-    p.fillRect(sandR, night ? QColor("#161e2e") : QColor("#c6b489"));
+    p.fillRect(sandR, pal.sand);
     QLinearGradient sandShadow(0, sandR.top(), 0, sandR.bottom());
-    sandShadow.setColorAt(0.0,  QColor(40, 45, 60, night ? 130 : 120));
+    sandShadow.setColorAt(0.0,  QColor(40, 45, 60, pal.sandShadowA));
     sandShadow.setColorAt(0.80, QColor(40, 45, 60, 0));
     p.fillRect(sandR, sandShadow);
-    p.setBrush(night ? QColor("#081420") : QColor("#2f6152"));
+    p.setBrush(pal.trees);
     for (const Tree& t : m_trees) {
         // One solid triangle per pine — the old stacked pair overlapped and
         // Qt's odd-even fill hollowed the overlap out.
@@ -761,21 +973,18 @@ void Visualizer::drawShore(QPainter& p, bool night) {
     // without extra drive they barely seemed to move.
     struct Layer { qreal baseFrac, band, gain, ampMul; QColor col; };
     const Layer layers[3] = {
-        { 0.72, m_treble, 1.45, 1.0,
-          night ? QColor("#0b2a3c") : QColor("#16566e") }, // back   = treble
-        { 0.82, m_mid,    1.30, 1.0,
-          night ? QColor("#103a4e") : QColor("#1f7d92") }, // middle = mids
-        { 0.92, m_bass,   1.00, 2.3,
-          night ? QColor("#175066") : QColor("#3aa6b3") }, // front  = bass (taller)
+        { 0.72, m_treble, 1.45, 1.0, pal.waterBack  }, // back   = treble
+        { 0.79, m_mid,    1.30, 1.0, pal.waterMid   }, // middle = mids
+        { 0.86, m_bass,   1.00, 2.3, pal.waterFront }, // front  = bass (taller)
     };
     p.setPen(Qt::NoPen);
     const int N = 80;
     for (int li = 0; li < 3; ++li) {
         const Layer& ly = layers[li];
-        // Crest ceiling: the treetops for the two near sheets; the back sheet
-        // stays low against the grass line — it's the FARTHEST water, and
-        // crests towering over the horizon pines broke the depth read.
-        const qreal ceilY = (li == 0) ? h * 0.665 : h * 0.635;
+        // Crest ceilings: the front and mid sheets may climb to halfway up the
+        // hill (sand line ~0.700h to the treetops ~0.635h -> 0.667h); the back
+        // sheet stays a low shimmer at mid-grass (0.682h).
+        const qreal ceilY = (li == 0) ? h * 0.682 : h * 0.667;
         const qreal maxSwell = h * ly.baseFrac - ceilY;         // headroom to the ceiling
         const qreal drive = 1.6 * ly.gain / (ly.ampMul * maxH); // full swell ~= 92% of ceiling
         // The full surface-to-swell formula for this sheet, reused for both the
@@ -806,24 +1015,122 @@ void Visualizer::drawShore(QPainter& p, bool night) {
         wave.lineTo(w, h);
         wave.closeSubpath();
         p.fillPath(wave, ly.col);
-        if (night) { // moonlit crest line, brightening as its band swells
-            p.setPen(QPen(QColor(185, 215, 250, int(28 + 70 * ly.band)), qMax(1.0, h / 700.0)));
+        if (pal.crestShimmer.isValid()) { // night only: moonlight glinting off the crests
+            // The day-lit scenes leave the water matte (no crest outline); only
+            // night draws this line, brightening as the band swells.
+            // Brush OFF: drawPath also FILLS an open path (closing it with a
+            // straight chord), and a leftover fill brush would paint that chord
+            // sliver as a strip across the wave.
+            p.setBrush(Qt::NoBrush);
+            QColor glint = pal.crestShimmer;
+            glint.setAlpha(int(28 + 70 * ly.band));
+            p.setPen(QPen(glint, qMax(1.0, h / 700.0)));
             p.drawPath(crest);
             p.setPen(Qt::NoPen);
         }
-        if (m_tug.active && m_tug.layer == li) {
-            // The tugboat rides THIS sheet: drawn right after its water so
-            // nearer sheets pass in front of him. He sits on the surface, bobs
-            // gently, and pitches with the local wave slope.
-            const qreal s  = h * ((li == 0) ? 0.026 : (li == 1) ? 0.038 : 0.052); // depth scale
-            const qreal dx = 0.02;
-            const qreal yb = h * ly.baseFrac - swellAt(m_tug.x) + std::sin(m_tug.bob) * s * 0.10;
-            const qreal yl = h * ly.baseFrac - swellAt(m_tug.x - dx);
-            const qreal yr = h * ly.baseFrac - swellAt(m_tug.x + dx);
-            const qreal tilt = std::atan2(yr - yl, 2.0 * dx * w) * (180.0 / kPi);
-            drawTugboat(p, m_tug.x * w, yb, s, tilt, m_tug.dir, night);
+        if ((m_tug.active || !m_smoke.isEmpty()) && m_tug.layer == li) {
+            const qreal s = h * ((li == 0) ? 0.050 : (li == 1) ? 0.070 : 0.098); // depth scale — a boat dwarfs a gull
+            if (m_tug.active) {
+                const qreal waterY = h * ly.baseFrac - swellAt(m_tug.x)
+                                   + std::sin(m_tug.bob) * s * 0.06;
+                // Physics once per animation tick (paint can fire more often).
+                if (m_t != m_tug.lastT) {
+                    const qreal pdt = 1.0 / kFps;
+                    if (m_tug.lastT < 0.0) { m_tug.py = waterY; m_tug.vy = 0.0; }
+                    const bool airborne = m_tug.py < waterY - 0.5;
+                    if (airborne) {
+                        // Thrown clear: a pure gravity arc, then splashdown with
+                        // a little cartoon rebound.
+                        m_tug.vy += h * 2.4 * pdt;
+                        m_tug.py += m_tug.vy * pdt;
+                        if (m_tug.py >= waterY) {
+                            const qreal impact = m_tug.vy;
+                            m_tug.py = waterY;
+                            m_tug.vy = -impact * 0.28;
+                        }
+                    } else {
+                        // Buoyancy spring: he FLOATS after the water — lagging,
+                        // overshooting, bobbing — instead of riding it like
+                        // glue. A hard fast riser flings him off the surface;
+                        // the jump is emergent, so only real hits launch him.
+                        m_tug.vy += ((waterY - m_tug.py) * 46.0 - m_tug.vy * 6.5) * pdt;
+                        m_tug.py += m_tug.vy * pdt;
+                        if (m_tug.py > waterY + s * 0.10) m_tug.py = waterY + s * 0.10;
+                    }
+                    // Smoothed pitch: eases toward the water slope (much less
+                    // of it mid-air), never snapping frame to frame.
+                    const qreal dx = 0.02;
+                    const qreal yl = h * ly.baseFrac - swellAt(m_tug.x - dx);
+                    const qreal yr = h * ly.baseFrac - swellAt(m_tug.x + dx);
+                    qreal tiltTgt = std::atan2(yr - yl, 2.0 * dx * w) * (180.0 / kPi);
+                    if (airborne) tiltTgt *= 0.25;
+                    m_tug.tilt += (tiltTgt - m_tug.tilt) * 0.18;
+                    // Puff from wherever the funnel actually IS right now, so
+                    // his bounces write visible kinks into the trail.
+                    m_tug.smokeT += pdt;
+                    if (m_tug.smokeT > 0.16 && m_smoke.size() < 14) {
+                        m_tug.smokeT = 0.0;
+                        m_smoke.push_back({ m_tug.x * w - m_tug.dir * 0.26 * s,
+                                            m_tug.py - 0.50 * s,
+                                            0.0, frand(-0.15, 0.35) });
+                    }
+                    m_tug.lastT = m_t;
+                }
+                drawTugboat(p, m_tug.x * w, m_tug.py, s, m_tug.tilt, m_tug.dir, night);
+            }
+            // His trail: world-space puffs swelling and thinning as they age
+            // (drawn with his sheet, so nearer water passes in front).
+            for (const Puff& pf : m_smoke) {
+                const qreal k = pf.age / 1.6;
+                const int   a = int((night ? 90 : 130) * (1.0 - k));
+                p.setBrush(night ? QColor(165, 172, 184, a) : QColor(228, 231, 236, a));
+                p.drawEllipse(QPointF(pf.x, pf.y), s * (0.055 + 0.115 * k), s * (0.055 + 0.115 * k));
+            }
         }
     }
+}
+
+// How strongly the lighthouse lamp lights a point right now (0 = in the dark).
+// Mirrors drawLighthouse's beam geometry — two opposed horizontal cones from
+// the lantern, on-screen reach 0.55w * |cos(plan angle)|, fan opening at 0.075
+// per unit distance — with brightness fading toward the beam tip like the
+// drawn gradient does. Night-only; used to light the gulls out of their
+// after-dark silhouettes as the beam sweeps them.
+qreal Visualizer::beamLightAt(qreal x, qreal y) const {
+    if (m_mode != Mode::Night) return 0.0;
+    const qreal w = width(), h = height();
+    const QPointF lc(m_lightBase.x(), m_lightBase.y() - h * 0.113); // ~lamp height on the taller tower
+
+    // SIDE SWEEP: the horizontal beam reach as the optic turns across the screen.
+    // Note this collapses to zero when the optic faces the viewer (cos -> 0), so
+    // on its own it can never light a gull in FRONT of the tower during a flash.
+    const qreal ext = w * 0.55 * std::abs(std::cos(m_beamA));
+    qreal sweepLit = 0.0;
+    const qreal dxg = std::abs(x - lc.x());
+    if (dxg >= w * 0.02 && dxg <= ext) {
+        const qreal fan = dxg * 0.075 + h * 0.012; // slack so a gull's body counts, not its exact centre
+        const qreal dyg = std::abs(y - lc.y());
+        if (dyg < fan) {
+            const qreal core  = 1.0 - dyg / fan; // 1 on the beam axis -> 0 at its edge
+            const qreal reach = 1.0 - dxg / ext; // dimmer toward the tip
+            sweepLit = core * (0.35 + 0.65 * reach);
+        }
+    }
+
+    // HEAD-ON FLASH: when the optic faces the viewer it floods FORWARD (the same
+    // |sin|^12 pulse that flashes the lamp itself), lighting gulls in front of the
+    // tower in a soft radial pool around the lamp — exactly the case the side
+    // sweep misses. Taking the max means a gull is lit whether the beam catches it
+    // from the side or head-on.
+    const qreal flash = std::pow(std::abs(std::sin(m_beamA)), 12.0);
+    qreal flashLit = 0.0;
+    if (flash > 0.01) {
+        const qreal dx = (x - lc.x()) / (w * 0.17);
+        const qreal dy = (y - lc.y()) / (h * 0.20);
+        flashLit = flash * qBound(0.0, 1.0 - std::sqrt(dx * dx + dy * dy), 1.0);
+    }
+
+    return qBound(0.0, qMax(sweepLit, flashLit), 1.0);
 }
 
 // The little red-and-white tugboat: a rare guest who chugs across the swells.
@@ -854,6 +1161,8 @@ void Visualizer::drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltD
     p.setBrush(night ? QColor("#1c1f27") : QColor("#33383f"));
     p.drawRect(QRectF(0.20 * s, -0.40 * s, 0.11 * s, 0.07 * s));
     // Wheelhouse window: dark glass by day, warm lamplight at night.
+    // (His smoke is world-space particles, emitted and drawn by drawShore —
+    // not part of this rigid body, so the trail reacts to his motion.)
     p.setBrush(night ? QColor(255, 214, 140, 235) : QColor("#3a4550"));
     p.drawRect(QRectF(-0.14 * s, -0.39 * s, 0.10 * s, 0.10 * s));
     p.restore();
@@ -872,9 +1181,9 @@ void Visualizer::drawLighthouse(QPainter& p, bool night) {
 
     // The lighthouse, at distance scale. All proportions hang off its base point.
     const qreal bx = m_lightBase.x(), by = m_lightBase.y();
-    const qreal towerH = h * 0.085;
+    const qreal towerH = h * 0.106;               // a touch taller, so it stands over the island
     const qreal ty = by - towerH;                 // top of the masonry
-    const qreal bw = h * 0.0105, tw = h * 0.0068; // half-widths at base / top
+    const qreal bw = h * 0.0131, tw = h * 0.0085; // half-widths at base / top
     auto halfAt = [&](qreal y) { return bw + (tw - bw) * (by - y) / towerH; };
 
     // Tapered tower, shaded across its width so it reads as round.
@@ -898,7 +1207,7 @@ void Visualizer::drawLighthouse(QPainter& p, bool night) {
     }
 
     // Gallery deck, lantern room, dome.
-    const qreal lw = tw * 0.85, lh = h * 0.011;
+    const qreal lw = tw * 0.85, lh = h * 0.0135;
     p.setBrush(night ? QColor("#20232e") : QColor("#2c2a33"));
     p.drawRect(QRectF(bx - tw * 1.65, ty - h * 0.0022, tw * 3.3, h * 0.0044));
     // How directly the optic faces us right now (1 = a beam is aimed straight at

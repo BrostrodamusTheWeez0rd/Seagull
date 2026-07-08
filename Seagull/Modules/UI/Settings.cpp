@@ -243,7 +243,7 @@ void Settings::setupUI() {
     // Visualizer picker + its settings. Tied to audio playback, but it's a visual
     // customization, so it lives here on Appearance rather than on the Audio (EQ) page.
     visualizerCombo = new QComboBox();
-    visualizerCombo->addItems({ "Seagull Morning", "Seagull Waves", "Seagull Night" });
+    visualizerCombo->addItems({ "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night" });
     visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio.");
     displayLayout->addRow("Visualizer:", visualizerCombo);
 
@@ -1117,9 +1117,12 @@ void Settings::loadSettings() {
 
     seekBarSizeCombo->setCurrentText(iniSettings->value("Display/SeekBarSize", "Small").toString());
 
-    // A legacy saved "Seagull Sky" won't match any item, so the combo stays on
-    // index 0 — Seagull Morning, its renamed successor.
-    visualizerCombo->setCurrentText(iniSettings->value("Visualizer/Type", "Seagull Morning").toString());
+    // Map legacy saved names onto current items: "Seagull Sky" won't match any
+    // item so the combo stays on index 0 (Morning, its renamed successor);
+    // "Seagull Waves" is the pre-rename name for Dusk.
+    QString vizType = iniSettings->value("Visualizer/Type", "Seagull Morning").toString();
+    if (vizType == "Seagull Waves") vizType = "Seagull Dusk";
+    visualizerCombo->setCurrentText(vizType);
     lighthouseCombo->setCurrentIndex(qMax(0,
         lighthouseCombo->findData(iniSettings->value("Visualizer/LighthouseBeats", 1).toInt())));
     // Behaviour is global — one key shared by every visualizer.

@@ -109,7 +109,7 @@ private:
     QComboBox* seekBarSizeCombo; // Small / Medium / Large -> player seek bar width
 
     // Visualizer: a picker + a tight form of global visualizer settings below it.
-    QComboBox*      visualizerCombo;      // which visualizer: Seagull Morning / Waves / Night
+    QComboBox*      visualizerCombo;      // which visualizer: Seagull Morning / Day / Dusk / Night
     QComboBox*      lighthouseCombo;      // beats per lighthouse flash; row shown only for Night
     QComboBox*      behaviorCombo;        // global gull behaviour (applies to every visualizer)
     QSpinBox*       maxGullsSpin;         // global perf cap on the flock size

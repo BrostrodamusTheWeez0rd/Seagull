@@ -1469,7 +1469,7 @@ void VideoPlayer::applyVisualizerSettings() {
     if (!visualizer) return;
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     const QString type = cfg.value("Visualizer/Type", "Seagull Morning").toString();
-    visualizer->setMode(type); // a legacy saved "Seagull Sky" maps to Morning
+    visualizer->setMode(type); // legacy "Seagull Sky" -> Morning, "Seagull Waves" -> Dusk
     // Behaviour is global — one key shared by every visualizer.
     visualizer->setBehavior(cfg.value("Visualizer/Behavior", "Drift").toString());
     visualizer->setMaxGulls(cfg.value("Visualizer/MaxGulls", 14).toInt());
@@ -1499,9 +1499,10 @@ void VideoPlayer::applySeekBarWidth() {
 
 void VideoPlayer::cycleVisualizer(int delta) {
     if (!visualizer) return;
-    static const QStringList kTypes = { "Seagull Morning", "Seagull Waves", "Seagull Night" };
+    static const QStringList kTypes = { "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night" };
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    const QString cur = cfg.value("Visualizer/Type", "Seagull Morning").toString();
+    QString cur = cfg.value("Visualizer/Type", "Seagull Morning").toString();
+    if (cur == "Seagull Waves") cur = "Seagull Dusk"; // pre-rename name
     int idx = qMax(0, int(kTypes.indexOf(cur)));
     idx = (idx + delta + kTypes.size()) % kTypes.size();
     cfg.setValue("Visualizer/Type", kTypes[idx]);
