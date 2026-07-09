@@ -57,9 +57,16 @@ namespace {
     constexpr qreal kGenX  = -0.04;
     constexpr qreal kGenHw =  0.16; // generator half-width (raised cosine), in widths
 
-    constexpr qreal kSwoopBottom = 0.31; // fraction of the swoop spent diving — a touch quicker down than the climb out
-    constexpr int   kDiveFrame   = 1;    // wings out (mid-stroke): the pose used DIVING down
-    constexpr int   kGlideFrame  = 2;    // wings fully spread, tips drooped: the pose used CLIMBING back up
+    constexpr qreal kSwoopBottom = 0.36; // fraction of the swoop spent diving — a touch quicker down than the climb out (longer dive = more room for a slow open)
+    // The gull gif is 5 frames (0..4). A swoop HOLDS frame 0 (wings tucked) all the
+    // way down; near the bottom it opens the wings FORWARD only, from the dive frame
+    // to the outstretched glide (0 -> kGlideHoldFrame, passing through the frames
+    // between so it reads as a smooth flap, not a snap), timed to FINISH a hair past
+    // the bottom, then HOLDS that spread until the swoop ends. No full flap.
+    constexpr int   kGlideHoldFrame = 2;    // outstretched glide (slight dihedral) — the held pose; the open plays 0..this
+    constexpr qreal kFlapSlow       = 2.4;  // >1 slows/smooths the open (its lead grows so it still finishes at the bottom)
+    constexpr qreal kFlapLate       = 0.05; // finish the open this far (in swoopP) PAST the arc's bottom, so the glide isn't reached early
+    constexpr qreal kFlapMaxDive    = 0.9;  // cap: the open may fill at most this much of the descent (keeps a little tuck, always lands on time)
     qreal swoopDepth(qreal p, qreal* slope = nullptr) {
         if (p < kSwoopBottom) {
             const qreal t = p / kSwoopBottom;
@@ -96,6 +103,9 @@ namespace {
 
 Visualizer::Visualizer(QWidget* parent) : QWidget(parent) {
     setAutoFillBackground(false); // we paint an opaque sky ourselves
+    // One random scene layout per session: seedScenery replays it at every size, so
+    // a resize rescales the same hills/trees/rocks/stars instead of rolling new ones.
+    m_sceneSeed = QRandomGenerator::global()->generate();
     m_timer = new QTimer(this);
     m_timer->setInterval(1000 / kFps);
     connect(m_timer, &QTimer::timeout, this, &Visualizer::step);
@@ -366,29 +376,41 @@ void Visualizer::seedClouds() {
 
 void Visualizer::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    seedClouds();  // rescale clouds to the new size; the flock keeps flying
-    seedScenery(); // and rebuild the shore scene's geometry for the new size
+    seedScenery(); // deterministic shore geometry, replayed at the new size (same scene, rescaled)
 
-    // Rescale the LIVING flock with the scene: gull sizes/positions/speeds are
-    // absolute pixels seeded from the old dimensions, so without this a
-    // fullscreen jump left present gulls tiny beside correctly-sized fresh
-    // spawns. Proportional scaling keeps every gull consistent with the new
-    // screen (the earlier "way too big" complaint was the old oversized spawn
-    // range being amplified, not the rescale itself — the range is smaller now).
+    // Rescale the clouds AND the living flock proportionally so nothing snaps size
+    // or jumps position on a resize — their coords are absolute pixels from the old
+    // dimensions. (The scenery is fraction-based, so seedScenery already rescales
+    // it; only these moving, drifted bodies need the explicit scale.)
     const QSize old = event->oldSize();
     if (old.width() > 0 && old.height() > 0 && width() > 0 && height() > 0) {
         const qreal fx = qreal(width()) / old.width();
         const qreal fy = qreal(height()) / old.height();
+        for (Cloud& c : m_clouds) {
+            c.x *= fx; c.y *= fy;
+            for (QPointF& pp : c.puffs) pp *= fy; // puff offsets/sizes are height-relative
+            for (qreal& r : c.pr) r *= fy;
+        }
         for (Gull& g : m_gulls) {
             g.x *= fx; g.y *= fy;
             g.size *= fy; g.speed *= fy;
             g.swoopAmp *= fy; g.vy *= fy;
         }
+    } else {
+        seedClouds(); // first sizing: no old geometry to rescale from
     }
 }
 
 void Visualizer::seedScenery() {
     const qreal w = qMax(1, width()), h = qMax(1, height());
+
+    // Deterministic layout: a fixed per-session seed so every (re)build lays out the
+    // SAME scene, only rescaled to the current size — a resize must not reshuffle the
+    // hills/trees/rocks/stars. All positions are fractions of w/h, so replaying the
+    // same rolls at a new size rescales cleanly.
+    QRandomGenerator rng(m_sceneSeed);
+    auto frand = [&](qreal lo, qreal hi) { return lo + (hi - lo) * rng.generateDouble(); };
+    auto brand = [&](int n) { return int(rng.bounded(quint32(qMax(1, n)))); };
 
     // Night stars: scattered over the sky, denser up high, each with its own
     // twinkle phase. Seeded, so the constellation holds still frame to frame.
@@ -425,7 +447,7 @@ void Visualizer::seedScenery() {
 
     // Little pines scattered along the grass line.
     m_trees.clear();
-    const int nTrees = 8 + QRandomGenerator::global()->bounded(5);
+    const int nTrees = 8 + brand(5);
     for (int i = 0; i < nTrees; ++i) {
         Tree t;
         const qreal xn = frand(0.24, 0.97); // clear of the lighthouse point at far left
@@ -714,13 +736,39 @@ void Visualizer::drawGull(QPainter& p, const Gull& g) {
         vOff = std::sin(g.phase) * g.size * 0.20;
     }
 
-    // Wings through a swoop: the dive pose (kDiveFrame) all the way down, swapped
-    // to the glide pose (kGlideFrame) at the very bottom as the trajectory turns
-    // upward, and held through the climb; normal flapping resumes once it ends.
+    // Wings through a swoop: frame 0 (wings tucked) is HELD on the way down; the
+    // open (0 -> most-outstretched glide) plays FORWARD only and is timed to FINISH
+    // right at the bottom of the arc — it starts a little early during the dive's
+    // tail so the glide is held from the bottom, not a beat after it. That spread
+    // is then HELD through the climb. Normal flapping resumes once the swoop ends.
     int fi = (m_frameIdx + g.foff) % m_gullFrames.size();
-    if (swooping)
-        fi = qMin((g.swoopP < kSwoopBottom) ? kDiveFrame : kGlideFrame,
-                  int(m_gullFrames.size()) - 1);
+    if (swooping) {
+        const int glide = qBound(0, kGlideHoldFrame, int(m_gullFrames.size()) - 1);
+        const qreal finish = kSwoopBottom + kFlapLate; // the open lands here (a hair past the arc's bottom)
+        if (g.swoopP >= finish) {
+            fi = glide; // glide held from there onward
+        } else {
+            // Slowed time to open 0 -> glide, expressed in swoopP, so the open ENDS
+            // at `finish` (it begins that far before it). kFlapSlow just grows the
+            // lead, so the finish stays pinned in place.
+            qreal openMs = 0.0;
+            for (int k = 0; k < glide; ++k) openMs += m_frameDelays[k] * kFlapSlow;
+            // Never longer than the descent to `finish` (else it couldn't land on
+            // time): cap it so a slow flap just fills the descent, keeping a sliver
+            // of tuck at the top.
+            openMs = qMin(openMs, finish * g.swoopDur * 1000.0 * kFlapMaxDive);
+            const qreal leadP = (g.swoopDur > 0.0) ? (openMs / 1000.0) / g.swoopDur : 0.0;
+            const qreal openStart = finish - leadP;
+            if (g.swoopP < openStart) {
+                fi = 0; // dive: wings tucked, held
+            } else {
+                qreal tms = (g.swoopP - openStart) * g.swoopDur * 1000.0;
+                int f = 0; qreal acc = 0.0;
+                while (f < glide && tms >= acc + m_frameDelays[f] * kFlapSlow) { acc += m_frameDelays[f] * kFlapSlow; ++f; }
+                fi = f;
+            }
+        }
+    }
     const QPixmap& fr = m_gullFrames[fi];
     const qreal tw = g.size * 2.6; // wingspan
     const qreal th = tw * fr.height() / fr.width();
@@ -1085,13 +1133,13 @@ void Visualizer::drawSun(QPainter& p, const QPointF& c, qreal r) {
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
-    // Rays: a fixed ring of little gold triangles jutting out past the disc,
-    // evenly spaced and pointing straight outward. They don't spin — each one
-    // just lengthens on the beat and eases back. Drawn BEFORE the disc so the
-    // triangle bases tuck under the rim and only the tips show.
+    // Rays: a fixed ring of little gold triangles around the disc, evenly spaced
+    // and pointing straight outward, with a small gap between the circle and the
+    // triangle bases (cartoon spacing). They don't spin — each just lengthens on
+    // the beat and eases back.
     const int   rayCount = 12;
-    const qreal baseR    = rp * 0.98;                  // base sits just inside the rim
-    const qreal tipR     = rp * (1.30 + 0.24 * beat);  // tip pushes out on the beat
+    const qreal baseR    = rp * 1.05;                  // base sits just off the rim -> a small gap to the circle
+    const qreal tipR     = rp * (1.34 + 0.20 * beat);  // tip pushes out on the beat
     const qreal halfW    = (kPi / rayCount) * 0.42;    // angular half-width of each base
     p.setBrush(QColor(255, 188, 76));
     for (int i = 0; i < rayCount; ++i) {
@@ -1406,18 +1454,19 @@ void Visualizer::drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltD
 }
 
 void Visualizer::drawLighthouse(QPainter& p, qreal na) {
-    // na 0..1 fades day->night. The masonry/rock/dome tints switch at the midpoint
-    // (a tiny, far object), while the lit lamp and the swept beam fade smoothly by
-    // na — the fixed scenes pass exactly 0 or 1, so they render as before.
-    const bool night = na >= 0.5;
+    // na 0..1 fades day->night. Every masonry/rock/dome tint LERPS by na, and the
+    // lamp (glass<->lit) and swept beam fade by na too, so the whole point fades in
+    // step with the rest of the shore — no midpoint pop. Fixed scenes pass exactly 0
+    // or 1, so they render as before. C(day, night) picks the tint for the nightness.
+    auto C = [na](const QColor& day, const QColor& nite) { return lerpColor(day, nite, na); };
     const qreal w = width(), h = height();
     p.setPen(Qt::NoPen);
 
     // The rocks breaking the waterline, then the point over them. Hazy, bluish
     // tones — it's all far away.
-    p.setBrush(night ? QColor("#0b101c") : QColor("#4e5a68"));
+    p.setBrush(C(QColor("#4e5a68"), QColor("#0b101c")));
     for (const QPolygonF& r : m_rocks) p.drawPolygon(r);
-    p.setBrush(night ? QColor("#0d1322") : QColor("#5a6472"));
+    p.setBrush(C(QColor("#5a6472"), QColor("#0d1322")));
     p.drawPolygon(m_cliff);
 
     // The lighthouse, at distance scale. All proportions hang off its base point.
@@ -1429,8 +1478,9 @@ void Visualizer::drawLighthouse(QPainter& p, qreal na) {
 
     // Tapered tower, shaded across its width so it reads as round.
     QLinearGradient shade(bx - bw, 0, bx + bw, 0);
-    if (night) { shade.setColorAt(0.0, QColor("#8d93a3")); shade.setColorAt(0.55, QColor("#6a7080")); shade.setColorAt(1.0, QColor("#474d5c")); }
-    else       { shade.setColorAt(0.0, QColor("#f0ecdf")); shade.setColorAt(0.55, QColor("#ddd6c6")); shade.setColorAt(1.0, QColor("#b2adA0")); }
+    shade.setColorAt(0.0,  C(QColor("#f0ecdf"), QColor("#8d93a3")));
+    shade.setColorAt(0.55, C(QColor("#ddd6c6"), QColor("#6a7080")));
+    shade.setColorAt(1.0,  C(QColor("#b2adA0"), QColor("#474d5c")));
     QPolygonF tower;
     tower << QPointF(bx - bw, by) << QPointF(bx + bw, by)
           << QPointF(bx + tw, ty) << QPointF(bx - tw, ty);
@@ -1438,7 +1488,7 @@ void Visualizer::drawLighthouse(QPainter& p, qreal na) {
     p.drawPolygon(tower);
 
     // Two red bands around the tower (clipped to the taper by halfAt).
-    p.setBrush(night ? QColor("#6b3540") : QColor("#c14238"));
+    p.setBrush(C(QColor("#c14238"), QColor("#6b3540")));
     for (qreal f : { 0.32, 0.62 }) {
         const qreal y1 = by - towerH * f, y0 = y1 + towerH * 0.13;
         QPolygonF band;
@@ -1449,34 +1499,37 @@ void Visualizer::drawLighthouse(QPainter& p, qreal na) {
 
     // Gallery deck, lantern room, dome.
     const qreal lw = tw * 0.85, lh = h * 0.0135;
-    p.setBrush(night ? QColor("#20232e") : QColor("#2c2a33"));
+    p.setBrush(C(QColor("#2c2a33"), QColor("#20232e")));
     p.drawRect(QRectF(bx - tw * 1.65, ty - h * 0.0022, tw * 3.3, h * 0.0044));
     // How directly the optic faces us right now (1 = a beam is aimed straight at
     // the viewer). Raised to a high power it becomes the FLASH: a tight bloom
     // only while the beam crosses our line of sight, once per half turn.
-    const qreal flashK = night ? std::pow(std::abs(std::sin(m_beamA)), 12.0) : 0.0;
+    const qreal flashK = (na > 0.0) ? std::pow(std::abs(std::sin(m_beamA)), 12.0) : 0.0;
     const QRectF lantern(bx - lw, ty - h * 0.0022 - lh, lw * 2, lh);
-    if (night) {
-        // The lit lamp, surging as the optic turns our way (alpha eases in by na).
-        p.setBrush(QColor(255, int(205 + 30 * flashK), 135, int((150 + 105 * flashK) * na)));
-        p.drawRect(lantern);
-    } else {
-        // By day the lamp is off, so it reads as what it is: GLASS. Translucent
-        // panes the sky shows through, held by a metal frame + centre mullion.
-        p.setBrush(QColor(170, 205, 228, 84));
+    // Cross-fade the lamp so it never pops: the day GLASS (translucent panes with a
+    // metal frame + mullion) fades OUT as the lit lamp fades IN with na. Exact glass
+    // at na=0, exact lit lamp at na=1.
+    if (na < 1.0) {
+        p.setBrush(QColor(170, 205, 228, int(84 * (1.0 - na))));
         p.drawRect(lantern);
         const qreal bar = qMax(1.0, h / 950.0);
-        p.setPen(QPen(QColor("#3a3f4a"), bar));
+        QColor frame("#3a3f4a"); frame.setAlpha(int(255 * (1.0 - na)));
+        p.setPen(QPen(frame, bar));
         p.setBrush(Qt::NoBrush);
         p.drawRect(lantern);
         p.drawLine(QPointF(bx, lantern.top()), QPointF(bx, lantern.bottom()));
         p.setPen(Qt::NoPen);
     }
+    if (na > 0.0) {
+        // The lit lamp, surging as the optic turns our way (alpha eases in by na).
+        p.setBrush(QColor(255, int(205 + 30 * flashK), 135, int((150 + 105 * flashK) * na)));
+        p.drawRect(lantern);
+    }
     QPainterPath dome;
     const qreal dy = ty - h * 0.0022 - lh;
     dome.moveTo(bx - tw, dy);
     dome.arcTo(QRectF(bx - tw, dy - tw, tw * 2, tw * 2), 0, 180);
-    p.setBrush(night ? QColor("#6b3540") : QColor("#c14238"));
+    p.setBrush(C(QColor("#c14238"), QColor("#6b3540")));
     p.drawPath(dome);
 
     if (na <= 0.001) return; // day: no beam (matches the fixed scenes exactly)

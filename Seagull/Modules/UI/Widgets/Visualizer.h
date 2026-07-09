@@ -166,7 +166,10 @@ private:
     QVector<Puff> m_smoke;
 
     // Static shore-scene geometry (Waves/Night), rebuilt per resize in seedScenery.
-    // The whole scene sits far off at the horizon, drawn BEHIND the waves.
+    // The whole scene sits far off at the horizon, drawn BEHIND the waves. Its random
+    // layout is drawn from a fixed per-session seed so a resize RESCALES the same
+    // scene instead of reshuffling the hills/trees/rocks/stars every time.
+    quint32            m_sceneSeed = 0;
     QVector<Star>      m_stars;
     QVector<Tree>      m_trees;
     QPolygonF          m_grass;     // rolling grass line behind the distant sand
