@@ -350,12 +350,20 @@ Card grid of the saved-media folders, one type at a time: the floating pill
 (Videos/Audio/Images/Recordings/Playlists) literally selects which `SgPaths` folder is
 listed (not a filter). Pill auto-hides while scrolled; grid builds incrementally on an idle
 timer (`buildBusyChanged` lets the visualizer suspend its 60 fps render timer during the
-burst). Top-right chips: magnifier (per-type title search), sort (name/date, persisted
-`Library/SortMode`), and the trash toggle arming **delete mode** — cards become
+burst). Top-right chips: magnifier (per-type title search), sort (name/date/**Continue
+watching**, persisted `Library/SortMode`), and the trash toggle arming **delete mode** — cards become
 multi-select toggles, selections keyed by absolute path so they survive type switches, and
 confirm sends everything picked to the Recycle Bin. Playback sessions snapshot the ordered
 list at play time, so auto-advance/shuffle walk what the user pressed play on even while
 they browse another type. Playlist cards (`.sgpl`) route to the Queue.
+- **Continue watching (Library).** `SortMode::ContinueWatching` is a filter as much as an
+  ordering: `listContinueWatching` walks `SgWatchHistory::continueWatching()` (already
+  most-recent-first, already excluding finished items) and keeps the local entries that exist
+  in the active type's folder, so the grid inherits recency for free. History keys come from
+  `QUrl::toLocalFile()` while the grid is built from `QFileInfo`, so both sides are normalised
+  (`QDir::cleanPath` + lowercased) before matching — Windows paths vary in separators and
+  drive-letter case for the same file. Images and playlists are never recorded, so the menu
+  entry is disabled for them and `rebuild()` falls back to Newest first.
 
 ### FileExplorer — the file manager tab
 
@@ -454,16 +462,21 @@ artwork embedding, and resume all apply to it.
 
 ### Settings
 
-Sidebar pages: General / Display / **Audio** (the hosted EQ widget) / Download & Streaming /
-Folders & Recording / Search / Info. Notables: auto-update, remember-playback-position,
-Defender exclusion (elevated add/remove with verified state), desktop + Start-menu shortcut
-toggles (General); appearance filter (Light/Dark) + theme, card size, seek-bar width,
-visualizer picker/behaviour/flock-cap (Display); type/format/quality for downloads and
-recording, cookies browser with enable-warning and cookie-data wipe, smart sort (Download &
-Streaming); the folder rows with the unify-media switch (Folders); result limit, history
-clearing, and the per-site home-feed section (Search). Saves are suppressed while loading;
-theme/card-width/seek-width only re-apply when actually changed (a theme apply re-polishes
-every widget).
+Sidebar pages, in order: General / Appearance / **Media Player** / **Audio** (the hosted EQ
+widget) / Downloads & Recording / Folders / Search & Home / Info. `m_audioRow` is the Audio
+page's sidebar index and must track this order — `showAudioPage()` and the `audioPageShown`
+emit both key off it, so inserting a page above Audio means bumping it.
+
+Notables: auto-update, cookies browser with enable-warning and cookie-data wipe, Defender
+exclusion (elevated add/remove with verified state), desktop + Start-menu shortcut toggles
+(General); appearance filter (Light/Dark) + theme, card size (Appearance); everything about
+*playing* media — resume-playback-position, stream quality, seek-bar width, and the whole
+visualizer block: scene picker, gull behaviour/direction, flock cap, lighthouse cadence,
+end-of-song (Media Player); type/format/quality for downloads and recording (Downloads &
+Recording — it owns producing files, not playing them); the folder rows with the unify-media
+switch and smart sort (Folders); result limit, history clearing, and the per-site home-feed
+section (Search & Home). Saves are suppressed while loading; theme/card-width/seek-width only
+re-apply when actually changed (a theme apply re-polishes every widget).
 
 ### EQ — the Audio page
 
@@ -625,11 +638,11 @@ install is self-contained and survives the self-update's robocopy swap.
 | `Streaming/` | `Quality`, `CookiesBrowser`, `RecordFormat` |
 | `Recording/` | `Type`, `Format` |
 | `Paths/` | `HomeFolder`, `DownloadFolder`, `VideoFolder`, `AudioFolder`, `PhotoFolder`, `RecordingFolder`, `PlaylistFolder`, `UnifyMedia`, `UnifiedFolder`, `SmartSort` |
-| `Library/` | `SortMode` |
+| `Library/` | `SortMode` (`0` NameAsc … `3` DateOldest, `4` ContinueWatching — persisted as the raw int, so append only) |
 | `Search/` | `ResultLimit`, `SortMode`, `ClearHistoryOnExit`, `WarnDuplicateSite`, `CookiesWarningAck`; per-site families `HomeChannels<Site>`, `HomeAmount<Site>`, `HomeVideosPerChannel<Site>`, `HomeRandomize<Site>`, `HomeLazyLoad<Site>`, `ShowContinueWatching<Site>` |
 | `Tabs/` | `Closed`, `Order`, `ExtraTabs`, `ActiveLabel`, `ActiveOrdinal` |
 | `FileExplorer/` | `AddressHistory` |
-| `Visualizer/` | `Type` (`Seagull Morning`/`Day`/`Dusk`/`Night`/`Cycle`), `Active`, `Behavior` (`Drift`/`Swooping`/`Flocking`/`Random`, where each gull rolls its own; legacy `Reverse` migrates to `Drift` + `Direction=Right to left`), `Direction` (`Left to right`/`Right to left`), `MaxGulls`, `KillOnEnd`, `LighthouseBeats` (beats per lighthouse flash, Night and Cycle only) |
+| `Visualizer/` | `Type` (`Seagull Morning`/`Day`/`Dusk`/`Night`/`Cycle`; default `Cycle`), `Active`, `Behavior` (`Drift`/`Swooping`/`Flocking`/`Random`, where each gull rolls its own; default `Random`; legacy `Reverse` migrates to `Drift` + `Direction=Right to left`), `Direction` (`Left to right`/`Right to left`), `MaxGulls`, `KillOnEnd`, `LighthouseBeats` (beats per lighthouse flash, Night and Cycle only), `DefaultsResetV2` (one-shot stamp: `main()` forces Type/Behavior/Direction onto the new defaults once per install so upgraders see them) |
 | `Logging/` | `Verbose` (the SEALOG persist) |
 
 ## 9. Key signals

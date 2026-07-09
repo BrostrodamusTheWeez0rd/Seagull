@@ -101,6 +101,7 @@ void Settings::setupUI() {
     sidebar->setMaximumWidth(200);
     sidebar->addItem("General");
     sidebar->addItem("Appearance");
+    sidebar->addItem("Media Player");
     sidebar->addItem("Audio");
     sidebar->addItem("Downloads & Recording");
     sidebar->addItem("Folders");
@@ -125,12 +126,6 @@ void Settings::setupUI() {
     autoUpdateCheck->setToolTip("Install yt-dlp / ffmpeg / Deno / AtomicParsley updates in the background "
         "at startup. When off, Seagull asks before updating.");
     generalLayout->addRow("Auto Update:", autoUpdateCheck);
-
-    rememberPositionCheck = new QCheckBox("Resume videos and audio where I left off");
-    rememberPositionCheck->setToolTip("Remember how far you watched or listened, and pick back up from "
-        "there next time. When off, nothing is remembered and Continue Watching rows stay empty.");
-    generalLayout->addRow("Playback:", rememberPositionCheck);
-    connect(rememberPositionCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
 
     // Browser cookies: the most effective fix for the "confirm you're not a bot" wall.
     // When set, yt-dlp reuses that browser's logged-in session so the requests look like
@@ -232,21 +227,46 @@ void Settings::setupUI() {
     cardSizeSlider->hide();
     displayLayout->addRow("", cardSizeSlider);
 
+    stackedWidget->addWidget(displayWidget);
+
+    // === Media Player Tab ===
+    // Everything about playback itself: how media is streamed, how the player looks
+    // while it plays, and the visualizer. Recording and download options stay on the
+    // Downloads & Recording page — they're about producing files, not playing them.
+    auto* playerWidget = new QWidget();
+    auto* playerLayout = new QFormLayout(playerWidget);
+    playerLayout->setContentsMargins(20, 20, 20, 20);
+
+    rememberPositionCheck = new QCheckBox("Resume videos and audio where I left off");
+    rememberPositionCheck->setToolTip("Remember how far you watched or listened, and pick back up from "
+        "there next time. When off, nothing is remembered and Continue Watching rows stay empty.");
+    playerLayout->addRow("Playback:", rememberPositionCheck);
+    connect(rememberPositionCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
+
+    // The quality ceiling for playback. Downloads have their own, on their own page.
+    streamQualityCombo = new QComboBox();
+    streamQualityCombo->addItems({
+        "Best Available",
+        "2160p (4K)", "1440p (2K)", "1080p", "720p", "480p", "360p"
+        });
+    streamQualityCombo->setMaxVisibleItems(8);
+    streamQualityCombo->setToolTip("The highest quality the player will stream. Lower it on a "
+        "slow connection to cut buffering.");
+    playerLayout->addRow("Stream Quality:", streamQualityCombo);
+
     // Player seek bar width: a static size (no dynamic growth). Larger hands the
     // seeker more pixels for finer scrubbing; the player re-centres it over the video.
     seekBarSizeCombo = new QComboBox();
     seekBarSizeCombo->addItems({ "Small", "Medium", "Large" });
     seekBarSizeCombo->setToolTip("Width of the player's seek bar. Larger gives finer "
         "scrubbing control.");
-    displayLayout->addRow("Progress bar size:", seekBarSizeCombo);
+    playerLayout->addRow("Progress bar size:", seekBarSizeCombo);
 
-    // Visualizer picker + its settings. Tied to audio playback, but it's a visual
-    // customization, so it lives here on Appearance rather than on the Audio (EQ) page.
     visualizerCombo = new QComboBox();
     visualizerCombo->addItems({ "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night", "Seagull Cycle" });
     visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio. "
         "Cycle drifts through the whole day as the song plays.");
-    displayLayout->addRow("Visualizer:", visualizerCombo);
+    playerLayout->addRow("Visualizer:", visualizerCombo);
 
     // All visualizer settings in one tight form folded under the picker. Behaviour, the
     // cap, and end-of-song are all global — they apply to whichever visualizer is selected.
@@ -297,9 +317,9 @@ void Settings::setupUI() {
         "When off, the seagulls keep flying.");
     vizForm->addRow("End of song:", killGullsCheck);
 
-    displayLayout->addRow("", vizBlock);
+    playerLayout->addRow("", vizBlock);
 
-    stackedWidget->addWidget(displayWidget);
+    stackedWidget->addWidget(playerWidget);
 
     // === Audio Tab ===
     // Just the equalizer, added at runtime via addAudioPage. The container keeps the
@@ -308,7 +328,7 @@ void Settings::setupUI() {
     m_audioPageLayout = new QVBoxLayout(audioPage);
     m_audioPageLayout->setContentsMargins(20, 20, 20, 20);
 
-    m_audioRow = 2; // sidebar row of the Audio page (the EQ is inserted here)
+    m_audioRow = 3; // sidebar row of the Audio page (the EQ is inserted here)
     stackedWidget->addWidget(audioPage);
 
     // === Downloads & Recording Tab ===
@@ -342,13 +362,6 @@ void Settings::setupUI() {
     dlQualityCombo = new QComboBox();
     dlQualityCombo->setMaxVisibleItems(8);
     updateDownloadQualityOptions();
-
-    streamQualityCombo = new QComboBox();
-    streamQualityCombo->addItems({
-        "Best Available",
-        "2160p (4K)", "1440p (2K)", "1080p", "720p", "480p", "360p"
-        });
-    streamQualityCombo->setMaxVisibleItems(8);
 
     // Recording Type toggle (Video | Audio) — what the player's Record button captures.
     recTypeVideoBtn = new QPushButton("Video");
@@ -426,7 +439,6 @@ void Settings::setupUI() {
     dlLayout->addRow("Download Type:", typeRow);
     dlLayout->addRow("Download Format:", formatCombo);
     dlLayout->addRow("Download Quality:", dlQualityCombo);
-    dlLayout->addRow("Stream Quality:", streamQualityCombo);
     dlLayout->addRow("Recording Type:", recTypeRow);
     dlLayout->addRow("Recording Format:", recFormatCombo);
 

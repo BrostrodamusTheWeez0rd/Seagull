@@ -4,6 +4,7 @@
 #include "Widgets/SpellCheckLineEdit.h"
 #include "../Backend/SgPaths.h"
 #include "../Backend/SgThumbnailer.h"
+#include "../Backend/SgWatchHistory.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -66,7 +67,7 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     m_cardWidth = m_targetWidth;
     m_sortMode = static_cast<SortMode>(qBound(0,
         cfg.value("Library/SortMode", static_cast<int>(SortMode::DateNewest)).toInt(),
-        static_cast<int>(SortMode::DateOldest)));
+        static_cast<int>(SortMode::ContinueWatching)));
 
     cardsHost = new QWidget();
     cardsFlow = new FlowLayout(cardsHost, 0, kGridSpacing, kGridSpacing);
@@ -148,6 +149,7 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
     connect(confirmDeleteButton, &QPushButton::clicked, this, &MediaLibrary::deleteSelected);
 
     sortMenu = new QMenu(this);
+    sortMenu->setToolTipsVisible(true); // off by default: without it the Continue watching hint never shows
     auto* sortGroup = new QActionGroup(sortMenu);
     sortGroup->setExclusive(true);
     const struct { const char* label; SortMode mode; } orderings[] = {
@@ -155,6 +157,7 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
         { "Name (Z\xE2\x80\x93" "A)",  SortMode::NameDesc },
         { "Newest first",           SortMode::DateNewest },
         { "Oldest first",           SortMode::DateOldest },
+        { "Continue watching",      SortMode::ContinueWatching },
     };
     for (const auto& o : orderings) {
         QAction* a = sortMenu->addAction(QString::fromUtf8(o.label));
@@ -163,6 +166,11 @@ MediaLibrary::MediaLibrary(SgSpellCheck* spell, QWidget* parent) : QWidget(paren
         sortGroup->addAction(a);
         const SortMode mode = o.mode;
         connect(a, &QAction::triggered, this, [this, mode] { applySortMode(mode); });
+        if (mode == SortMode::ContinueWatching) {
+            continueAction = a;
+            a->setToolTip("Only the videos and audio you started but haven't finished, "
+                          "most recently played first.");
+        }
     }
 
     // The search bar itself: revealed on click, hidden by default. Uses the
@@ -371,14 +379,22 @@ void MediaLibrary::rebuild() {
     m_currentPlayIndex = -1;
 
     QDir dir(folderForType());
-    QDir::SortFlags sortFlags = QDir::Time; // Newest first (QDir::Time is most-recent-first)
-    switch (m_sortMode) {
-    case SortMode::NameAsc:     sortFlags = QDir::Name | QDir::IgnoreCase; break;
-    case SortMode::NameDesc:    sortFlags = QDir::Name | QDir::IgnoreCase | QDir::Reversed; break;
-    case SortMode::DateNewest:  sortFlags = QDir::Time; break;
-    case SortMode::DateOldest:  sortFlags = QDir::Time | QDir::Reversed; break;
+    // Continue Watching filters as well as orders, so it can't ride QDir's sort flags.
+    // Types with no watch history (Images/Playlists) fall through to Newest first.
+    const bool continueMode = m_sortMode == SortMode::ContinueWatching && supportsContinueWatching();
+    if (continueMode) {
+        m_buildQueue = listContinueWatching(dir);
+    } else {
+        QDir::SortFlags sortFlags = QDir::Time; // Newest first (QDir::Time is most-recent-first)
+        switch (m_sortMode) {
+        case SortMode::NameAsc:     sortFlags = QDir::Name | QDir::IgnoreCase; break;
+        case SortMode::NameDesc:    sortFlags = QDir::Name | QDir::IgnoreCase | QDir::Reversed; break;
+        case SortMode::DateNewest:  sortFlags = QDir::Time; break;
+        case SortMode::DateOldest:  sortFlags = QDir::Time | QDir::Reversed; break;
+        case SortMode::ContinueWatching: sortFlags = QDir::Time; break; // unsupported type
+        }
+        m_buildQueue = dir.entryInfoList(extensionsForType(), QDir::Files, sortFlags);
     }
-    m_buildQueue = dir.entryInfoList(extensionsForType(), QDir::Files, sortFlags);
     if (m_buildQueue.size() > kMaxCards) m_buildQueue = m_buildQueue.mid(0, kMaxCards);
     m_buildPos = 0;
 
@@ -390,8 +406,13 @@ void MediaLibrary::rebuild() {
     const QString what = m_type == MediaType::Image    ? "Images"
                        : m_type == MediaType::Playlist ? "Playlists"
                                                        : "Media";
-    emptyLabel->setText(QString("Nothing here yet.\n%1 saved to\n%2\nwill show up here.")
-        .arg(what, QDir::toNativeSeparators(dir.absolutePath())));
+    if (continueMode) {
+        emptyLabel->setText("Nothing to continue.\nStart something and leave it unfinished,\n"
+                            "and it will show up here.");
+    } else {
+        emptyLabel->setText(QString("Nothing here yet.\n%1 saved to\n%2\nwill show up here.")
+            .arg(what, QDir::toNativeSeparators(dir.absolutePath())));
+    }
 
     // Build incrementally so a big folder never freezes the UI on a tab/category
     // switch: first batch now, the rest on an idle timer.
@@ -692,7 +713,43 @@ void MediaLibrary::tintDeleteIcon(bool armed) {
     deleteButton->style()->polish(deleteButton);
 }
 
+bool MediaLibrary::supportsContinueWatching() const {
+    // SgWatchHistory only records Video/Audio playback — a photo or a playlist file
+    // has no resume point, so the ordering would always come back empty for them.
+    return m_type != MediaType::Image && m_type != MediaType::Playlist;
+}
+
+QFileInfoList MediaLibrary::listContinueWatching(const QDir& dir) const {
+    // continueWatching() already drops finished entries and anything without a
+    // meaningful resume point, and hands them back most-recent-first. Walk it in that
+    // order and keep the local files that live in this type's folder, so the grid
+    // inherits the recency ordering for free.
+    //
+    // The keys were written from QUrl::toLocalFile() while this list is built from
+    // QFileInfo, so both sides are normalised before matching: Windows paths differ
+    // freely in separators and drive-letter case for the same file.
+    auto norm = [](const QString& p) {
+        return QDir::cleanPath(QFileInfo(p).absoluteFilePath()).toLower();
+    };
+
+    QHash<QString, QFileInfo> onDisk; // normalised path -> the file
+    const QFileInfoList all = dir.entryInfoList(extensionsForType(), QDir::Files);
+    for (const QFileInfo& fi : all) onDisk.insert(norm(fi.absoluteFilePath()), fi);
+
+    QFileInfoList out;
+    const auto entries = SgWatchHistory::instance()->continueWatching(kMaxCards);
+    for (const auto& e : entries) {
+        if (!e.isLocal) continue; // streamed items aren't in any Library folder
+        auto it = onDisk.constFind(norm(e.key));
+        if (it != onDisk.constEnd()) out.append(it.value()); // still on disk, in this folder
+    }
+    return out;
+}
+
 void MediaLibrary::showSortMenu() {
+    // Continue Watching is meaningless for the types that are never recorded; grey it
+    // out rather than offering an ordering that can only ever come back empty.
+    if (continueAction) continueAction->setEnabled(supportsContinueWatching());
     // Drop the menu flush under the button's bottom-left corner.
     sortMenu->popup(sortButton->mapToGlobal(QPoint(0, sortButton->height())));
 }

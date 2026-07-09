@@ -1586,6 +1586,20 @@ int main(int argc, char* argv[]) {
     QSettings settings(SgPaths::configFile(), QSettings::IniFormat);
     Theme::apply(settings.value("Display/Theme", "Seagull").toString());
 
+    // One-shot: force the visualizer onto the new defaults (Cycle scene, Random gull
+    // behaviour, left-to-right) so upgrading users actually SEE the new scene and the
+    // mixed flock instead of staying on whatever they picked long ago. Runs before any
+    // module reads these keys. Deliberately leaves Max seagulls and End of song alone —
+    // those are a performance choice and a taste choice, not new features. The stamp
+    // makes it a single event: a user who then picks something else keeps their pick.
+    if (settings.value("Visualizer/DefaultsResetV2", false).toBool() == false) {
+        settings.setValue("Visualizer/Type", "Seagull Cycle");
+        settings.setValue("Visualizer/Behavior", "Random");
+        settings.setValue("Visualizer/Direction", "Left to right");
+        settings.setValue("Visualizer/DefaultsResetV2", true);
+        settings.sync();
+    }
+
     // Startup guard (not a lifetime single-instance lock). A second instance is fine
     // once we're up, but two *cold* starts launched back-to-back race each other,
     // both hammering the disk/AV loading the same DLLs + VLC plugins and both trying

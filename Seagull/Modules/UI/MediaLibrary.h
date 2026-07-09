@@ -18,6 +18,8 @@ class QButtonGroup;
 class QFrame;
 class QLabel;
 class QMenu;
+class QAction;
+class QDir;
 class QTimer;
 class FlowLayout;
 class VideoCard;
@@ -36,8 +38,12 @@ class MediaLibrary : public QWidget {
 
 public:
     enum class MediaType { Video, Audio, Image, Recording, Playlist };
-    // How the grid is ordered. Persisted globally to config.ini (Library/SortMode).
-    enum class SortMode { NameAsc, NameDesc, DateNewest, DateOldest };
+    // How the grid is ordered. Persisted globally to config.ini (Library/SortMode)
+    // as the raw int, so new modes must only ever be APPENDED.
+    // ContinueWatching is a filter as well as an order: it shows only files with a
+    // resume point in SgWatchHistory, most-recently-watched first. It means nothing
+    // for Image/Playlist (never recorded), where it falls back to DateNewest.
+    enum class SortMode { NameAsc, NameDesc, DateNewest, DateOldest, ContinueWatching };
 
     explicit MediaLibrary(SgSpellCheck* spell, QWidget* parent = nullptr);
 
@@ -100,6 +106,8 @@ private:
     void tintSortIcon();         // recolour the sort glyph to the theme text colour
     void showSortMenu();         // sort click: drop the ordering menu under the button
     void applySortMode(SortMode mode); // remember + persist the choice, then re-list
+    bool supportsContinueWatching() const; // false for Image/Playlist (no watch history)
+    QFileInfoList listContinueWatching(const QDir& dir) const; // watched-but-unfinished, newest first
 
     MediaType m_type = MediaType::Video;
 
@@ -112,6 +120,7 @@ private:
     bool          m_deleteMode = false;    // is the trash armed (cards are selectable)?
     QSet<QString> m_selected;              // absolute paths picked for deletion (across types)
     QMenu*        sortMenu = nullptr;       // ordering options dropped under the sort button
+    QAction*      continueAction = nullptr; // the Continue Watching entry; greyed out for Image/Playlist
     SortMode      m_sortMode = SortMode::DateNewest; // active grid ordering
     SpellCheckLineEdit* librarySearch = nullptr; // revealed on click; filters the active type
     bool          m_searchOpen = false;    // is the search bar revealed?
