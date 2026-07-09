@@ -42,7 +42,11 @@ public:
 
     void stopPolling();
     void startPolling();
-    void setEndedMode(bool ended); // Freeze seeker/time at end-of-stream
+    // Freeze the seeker/time at end-of-stream. `completed` means the media played all the way
+    // through (rather than being stopped or failing), in which case the seeker is snapped to
+    // the full duration — the poll only samples every 250ms, so left alone it always freezes
+    // a beat short and reads as if the track ended early.
+    void setEndedMode(bool ended, bool completed = false);
     void setLiveMode(bool isLive); // Live stream: LIVE badge replaces the duration; seeking stays (DVR window)
     void setCurrentFormat(const QString& formatId); // Track active selection
     void setRecording(bool on);          // reflect recorder state: red pulse while on

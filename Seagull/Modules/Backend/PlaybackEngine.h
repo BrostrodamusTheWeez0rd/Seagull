@@ -8,6 +8,7 @@
 #include <QVector>
 #include <QByteArray>
 #include <QElapsedTimer>
+#include <atomic>
 #include <memory>
 #include <vlcpp/vlc.hpp>
 
@@ -122,6 +123,17 @@ private:
     // Synthesise a local HLS master tying a video-only + audio-only chunklist
     // together (for sites that split them); returns false on write failure.
     bool writeHlsMaster(const QString& videoUrl, const QString& audioUrl);
+
+    // End-of-stream drain, called on VLC's audio thread. VLC hands us its last decoded
+    // samples about a second before the track's clock runs out; blocking here until the
+    // FIFO and the sink have actually played them is what stops that second being lost.
+    // Without a drain callback libVLC's amem satisfies the drain by calling our FLUSH
+    // callback instead, which throws that second away — the whole "ends a second early".
+    void waitForFifoDrain();
+
+    // Set by any teardown (stop/tap-off/destruction) to break waitForFifoDrain out of its
+    // wait, so VLC's thread can never be stuck on a ring that nothing is draining.
+    std::atomic<bool> m_drainAbort{ false };
 
     std::shared_ptr<VLC::Instance>    m_instance;
     std::shared_ptr<VLC::MediaPlayer> m_player;

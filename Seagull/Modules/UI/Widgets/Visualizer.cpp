@@ -521,17 +521,31 @@ void Visualizer::seedScenery() {
     // always has solid footing.
     auto jx = [&](qreal f) { return f * w + frand(-0.004, 0.004) * w; };
     auto jy = [&](qreal f) { return f * h + frand(-0.006, 0.006) * h; };
+    const QPointF shoulder(jx(0.020), jy(0.520));   // the headland's shoulder
+    const QPointF plateau (jx(0.056), jy(0.512));   // sits WELL above the island ridge (~0.60h)
     m_cliff.clear();
     m_cliff << QPointF(-4, 0.745 * h)               // far-left, under the waterline
             << QPointF(-4, jy(0.548))               // a steep face rising straight out of the sea
-            << QPointF(jx(0.020), jy(0.520))        // up to the headland's shoulder
-            << QPointF(jx(0.056), jy(0.512))        // the plateau — sits WELL above the island ridge (~0.60h)
+            << shoulder
+            << plateau
             << QPointF(jx(0.088), jy(0.534))        // dips to a saddle
             << QPointF(jx(0.116), jy(0.590))        // then a craggy face plunging back down
             << QPointF(jx(0.104), jy(0.646))
             << QPointF(jx(0.134), jy(0.708))
             << QPointF(0.142 * w, 0.745 * h);       // back into the sea
-    m_lightBase = QPointF(0.038 * w, 0.516 * h);    // on the plateau top, clear of its edges
+
+    // Plant the tower ON the jittered plateau, not on where the plateau would sit
+    // unjittered — otherwise a downward roll leaves the lighthouse hovering. The
+    // base is a flat edge on a sloped surface, so seat it on whichever of its two
+    // corners the rock line runs lowest under, then sink it a hair so the seam is
+    // always buried. Must track drawLighthouse's bx/bw.
+    const qreal bx = 0.038 * w, bw = h * 0.0131;
+    auto plateauY = [&](qreal x) {
+        const qreal t = qBound(0.0, (x - shoulder.x()) / qMax(1e-6, plateau.x() - shoulder.x()), 1.0);
+        return shoulder.y() + t * (plateau.y() - shoulder.y());
+    };
+    const qreal by = qMax(plateauY(bx - bw), plateauY(bx + bw));
+    m_lightBase = QPointF(bx, by + h * 0.0015);
 
     // A couple of tiny rocks breaking the waterline off the point, settled a few
     // px lower so they sit IN the water rather than hovering at the sand line.

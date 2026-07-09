@@ -3,6 +3,7 @@
 #include "Theme.h"
 #include "Widgets/CircleGlyphButton.h"
 #include "../Backend/SgPaths.h"
+#include "../Backend/SgLog.h"
 #include <QApplication>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -146,6 +147,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_autoplayBtn, &QToolButton::toggled, this, [this](bool on) {
         m_autoplayEnabled = on;
         tintAutoplayButton();
+        // SEALOG: the autoplay state is per content type. Turning it off here does not turn it
+        // off for another key, so the key it persists under matters when the toggle "won't stick".
+        if (SgLog::instance().isEnabled())
+            SgLog::instance().log(QStringLiteral("autoplay"),
+                QStringLiteral("toggled -> %1, persisting under key=%2")
+                    .arg(on).arg(m_contextKey.isEmpty() ? QStringLiteral("<none>") : m_contextKey));
         if (!m_contextKey.isEmpty()) {
             QSettings s(SgPaths::configFile(), QSettings::IniFormat);
             s.setValue("Player/Autoplay/" + m_contextKey, on);
@@ -430,6 +437,13 @@ void MainWindow::setPlaybackContext(const QString& contextKey, bool photoMode) {
     QSettings s(SgPaths::configFile(), QSettings::IniFormat);
     const bool autoplay = s.value("Player/Autoplay/" + contextKey, !photoMode).toBool();
     const bool shuffle  = s.value("Player/Shuffle/"  + contextKey, false).toBool();
+
+    // SEALOG: every reload of the toggles. `loadedAutoplay` flipping back to 1 after the user
+    // turned it off means the key they toggled under isn't the key now in play.
+    if (SgLog::instance().isEnabled())
+        SgLog::instance().log(QStringLiteral("autoplay"),
+            QStringLiteral("setPlaybackContext key=%1 photoMode=%2 loadedAutoplay=%3 (was %4)")
+                .arg(contextKey).arg(photoMode).arg(autoplay).arg(m_autoplayEnabled));
 
     // Reflect the state without re-persisting (block the toggled write-back).
     m_autoplayEnabled = autoplay;

@@ -328,8 +328,20 @@ void PlayerControls::startPolling() {
     }
 }
 
-void PlayerControls::setEndedMode(bool ended) {
+void PlayerControls::setEndedMode(bool ended, bool completed) {
     m_endedMode = ended;
+    if (!ended || !completed) return;
+
+    // A track that played to its end must READ as finished. Don't ask the engine for the
+    // position here: pollVlcState's last sample is up to 250ms stale, and VLC's own clock
+    // starts drifting back toward 0 once it reports Ended. m_duration is the length cached
+    // while it was still playing, which is the only number we can trust at this point.
+    // Live has no duration to snap to (the timestamp carries the LIVE badge instead).
+    if (m_isLive || m_duration <= 0) return;
+    positionSlider->blockSignals(true);
+    positionSlider->setValue(static_cast<int>(m_duration));
+    positionSlider->blockSignals(false);
+    timeLabel->setText(formatTime(m_duration) + " / " + formatTime(m_duration));
 }
 
 void PlayerControls::setLiveMode(bool isLive) {

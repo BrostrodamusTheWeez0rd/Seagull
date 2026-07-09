@@ -490,6 +490,13 @@ void Queue::playPrevQueuedItem() {
 }
 
 void Queue::playQueueIndex(int index) {
+    // SEALOG: every Queue-driven playback start funnels through here, including the
+    // self-advancing stream session — which is the one source that can move on its own.
+    if (SgLog::instance().isEnabled())
+        SgLog::instance().log(QStringLiteral("autoplay"),
+            QStringLiteral("Queue::playQueueIndex(%1) streaming=%2 size=%3 drained=%4")
+                .arg(index).arg(isStreamingQueue).arg(m_streamQueue.size()).arg(m_queueDrained));
+
     if (index < 0 || index >= m_streamQueue.size()) {
         isStreamingQueue = false;
         m_queuePlayIndex = -1;

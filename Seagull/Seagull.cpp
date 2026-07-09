@@ -46,6 +46,19 @@
 #include <QJsonObject>
 #include <QJsonValue>
 
+// Names the active source for the SEALOG autoplay lines. Takes the enum's underlying value
+// because ActiveSource is private to Seagull.
+static QString sgActiveSourceName(int s) {
+    switch (s) {
+    case 1: return QStringLiteral("Library");
+    case 2: return QStringLiteral("Explorer");
+    case 3: return QStringLiteral("Queue");
+    case 4: return QStringLiteral("Search");
+    case 0: return QStringLiteral("None");
+    }
+    return QStringLiteral("?");
+}
+
 // Stamped in by the build (see CMakeLists). Fallback keeps a stray build compiling.
 #ifndef SEAGULL_VERSION
 #define SEAGULL_VERSION "dev"
@@ -616,6 +629,13 @@ Seagull::Seagull(QObject* parent) : QObject(parent) {
     // came from (the queue's play signals re-point activeSource at Queue). When
     // shuffle is on, the next pick from each source is random.
     connect(videoPlayer, &VideoPlayer::mediaEnded, this, [this]() {
+        // SEALOG: the ONE gated advance path. If a track advances while this logs autoplay=0,
+        // the advance came from somewhere else — check for a skipActive line right after.
+        if (SgLog::instance().isEnabled())
+            SgLog::instance().log(QStringLiteral("autoplay"),
+                QStringLiteral("mediaEnded: autoplay=%1 shuffle=%2 source=%3")
+                    .arg(mainWindow->autoplayEnabled()).arg(mainWindow->shuffleEnabled())
+                    .arg(sgActiveSourceName(static_cast<int>(activeSource))));
         if (!mainWindow->autoplayEnabled()) return;
         const bool shuffle = mainWindow->shuffleEnabled();
         if (shuffle ? queueModule->playRandomOrStart() : queueModule->playNextOrStart()) return;
@@ -1143,6 +1163,14 @@ void Seagull::onExtractionBlocked(const QString& kind, const QString& detail) {
 }
 
 void Seagull::skipActive(int delta) {
+    // SEALOG: this path never consults autoplay (transport buttons, the media keys, the
+    // slideshow timer). If it fires at the end of a track with nothing pressed, the advance
+    // is coming from here and not from the autoplay gate.
+    if (SgLog::instance().isEnabled())
+        SgLog::instance().log(QStringLiteral("autoplay"),
+            QStringLiteral("skipActive(delta=%1) source=%2 [ungated path]")
+                .arg(delta).arg(sgActiveSourceName(static_cast<int>(activeSource))));
+
     // Forward skips honour shuffle (random next); backward always steps in order.
     const bool shuffle = delta > 0 && mainWindow->autoplayEnabled()
                                    && mainWindow->shuffleEnabled();

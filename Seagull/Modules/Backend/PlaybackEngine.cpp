@@ -1,6 +1,7 @@
 #include "PlaybackEngine.h"
 #include "SgDynamics.h"
 #include "SgEq.h"
+#include "SgLog.h"
 #include <QObject>
 #include <QFile>
 #include <QDir>
@@ -28,6 +29,24 @@ namespace {
 inline void armDenormalFlush() {
     _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
     _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+}
+
+// --- End-of-stream drain tuning (see PlaybackEngine::waitForFifoDrain) -------
+constexpr int kDrainPollMs   = 5;    // how often we re-check the ring while waiting
+constexpr int kSinkTailMs    = 180;  // once the ring is dry the sink still holds its own
+                                     // buffer (~100ms, and setBufferSize is only a hint)
+                                     // plus the limiter's 2ms look-ahead. Generous on
+                                     // purpose: over-waiting costs silence, under-waiting
+                                     // clips the tail — the bug this exists to fix.
+constexpr int kDrainStallMs  = 750;  // ring stopped shrinking => nothing is consuming it
+                                     // (sink stopped/dead). Give up rather than block VLC.
+constexpr int kDrainMaxMs    = 5000; // absolute backstop; the ring caps at ~4s of audio.
+
+// How many milliseconds of audio a byte count represents, for the SEALOG lines below.
+// (S16 = 2 bytes per sample, `channels` samples per frame.)
+inline qint64 pcmBytesToMs(qint64 bytes, unsigned rate, unsigned channels) {
+    if (bytes <= 0 || rate == 0 || channels == 0) return 0;
+    return (bytes / qint64(2 * channels)) * 1000 / qint64(rate);
 }
 } // namespace
 
@@ -100,8 +119,12 @@ protected:
             // the next track / recovery rebuilds the cushion and resumes cleanly,
             // rather than splicing silence into the middle of live audio.
             m_primed = false;
-            if (m_eq)  m_eq->reset();  // clear filter ringdown so it doesn't bleed across tracks
-            if (m_dyn) m_dyn->reset(); // clear the gain ride so it doesn't bleed across tracks
+            if (m_eq)  m_eq->reset();  // clear filter ringdown so it doesn't bleed across the gap
+            // Transport-only: this branch fires on seeks and underruns as well as track
+            // gaps, and it's the SAME audio either side. A full reset would dump the
+            // settled normaliser gain back to unity and audibly ride it back up. The real
+            // track boundary is AudioSinkWorker::start(), whose prepare() does reset it.
+            if (m_dyn) m_dyn->resetTransport();
             std::memset(data, 0, size_t(maxlen));
             return maxlen;
         }
@@ -346,6 +369,7 @@ void PlaybackEngine::setTapAudioDelayMs(int ms) {
 }
 
 PlaybackEngine::~PlaybackEngine() {
+    m_drainAbort.store(true, std::memory_order_relaxed); // never park VLC's thread on a dying FIFO
     if (m_player) m_player->stop(); // stop VLC first -> no more onAudioData into the ring
     if (m_audioThread) {
         // Stop the sink on its own thread and wait, then tear the thread down, so
@@ -366,7 +390,27 @@ void PlaybackEngine::hookEvents() {
     // VLC fires these on its own thread; marshal onto this object's (UI) thread
     // so connected slots run there, exactly like the old MainWindow handlers did.
     m_player->eventManager().onEndReached([this]() {
-        QMetaObject::invokeMethod(this, [this]() { emit endReached(); }, Qt::QueuedConnection);
+        // SEALOG: with drain working, fifoBytes here should be ~0 — the tail has already been
+        // played out. A big number means the drain callback never ran and the tail is about to
+        // be thrown away. Only the FIFO is touched on this thread: calling back into libVLC
+        // (time()/length()) from an event callback can deadlock on the event-manager lock,
+        // which is why every handler here marshals out before doing anything.
+        if (SgLog::instance().isEnabled() && m_fifo) {
+            const qint64 bytes = m_fifo->size();
+            SgLog::instance().log(QStringLiteral("eof"),
+                QStringLiteral("EndReached: tap=%1 fifoBytes=%2 (%3 ms)")
+                    .arg(m_tapOn).arg(bytes).arg(pcmBytesToMs(bytes, m_tapRate, m_tapChannels)));
+        }
+        QMetaObject::invokeMethod(this, [this]() {
+            // Safe on our own thread. VLC's clock drifts back toward 0 once Ended, so `length`
+            // is the trustworthy half; `time` close to it means the track really did finish.
+            if (SgLog::instance().isEnabled())
+                SgLog::instance().log(QStringLiteral("eof"),
+                    QStringLiteral("  EndReached (our thread): time=%1 length=%2")
+                        .arg(m_player ? m_player->time() : -1)
+                        .arg(m_player ? m_player->length() : -1));
+            emit endReached();
+        }, Qt::QueuedConnection);
         });
     m_player->eventManager().onPaused([this]() {
         // Tap path: freeze the sink the moment VLC pauses so pause is instant and the
@@ -399,6 +443,12 @@ void PlaybackEngine::setOutputWindow(void* hwnd) {
 }
 
 void PlaybackEngine::loadLocalFile(const QString& path, qint64 startMs) {
+    // SEALOG: setMedia below makes VLC flush the audio out. Its position in the log relative
+    // to drain/EndReached is what tells us whether a track swap can still eat a tail.
+    if (SgLog::instance().isEnabled())
+        SgLog::instance().log(QStringLiteral("eof"),
+            QStringLiteral("loadLocalFile -> setMedia (fifoBytes=%1)").arg(m_fifo ? m_fifo->size() : -1));
+
     m_loadPath = path; // remembered so replay can rebuild a fresh Media (see reloadLastMedia)
     m_lastMedia = std::make_shared<VLC::Media>(*m_instance, path.toUtf8().constData(), VLC::Media::FromPath);
     // Resume support: seek straight to a saved position on load (watch history).
@@ -524,9 +574,18 @@ void PlaybackEngine::releaseMedia() {
 
 // play() requires loaded media: after releaseMedia a stray play() (space bar,
 // stale controls) must not resurrect whatever VLC still has internally.
-void PlaybackEngine::play() { if (m_player && m_lastMedia) m_player->play(); }
+void PlaybackEngine::play() {
+    if (!m_player || !m_lastMedia) return;
+    m_drainAbort.store(false, std::memory_order_relaxed); // arm the drain for this playback
+    m_player->play();
+}
 void PlaybackEngine::pause() { if (m_player) m_player->pause(); }
-void PlaybackEngine::stop() { if (m_player) m_player->stop(); }
+// Abort first: VLC's stop waits on its audio thread, and that thread may be parked inside
+// waitForFifoDrain. Releasing it before we ask VLC to stop keeps Stop instant.
+void PlaybackEngine::stop() {
+    m_drainAbort.store(true, std::memory_order_relaxed);
+    if (m_player) m_player->stop();
+}
 bool PlaybackEngine::isPlaying() const { return m_player && m_player->isPlaying(); }
 
 qint64 PlaybackEngine::time() const { return m_player ? m_player->time() : 0; }
@@ -627,6 +686,54 @@ void PlaybackEngine::addVideoNormalizationOptions(VLC::Media& media) const {
     media.addOption(":compressor-makeup-gain=0.0");
 }
 
+// Blocks VLC's audio thread until everything we've been handed has actually been heard.
+// Blocking is what this callback is FOR — VLC will not declare the track ended until we
+// return, which is precisely the behaviour we want. The safety valves below exist so a
+// stopped or dead sink can never wedge VLC's thread on a ring nothing is emptying.
+void PlaybackEngine::waitForFifoDrain() {
+    // Deliberately does NOT clear m_drainAbort: a teardown that raced ahead of VLC calling us
+    // must still win. play() is what arms a fresh drain.
+    if (!m_fifo || m_drainAbort.load(std::memory_order_relaxed)) return;
+
+    QElapsedTimer total; total.start();
+    QElapsedTimer stall; stall.start();
+    qint64 last = -1;
+
+    // SEALOG: the tail we're about to play out. This is the audio that used to be discarded.
+    // Logged from VLC's audio thread — SgLog is mutex-guarded, and we never log inside the
+    // poll loop below (that would be one line every 5ms).
+    const qint64 startBytes = m_fifo->size();
+    if (SgLog::instance().isEnabled())
+        SgLog::instance().log(QStringLiteral("eof"),
+            QStringLiteral("drain: playing out fifoBytes=%1 (%2 ms)")
+                .arg(startBytes).arg(pcmBytesToMs(startBytes, m_tapRate, m_tapChannels)));
+
+    bool rangOut = false;              // ring reached empty on its own
+    QLatin1String why("aborted (teardown)");
+    while (!m_drainAbort.load(std::memory_order_relaxed)) {
+        const qint64 size = m_fifo->size();
+        if (size == 0) { rangOut = true; why = QLatin1String("complete"); break; }
+        if (last < 0 || size < last) stall.restart(); // still shrinking => still playing out
+        last = size;
+        if (stall.elapsed() >= kDrainStallMs) { why = QLatin1String("STALLED (sink not consuming)"); break; }
+        if (total.elapsed() >= kDrainMaxMs)   { why = QLatin1String("TIMED OUT"); break; }
+        QThread::msleep(kDrainPollMs);
+    }
+
+    // The ring is empty but the sink is still sitting on a bufferful we already handed it.
+    // Wait that out in small slices so a teardown can still interrupt us promptly.
+    if (rangOut) {
+        QElapsedTimer tail; tail.start();
+        while (tail.elapsed() < kSinkTailMs && !m_drainAbort.load(std::memory_order_relaxed))
+            QThread::msleep(kDrainPollMs);
+    }
+
+    if (SgLog::instance().isEnabled())
+        SgLog::instance().log(QStringLiteral("eof"),
+            QStringLiteral("drain: %1 after %2 ms (fifoBytes=%3)")
+                .arg(why).arg(total.elapsed()).arg(m_fifo->size()));
+}
+
 // --- Audio tap (audio-only media) -------------------------------------------
 
 void PlaybackEngine::ensureAudioThread() {
@@ -643,6 +750,8 @@ void PlaybackEngine::ensureAudioThread() {
 
 void PlaybackEngine::setAudioTap(bool on) {
     if (on == m_tapOn) return;
+    // The sink and/or the ring are about to be rebuilt or torn down; release any drain first.
+    m_drainAbort.store(true, std::memory_order_relaxed);
     if (on) {
         // Device-support check on this (GUI) thread so we can fall back to VLC's
         // native audio if there's no usable output, before committing to the tap.
@@ -667,11 +776,23 @@ void PlaybackEngine::setAudioTap(bool on) {
         // Custom decoded-audio output: VLC hands us S16 interleaved samples; the
         // worker thread's sink plays them, we analyse them. flush() clears the ring
         // on seek so stale audio isn't replayed.
+        // flush = "throw away what's queued" (a seek). drain = "play out what's queued, then
+        // tell me". They are NOT interchangeable: with drain left null, libVLC's amem answers
+        // its end-of-stream drain by calling flush, and we discard ~1s of decoded audio that
+        // was never played — which is exactly why tracks used to end a second early. Supplying
+        // a real drain both saves that second and pushes EndReached out to the true end.
         m_player->setAudioCallbacks(
             [this](const void* s, unsigned c, int64_t pts) { onAudioData(s, c, pts); },
             nullptr, nullptr,
-            [this](int64_t) { if (m_fifo) m_fifo->clear(); },
-            nullptr);
+            [this](int64_t) {                                  // flush: seek, drop stale audio
+                // SEALOG: a flush carrying a big byte count right after EndReached would mean
+                // libVLC is answering its drain with flush again — the original bug, returning.
+                if (SgLog::instance().isEnabled() && m_fifo)
+                    SgLog::instance().log(QStringLiteral("eof"),
+                        QStringLiteral("flush: discarding fifoBytes=%1").arg(m_fifo->size()));
+                if (m_fifo) m_fifo->clear();
+            },
+            [this]() { waitForFifoDrain(); });                 // drain: end of stream, play it out
         m_player->setAudioFormat("S16N", m_tapRate, m_tapChannels);
 
         // Start the sink on the audio thread (it owns/creates the sink there). Hand it the

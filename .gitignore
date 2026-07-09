@@ -34,3 +34,6 @@ Seagull/Tools/*
 
 # Local planning notes, not published
 /ROADMAP.md
+
+# Release notes drafts, pasted into the GitHub release body rather than shipped
+/RELEASE_NOTES_*.md

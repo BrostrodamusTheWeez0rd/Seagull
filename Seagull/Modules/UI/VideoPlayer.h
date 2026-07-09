@@ -192,6 +192,11 @@ private:
     bool overlaySurfaceExposedAt(const QPoint& globalPos) const;
     bool videoAreaExposed() const; // exposure probe at the video frame's centre
 
+    // The cursor is resting on the transport bar or the title banner. The OSD must not
+    // fade while it is: showOSD only fires on mouse MOVEMENT, so a stationary cursor
+    // could never bring back a bar that timed out underneath it.
+    bool cursorOverChrome() const;
+
     void showPosterOverlay();
     void hidePosterOverlay();
     void applyPosterPixmap(const QPixmap& pm); // stream thumbnail decoded (direct or via ffmpeg)

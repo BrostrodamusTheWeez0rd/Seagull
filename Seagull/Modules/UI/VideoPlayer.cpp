@@ -4,6 +4,7 @@
 #include "../Backend/SgThumbnailer.h"    // decodeViaFfmpeg (WebP fallback)
 #include "../Backend/SgPaths.h"
 #include "../Backend/SgWatchHistory.h"  // resume-from-where-you-left-off
+#include "../Backend/SgLog.h"
 #include "Widgets/PlayerControls.h"
 #include "Widgets/PlayerTitleBar.h"
 #include "Widgets/Visualizer.h"
@@ -323,6 +324,13 @@ void VideoPlayer::hardStop() {
 }
 
 void VideoPlayer::onMediaEndReached() {
+    // SEALOG: which branch the end takes. A shorts loop, a closed player and a normal
+    // play-through all land here and behave completely differently.
+    if (SgLog::instance().isEnabled())
+        SgLog::instance().log(QStringLiteral("autoplay"),
+            QStringLiteral("onMediaEndReached visible=%1 shortsMode=%2 hasMedia=%3 playerAutoplay=%4")
+                .arg(isVisible()).arg(m_shortsMode).arg(engine && engine->hasMedia()).arg(m_autoplayEnabled));
+
     // VLC's end-reached is queued cross-thread, so it can land AFTER the banner X
     // tore the player down (closing right as a track ends). Acting on it then
     // resurrects the pinned banner/controls/poster over a closed player — and its
@@ -363,7 +371,9 @@ void VideoPlayer::onMediaEndReached() {
     emit smtcStateChanged(0); // SMTC: Stopped (auto-advance re-sets Playing if a next item runs)
     // Freeze the seeker/timestamp at the end so they don't snap back to 0 while
     // VLC drains the decoder. startPolling() clears this when the next item plays.
-    if (playerControls) playerControls->setEndedMode(true);
+    // completed=true: this is a real play-through, so show the duration as fully elapsed
+    // (the Stop button and the stream-failure path pass false and freeze where they are).
+    if (playerControls) playerControls->setEndedMode(true, /*completed*/ true);
     pinOverlayWindow(playerControls, controlsFade);
     pinOverlayWindow(titleBar, titleFade);
 
@@ -1021,7 +1031,21 @@ void VideoPlayer::showOSD() {
     osdTimer->start(3000);
 }
 
+// The overlays are top-level windows (VLC's HWND draws over child widgets), so their
+// geometry() is already in global coordinates — the same test updateSplitterToggle uses.
+// Covers the photo arrows too: they're the only chrome a still image has.
+bool VideoPlayer::cursorOverChrome() const {
+    const QPoint p = QCursor::pos();
+    auto over = [&p](const QWidget* w) { return w && w->isVisible() && w->geometry().contains(p); };
+    return over(playerControls) || over(titleBar) || over(prevPhotoBtn) || over(nextPhotoBtn);
+}
+
 void VideoPlayer::hideOSD() {
+    // Resting the cursor on the chrome holds it up. This has to come before everything else:
+    // a stationary mouse produces no movement for showOSD to react to, so a bar that faded
+    // out here could not be recovered without jiggling the mouse.
+    if (cursorOverChrome()) { osdTimer->start(3000); return; }
+
     if (m_kind == MediaKind::Photo) {
         // No popups/playback gating for a still image — just fade the arrows out.
         fadeOverlayWindow(prevPhotoBtn, prevPhotoFade, false);
