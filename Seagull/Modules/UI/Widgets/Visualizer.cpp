@@ -78,6 +78,26 @@ namespace {
         return 1.0 - u * u * u * (u * (u * 6.0 - 15.0) + 10.0);
     }
 
+    // Horizontal speed multiplier through a swoop (a boost ADDED over the base glide
+    // via multiply): it ACCELERATES into the dive so the down-swoop is fast and
+    // covers ground — an arc, not a vertical drop — peaks at the bottom, then bleeds
+    // off slowly up the far side, a slower glide that still carries the speed it
+    // built dropping in. kSwoopDiveBoost = the extra at the bottom; kSwoopGlideCarry
+    // = how much of it survives to the top of the climb.
+    constexpr qreal kSwoopDiveBoost  = 2.4;
+    constexpr qreal kSwoopGlideCarry = 0.55;
+    qreal swoopSurge(qreal p) {
+        if (p < 0.0) return 1.0;
+        if (p < kSwoopBottom) {
+            const qreal t = p / kSwoopBottom;                          // 0..1 down
+            // Ramp in fast from the very start so the STEEP middle of the drop still
+            // carries forward speed — that's what bends the plunge into an arc.
+            return 1.0 + kSwoopDiveBoost * t;                          // build to the peak at the bottom
+        }
+        const qreal u = (p - kSwoopBottom) / (1.0 - kSwoopBottom);     // 0..1 up
+        return 1.0 + kSwoopDiveBoost * (kSwoopGlideCarry + (1.0 - kSwoopGlideCarry) * (1.0 - u * u)); // carry, then bleed
+    }
+
     // Cubic smoothstep, clamped: eases 0..1 with zero slope at both ends.
     qreal smooth01(qreal x) { x = qBound(0.0, x, 1.0); return x * x * (3.0 - 2.0 * x); }
     qreal lerp(qreal a, qreal b, qreal t) { return a + (b - a) * t; }
@@ -407,9 +427,13 @@ void Visualizer::seedScenery() {
     // Deterministic layout: a fixed per-session seed so every (re)build lays out the
     // SAME scene, only rescaled to the current size — a resize must not reshuffle the
     // hills/trees/rocks/stars. All positions are fractions of w/h, so replaying the
-    // same rolls at a new size rescales cleanly.
-    QRandomGenerator rng(m_sceneSeed);
+    // same rolls at a new size rescales cleanly. The star COUNT scales with area, so
+    // stars draw from their OWN stream — otherwise a size-dependent star count would
+    // shift the shore rng and reshuffle the trees/cliff/rocks on every resize.
+    QRandomGenerator rng(m_sceneSeed);                       // shore geometry (size-independent draw count)
+    QRandomGenerator rngStars(m_sceneSeed ^ 0x9E3779B9u);    // stars (variable count, independent)
     auto frand = [&](qreal lo, qreal hi) { return lo + (hi - lo) * rng.generateDouble(); };
+    auto srand = [&](qreal lo, qreal hi) { return lo + (hi - lo) * rngStars.generateDouble(); };
     auto brand = [&](int n) { return int(rng.bounded(quint32(qMax(1, n)))); };
 
     // Night stars: scattered over the sky, denser up high, each with its own
@@ -418,10 +442,10 @@ void Visualizer::seedScenery() {
     const int nStars = int(qBound(50.0, w * h / 14000.0, 160.0));
     for (int i = 0; i < nStars; ++i) {
         Star s;
-        s.x  = frand(0, w);
-        s.y  = frand(0, h * 0.62) * frand(0.35, 1.0); // bias upward
-        s.r  = frand(0.6, 1.7) * qMax(1.0, h / 640.0);
-        s.tw = frand(0, 6.28);
+        s.x  = srand(0, w);
+        s.y  = srand(0, h * 0.62) * srand(0.35, 1.0); // bias upward
+        s.r  = srand(0.6, 1.7) * qMax(1.0, h / 640.0);
+        s.tw = srand(0, 6.28);
         m_stars.push_back(s);
     }
 
@@ -678,8 +702,7 @@ void Visualizer::step() {
         // main speed input, with a floor that keeps even slow songs' gulls
         // visibly underway). A swooping gull picks up speed as it drops and
         // bleeds it off climbing out — fastest at the bottom.
-        qreal surge = 1.0;
-        if (g.swoopP >= 0.0) surge = 1.0 + 0.9 * swoopDepth(g.swoopP);
+        const qreal surge = swoopSurge(g.swoopP); // 1.0 when not swooping; fast dive, carried glide up
         g.x += dir * g.speed * (0.9 + 1.1 * m_tempoSpeed) * surge;
         if (m_behavior == GullBehavior::Flocking && g.swoopP < 0.0) // cohere toward the wandering
             g.y += (flockY + g.yoff * h - g.y) * 0.03;              // flock band (not mid-swoop)
@@ -727,7 +750,7 @@ void Visualizer::drawGull(QPainter& p, const Gull& g) {
         // Pitch = the true path tangent (vertical vs horizontal velocity, px/s),
         // relaxed a touch and capped so the bank reads natural, never aerobatic.
         // (Horizontal term mirrors step()'s BPM-paced glide + dive surge.)
-        const qreal vx = g.speed * (0.9 + 1.1 * m_tempoSpeed) * (1.0 + 0.9 * depth) * 60.0;
+        const qreal vx = g.speed * (0.9 + 1.1 * m_tempoSpeed) * swoopSurge(g.swoopP) * 60.0;
         const qreal vy = slope * g.swoopAmp / g.swoopDur;
         tilt = qBound(-50.0, std::atan2(vy, qMax(1.0, vx)) * (180.0 / 3.14159265358979) * 0.75, 50.0) * dir;
     } else if (m_behavior == GullBehavior::Flocking) {
