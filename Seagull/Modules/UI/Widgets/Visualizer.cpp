@@ -861,17 +861,24 @@ void Visualizer::drawSun(QPainter& p, const QPointF& c, qreal r) {
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
-    // Corona: THREE thin wobbly rings just jutting past the disc, each a slightly
-    // different gold tone and rotating on its own speed + phase, so the flames
-    // churn and interleave. Solid fills (no stroke) => clean flames, no holes.
-    // Drawn largest/deepest first so the tips layer deep-amber -> orange -> gold.
-    auto corona = [&](qreal radius, qreal rot, qreal amp, const QColor& col) {
-        p.setBrush(col);
-        p.drawPath(blob(radius, rot, amp));
-    };
-    corona(rp * 1.075, m_t * 0.035 + 0.0, 0.050, QColor(228, 126, 40));  // outer, deep amber
-    corona(rp * 1.060, m_t * 0.050 + 2.1, 0.048, QColor(255, 150, 54));  // mid, orange
-    corona(rp * 1.045, m_t * 0.065 + 4.2, 0.045, QColor(255, 182, 80));  // inner, bright gold
+    // Rays: a fixed ring of little gold triangles jutting out past the disc,
+    // evenly spaced and pointing straight outward. They don't spin — each one
+    // just lengthens on the beat and eases back. Drawn BEFORE the disc so the
+    // triangle bases tuck under the rim and only the tips show.
+    const int   rayCount = 12;
+    const qreal baseR    = rp * 0.98;                  // base sits just inside the rim
+    const qreal tipR     = rp * (1.30 + 0.24 * beat);  // tip pushes out on the beat
+    const qreal halfW    = (kPi / rayCount) * 0.42;    // angular half-width of each base
+    p.setBrush(QColor(255, 188, 76));
+    for (int i = 0; i < rayCount; ++i) {
+        const qreal a = (2.0 * kPi * i) / rayCount;
+        QPainterPath tri;
+        tri.moveTo(c.x() + std::cos(a - halfW) * baseR, c.y() + std::sin(a - halfW) * baseR);
+        tri.lineTo(c.x() + std::cos(a + halfW) * baseR, c.y() + std::sin(a + halfW) * baseR);
+        tri.lineTo(c.x() + std::cos(a) * tipR,          c.y() + std::sin(a) * tipR);
+        tri.closeSubpath();
+        p.drawPath(tri);
+    }
 
     // The disc: solid warm gold with a near-WHITE core so it stays the brightest
     // point (Morning's veil then fades its rim into the sky's own colours). Its
