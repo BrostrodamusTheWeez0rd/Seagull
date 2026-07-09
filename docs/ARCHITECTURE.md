@@ -222,7 +222,17 @@ Load-bearing details, each one earned the hard way:
   schedule, arc and easing constants sit at the top of the Cycle block in `Visualizer.cpp`;
   unknown duration (live streams) holds at dawn. The four fixed scenes are unchanged — Cycle is a
   parallel render path, and the shared night-gated helpers take a `night01` (0..1) that is exactly
-  0 or 1 for the fixed scenes.
+  0 or 1 for the fixed scenes. `Seagull Cycle` is the default type.
+- **Gull behaviour and direction.** Two orthogonal settings, both global across every scene.
+  Behaviour is `Drift`, `Swooping`, `Flocking` or `Random` (the default): under `Random` each gull
+  rolls one of the other three for itself in `recycleGull` and keeps it for that crossing, so the
+  flock is a mix. Every read goes through `behaviorOf(g)`, which returns the bird's own roll under
+  `Random` and the global setting otherwise. `Flocking` steers each member onto its slot around the
+  flock's live **centroid** — vertically a direct ease, horizontally a clamped *speed trim* (a
+  straggler sprints, a leader eases off but never stalls), so the birds genuinely bunch; swooping
+  and dying gulls drop out of the centroid. Direction (`m_dir`, `Left to right` / `Right to left`)
+  is independent and composes with all four behaviours; it replaced the old `Reverse` behaviour,
+  which is migrated on load. Changing either adapts the living flock in place — no respawn.
 
 ### Equalizer and normalization state
 
@@ -619,7 +629,7 @@ install is self-contained and survives the self-update's robocopy swap.
 | `Search/` | `ResultLimit`, `SortMode`, `ClearHistoryOnExit`, `WarnDuplicateSite`, `CookiesWarningAck`; per-site families `HomeChannels<Site>`, `HomeAmount<Site>`, `HomeVideosPerChannel<Site>`, `HomeRandomize<Site>`, `HomeLazyLoad<Site>`, `ShowContinueWatching<Site>` |
 | `Tabs/` | `Closed`, `Order`, `ExtraTabs`, `ActiveLabel`, `ActiveOrdinal` |
 | `FileExplorer/` | `AddressHistory` |
-| `Visualizer/` | `Type` (`Seagull Morning`/`Day`/`Dusk`/`Night`/`Cycle`), `Active`, `Behavior`, `MaxGulls`, `KillOnEnd`, `LighthouseBeats` (beats per lighthouse flash, Night and Cycle only) |
+| `Visualizer/` | `Type` (`Seagull Morning`/`Day`/`Dusk`/`Night`/`Cycle`), `Active`, `Behavior` (`Drift`/`Swooping`/`Flocking`/`Random`, where each gull rolls its own; legacy `Reverse` migrates to `Drift` + `Direction=Right to left`), `Direction` (`Left to right`/`Right to left`), `MaxGulls`, `KillOnEnd`, `LighthouseBeats` (beats per lighthouse flash, Night and Cycle only) |
 | `Logging/` | `Verbose` (the SEALOG persist) |
 
 ## 9. Key signals

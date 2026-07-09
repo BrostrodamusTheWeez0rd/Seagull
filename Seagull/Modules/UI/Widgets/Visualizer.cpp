@@ -57,6 +57,20 @@ namespace {
     constexpr qreal kGenX  = -0.04;
     constexpr qreal kGenHw =  0.16; // generator half-width (raised cosine), in widths
 
+    // Flocking: the birds converge on the flock's own CENTROID, not on a band each
+    // tracks alone (that just smeared them across the sky). Vertical is a direct
+    // pull onto the bird's slot; horizontal is a SPEED trim — a straggler sprints,
+    // a leader eases off — because shoving x directly would teleport a fresh bird
+    // across the screen. The brake is much weaker than the sprint so the leaders
+    // never stall waiting on a gull that just spawned at the far edge; the flock
+    // keeps crossing and the latecomer runs it down.
+    constexpr qreal kFlockPullY  = 0.060; // per-frame ease onto the slot's height
+    constexpr qreal kFlockPullX  = 0.030; // horizontal error -> speed trim
+    constexpr qreal kFlockSlotY  = 0.045; // personal slot, +/- fraction of height
+    constexpr qreal kFlockSlotX  = 0.070;
+    constexpr qreal kFlockSprint = 1.00;  // straggler may nearly double its glide
+    constexpr qreal kFlockBrake  = 0.45;  // leader sheds at most this much of it
+
     constexpr qreal kSwoopBottom = 0.36; // fraction of the swoop spent diving — a touch quicker down than the climb out (longer dive = more room for a slow open)
     // The gull gif is 5 frames (0..4). A swoop HOLDS frame 0 (wings tucked) all the
     // way down; near the bottom it opens the wings FORWARD only, from the dive frame
@@ -223,19 +237,40 @@ void Visualizer::beat() {
 
 void Visualizer::setDemoMode(bool on) { m_demo = on; m_demoBeatT = 0.0; }
 
+Visualizer::GullBehavior Visualizer::randomBehavior() {
+    static constexpr GullBehavior kPool[3] = { GullBehavior::Drift, GullBehavior::Swooping,
+                                               GullBehavior::Flocking };
+    return kPool[QRandomGenerator::global()->bounded(3)];
+}
+
+Visualizer::GullBehavior Visualizer::behaviorOf(const Gull& g) const {
+    return (m_behavior == GullBehavior::Random) ? g.behavior : m_behavior;
+}
+
 void Visualizer::setBehavior(const QString& name) {
+    // Legacy "Reverse" is no longer a behaviour — direction is its own setting now.
+    // A config still holding it falls through to Drift here; Settings migrates the
+    // key and flips the direction to right-to-left.
     GullBehavior b = GullBehavior::Drift;
-    if (name.contains(QStringLiteral("Reverse"), Qt::CaseInsensitive) ||
-        name.contains(QStringLiteral("Right"),   Qt::CaseInsensitive)) b = GullBehavior::Reverse;
-    else if (name.contains(QStringLiteral("Swoop"), Qt::CaseInsensitive)) b = GullBehavior::Swooping;
-    else if (name.contains(QStringLiteral("Flock"), Qt::CaseInsensitive)) b = GullBehavior::Flocking;
+    if      (name.contains(QStringLiteral("Random"), Qt::CaseInsensitive)) b = GullBehavior::Random;
+    else if (name.contains(QStringLiteral("Swoop"),  Qt::CaseInsensitive)) b = GullBehavior::Swooping;
+    else if (name.contains(QStringLiteral("Flock"),  Qt::CaseInsensitive)) b = GullBehavior::Flocking;
     if (b != m_behavior) {
         m_behavior = b;
-        // The active flock adapts IN PLACE — no respawn. A direction change turns
-        // the birds around where they fly, Flocking starts steering the existing
-        // gulls toward the band, and any swoop in progress finishes on its own
-        // (step/draw run swoops by swoopP, not by the current behaviour).
+        // The active flock adapts IN PLACE — no respawn. Flocking starts steering
+        // the existing gulls toward the band, any swoop in progress finishes on its
+        // own (step/draw run swoops by swoopP, not by the current behaviour), and
+        // switching to Random simply lets each bird's own roll — made when it
+        // spawned — take over.
     }
+    update();
+}
+
+void Visualizer::setDirection(const QString& name) {
+    // Turning the flock around leaves it where it is: the birds fly back out the
+    // side they came in, and recycleGull respawns them on the new trailing edge.
+    const int d = name.contains(QStringLiteral("Right to left"), Qt::CaseInsensitive) ? -1 : 1;
+    if (d != m_dir) m_dir = d;
     update();
 }
 
@@ -514,7 +549,7 @@ void Visualizer::seedScenery() {
 
 void Visualizer::recycleGull(Gull& g) {
     const qreal w = qMax(1, width()), h = qMax(1, height());
-    const int dir = (m_behavior == GullBehavior::Reverse) ? -1 : 1; // Reverse flies R->L
+    const int dir = m_dir;
     g.size  = frand(h * 0.015, h * 0.038);        // smaller = farther away (foreground kept
                                                   // modest so the tugboat still dwarfs them)
     g.x     = (dir > 0) ? -g.size : (w + g.size); // spawn at the trailing edge
@@ -525,9 +560,11 @@ void Visualizer::recycleGull(Gull& g) {
     g.phase = frand(0, 6.28);
     g.flap  = frand(0.8, 1.3);
     g.foff  = QRandomGenerator::global()->bounded(qMax(1, m_gullFrames.size()));
-    g.yoff  = frand(-0.12, 0.12);                 // flock-band offset (fraction of height)
+    g.xoff  = frand(-1.0, 1.0);                   // its slot in the flock, scaled by kFlockSlot* later
+    g.yoff  = frand(-1.0, 1.0);
     g.rot = 0.0; g.spin = 0.0; g.vy = 0.0; g.dying = false;
     g.swoopP = -1.0; g.swoopAmp = 0.0; g.swoopDur = 1.3; // start flying level (swoops kick in at random)
+    g.behavior = randomBehavior();                // always rolled; only read under Random
 }
 
 void Visualizer::step() {
@@ -685,10 +722,25 @@ void Visualizer::step() {
         ++living;
     }
 
-    const int dir = (m_behavior == GullBehavior::Reverse) ? -1 : 1;
+    const int dir = m_dir;
     const qreal flockY = h * 0.40 + std::sin(m_t * 0.6) * h * 0.16; // wandering flock band
+    // The flock's centre of mass, the one point every member steers to. Only
+    // level-flying members vote: a swooping gull has peeled off the formation and
+    // a dying one is no longer in the sky. Under Random this is the centroid of
+    // just the birds that rolled Flocking, so they bunch while the rest go their
+    // own way.
+    qreal flockX = 0.0;
+    int   flockN = 0;
+    for (const Gull& g : m_gulls) {
+        if (g.dying || g.swoopP >= 0.0 || behaviorOf(g) != GullBehavior::Flocking) continue;
+        flockX += g.x;
+        ++flockN;
+    }
+    if (flockN > 0) flockX /= flockN;
+
     for (int i = 0; i < m_gulls.size(); ++i) {
         Gull& g = m_gulls[i];
+        const GullBehavior beh = behaviorOf(g);
         g.phase += 0.085 * g.flap; // bob clock (constant, not audio-tied)
         if (g.dying) {
             g.vy  += 0.0009 * h;  // gravity
@@ -698,14 +750,24 @@ void Visualizer::step() {
             if (g.y - g.size > h) { m_gulls.removeAt(i); --i; } // fell off the bottom
             continue;
         }
-        // Glide (direction per behaviour, BPM-paced: the tempo detector is the
-        // main speed input, with a floor that keeps even slow songs' gulls
-        // visibly underway). A swooping gull picks up speed as it drops and
-        // bleeds it off climbing out — fastest at the bottom.
+        // Glide (BPM-paced: the tempo detector is the main speed input, with a
+        // floor that keeps even slow songs' gulls visibly underway). A swooping
+        // gull picks up speed as it drops and bleeds it off climbing out — fastest
+        // at the bottom.
         const qreal surge = swoopSurge(g.swoopP); // 1.0 when not swooping; fast dive, carried glide up
-        g.x += dir * g.speed * (0.9 + 1.1 * m_tempoSpeed) * surge;
-        if (m_behavior == GullBehavior::Flocking && g.swoopP < 0.0) // cohere toward the wandering
-            g.y += (flockY + g.yoff * h - g.y) * 0.03;              // flock band (not mid-swoop)
+        const qreal base  = dir * g.speed * (0.9 + 1.1 * m_tempoSpeed) * surge;
+        qreal vx = base;
+        if (beh == GullBehavior::Flocking && g.swoopP < 0.0 && flockN > 0) {
+            // Onto its slot in the formation (not mid-swoop — a diving bird is out).
+            g.y += (flockY + g.yoff * kFlockSlotY * h - g.y) * kFlockPullY;
+            // Horizontal cohesion as a speed trim, measured ALONG the direction of
+            // travel so it reads the same flying either way, and clamped so nobody
+            // sprints unnaturally or stops dead in mid-air.
+            const qreal errX  = flockX + g.xoff * kFlockSlotX * h - g.x;
+            const qreal glide = std::abs(base);
+            vx += qBound(-glide * kFlockBrake, errX * kFlockPullX * dir, glide * kFlockSprint) * dir;
+        }
+        g.x += vx;
         // An active swoop always runs to completion — even if the behaviour was
         // switched away mid-arc, the bird finishes its dive cleanly. Only STARTING
         // a new dive requires Swooping. Long durations + the dive surge make the
@@ -713,7 +775,7 @@ void Visualizer::step() {
         if (g.swoopP >= 0.0) {
             g.swoopP += dt / g.swoopDur;
             if (g.swoopP >= 1.0) g.swoopP = -1.0;
-        } else if (m_behavior == GullBehavior::Swooping && frand(0.0, 1.0) < 0.005) {
+        } else if (beh == GullBehavior::Swooping && frand(0.0, 1.0) < 0.005) {
             g.swoopP   = 0.0;
             g.swoopAmp = frand(0.16, 0.32) * h; // wider, deeper arc
             g.swoopDur = frand(2.2, 3.0); // seconds; varied so the flock doesn't sync up
@@ -730,7 +792,7 @@ void Visualizer::step() {
 void Visualizer::drawGull(QPainter& p, const Gull& g) {
     if (m_gullFrames.isEmpty()) return; // animated gulls only now
 
-    const int dir = (m_behavior == GullBehavior::Reverse) ? -1 : 1;
+    const int dir = m_dir;
     const bool swooping = !g.dying && g.swoopP >= 0.0; // by state, not behaviour: a switch
                                                        // mid-arc still finishes the dive
 
@@ -753,7 +815,7 @@ void Visualizer::drawGull(QPainter& p, const Gull& g) {
         const qreal vx = g.speed * (0.9 + 1.1 * m_tempoSpeed) * swoopSurge(g.swoopP) * 60.0;
         const qreal vy = slope * g.swoopAmp / g.swoopDur;
         tilt = qBound(-50.0, std::atan2(vy, qMax(1.0, vx)) * (180.0 / 3.14159265358979) * 0.75, 50.0) * dir;
-    } else if (m_behavior == GullBehavior::Flocking) {
+    } else if (behaviorOf(g) == GullBehavior::Flocking) {
         vOff = std::sin(g.phase) * g.size * 0.10;
     } else {
         vOff = std::sin(g.phase) * g.size * 0.20;

@@ -1472,10 +1472,15 @@ void VideoPlayer::showAudioArt() {
 void VideoPlayer::applyVisualizerSettings() {
     if (!visualizer) return;
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    const QString type = cfg.value("Visualizer/Type", "Seagull Morning").toString();
+    const QString type = cfg.value("Visualizer/Type", "Seagull Cycle").toString();
     visualizer->setMode(type); // legacy "Seagull Sky" -> Morning, "Seagull Waves" -> Dusk
-    // Behaviour is global — one key shared by every visualizer.
-    visualizer->setBehavior(cfg.value("Visualizer/Behavior", "Drift").toString());
+    // Behaviour and direction are global — keys shared by every visualizer. The
+    // retired "Reverse" behaviour was right-to-left Drift, so honour it as the
+    // direction default until Settings rewrites the keys.
+    const QString behavior = cfg.value("Visualizer/Behavior", "Random").toString();
+    const QString dirDefault = (behavior == "Reverse") ? "Right to left" : "Left to right";
+    visualizer->setBehavior(behavior);
+    visualizer->setDirection(cfg.value("Visualizer/Direction", dirDefault).toString());
     visualizer->setMaxGulls(cfg.value("Visualizer/MaxGulls", 14).toInt());
     visualizer->setLighthouseBeats(cfg.value("Visualizer/LighthouseBeats", 1).toInt());
     m_killGullsOnEnd = cfg.value("Visualizer/KillOnEnd", true).toBool();
@@ -1505,7 +1510,7 @@ void VideoPlayer::cycleVisualizer(int delta) {
     if (!visualizer) return;
     static const QStringList kTypes = { "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night", "Seagull Cycle" };
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
-    QString cur = cfg.value("Visualizer/Type", "Seagull Morning").toString();
+    QString cur = cfg.value("Visualizer/Type", "Seagull Cycle").toString();
     if (cur == "Seagull Waves") cur = "Seagull Dusk"; // pre-rename name
     int idx = qMax(0, int(kTypes.indexOf(cur)));
     idx = (idx + delta + kTypes.size()) % kTypes.size();

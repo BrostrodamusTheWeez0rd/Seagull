@@ -255,10 +255,16 @@ void Settings::setupUI() {
     vizForm->setContentsMargins(0, 0, 0, 0);
 
     behaviorCombo = new QComboBox();
-    behaviorCombo->addItems({ "Drift", "Reverse", "Swooping", "Flocking" });
-    behaviorCombo->setToolTip("How the seagulls move: Drift (left to right), "
-        "Reverse (right to left), Swooping, or Flocking.");
+    behaviorCombo->addItems({ "Drift", "Swooping", "Flocking", "Random" });
+    behaviorCombo->setToolTip("How the seagulls move: Drift, Swooping, Flocking, "
+        "or Random, where each seagull picks its own.");
     vizForm->addRow("Seagull behavior:", behaviorCombo);
+
+    directionCombo = new QComboBox();
+    directionCombo->addItems({ "Left to right", "Right to left" });
+    directionCombo->setToolTip("Which way the seagulls fly across the screen. "
+        "Applies to every behavior.");
+    vizForm->addRow("Seagull direction:", directionCombo);
 
     // Lighthouse flash cadence — only meaningful where the lamp is lit, so the
     // row appears dynamically when the night visualizer is selected.
@@ -571,6 +577,7 @@ void Settings::setupUI() {
     connect(visualizerCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(lighthouseCombo, &QComboBox::currentIndexChanged, this, &Settings::saveSettings);
     connect(behaviorCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
+    connect(directionCombo, &QComboBox::currentTextChanged, this, &Settings::saveSettings);
     connect(maxGullsSpin, &QSpinBox::valueChanged, this, &Settings::saveSettings);
     connect(killGullsCheck, &QCheckBox::toggled, this, &Settings::saveSettings);
     connect(typeGroup, &QButtonGroup::buttonClicked, this, [this](QAbstractButton*) {
@@ -1123,13 +1130,24 @@ void Settings::loadSettings() {
     // Map legacy saved names onto current items: "Seagull Sky" won't match any
     // item so the combo stays on index 0 (Morning, its renamed successor);
     // "Seagull Waves" is the pre-rename name for Dusk.
-    QString vizType = iniSettings->value("Visualizer/Type", "Seagull Morning").toString();
+    QString vizType = iniSettings->value("Visualizer/Type", "Seagull Cycle").toString();
     if (vizType == "Seagull Waves") vizType = "Seagull Dusk";
     visualizerCombo->setCurrentText(vizType);
     lighthouseCombo->setCurrentIndex(qMax(0,
         lighthouseCombo->findData(iniSettings->value("Visualizer/LighthouseBeats", 1).toInt())));
-    // Behaviour is global — one key shared by every visualizer.
-    behaviorCombo->setCurrentText(iniSettings->value("Visualizer/Behavior", "Drift").toString());
+    // Behaviour and direction are global — keys shared by every visualizer.
+    // "Reverse" was a behaviour before direction became its own setting: fold it
+    // back into Drift + right-to-left, and rewrite the keys so it converts once.
+    QString behavior  = iniSettings->value("Visualizer/Behavior", "Random").toString();
+    QString direction = iniSettings->value("Visualizer/Direction", "Left to right").toString();
+    if (behavior == "Reverse") {
+        behavior  = "Drift";
+        direction = "Right to left";
+        iniSettings->setValue("Visualizer/Behavior", behavior);
+        iniSettings->setValue("Visualizer/Direction", direction);
+    }
+    behaviorCombo->setCurrentText(behavior);
+    directionCombo->setCurrentText(direction);
     maxGullsSpin->setValue(iniSettings->value("Visualizer/MaxGulls", 14).toInt());
     killGullsCheck->setChecked(iniSettings->value("Visualizer/KillOnEnd", true).toBool());
 
@@ -1235,8 +1253,9 @@ void Settings::saveSettings() {
     iniSettings->setValue("Display/SeekBarSize", seekBarSizeCombo->currentText());
     iniSettings->setValue("Visualizer/Type", visualizerCombo->currentText());
     iniSettings->setValue("Visualizer/LighthouseBeats", lighthouseCombo->currentData().toInt());
-    // Behaviour is global — one key shared by every visualizer.
+    // Behaviour and direction are global — keys shared by every visualizer.
     iniSettings->setValue("Visualizer/Behavior", behaviorCombo->currentText());
+    iniSettings->setValue("Visualizer/Direction", directionCombo->currentText());
     iniSettings->setValue("Visualizer/MaxGulls", maxGullsSpin->value());
     iniSettings->setValue("Visualizer/KillOnEnd", killGullsCheck->isChecked());
     iniSettings->setValue("Download/Type", currentDownloadType());
@@ -1367,9 +1386,11 @@ void Settings::resetDefaults() {
     cardSizeCombo->setCurrentText("Large");
     cardSizeSlider->hide();
     seekBarSizeCombo->setCurrentText("Small");
-    visualizerCombo->setCurrentText("Seagull Morning");
-    behaviorCombo->setCurrentText("Drift");
-    iniSettings->setValue("Visualizer/Behavior", "Drift");
+    visualizerCombo->setCurrentText("Seagull Cycle");
+    behaviorCombo->setCurrentText("Random");
+    iniSettings->setValue("Visualizer/Behavior", "Random");
+    directionCombo->setCurrentText("Left to right");
+    iniSettings->setValue("Visualizer/Direction", "Left to right");
     maxGullsSpin->setValue(14);
     killGullsCheck->setChecked(true);
     typeVideoBtn->setChecked(true);

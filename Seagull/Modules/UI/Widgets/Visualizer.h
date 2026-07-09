@@ -34,7 +34,8 @@ public slots:
     void setSpectrum(float bass, float mid, float treble); // 0..1 per band
     void beat();                                         // a detected beat / onset
     void setDemoMode(bool on);                           // self-drive until real audio
-    void setBehavior(const QString& name);               // gull behaviour: Drift/Reverse/Swooping/Flocking
+    void setBehavior(const QString& name);               // gull behaviour: Drift/Swooping/Flocking/Random
+    void setDirection(const QString& name);              // which way the flock flies: "Left to right" / "Right to left"
     void setMaxGulls(int n);                             // perf cap on the flock size
     void setMode(const QString& name);                   // "Seagull Morning" / "Seagull Day" / "Seagull Dusk" / "Seagull Night" / "Seagull Cycle"
     void setProgress(qint64 posMs, qint64 durMs);        // song position/duration -> time-of-day for Cycle mode
@@ -52,7 +53,10 @@ protected:
 
 private:
     enum class Mode { Morning, Day, Dusk, Night };
-    enum class GullBehavior { Drift, Reverse, Swooping, Flocking };
+    // Random is not a motion of its own: every gull rolls one of the three real
+    // behaviours for itself when it spawns, so the flock is a mix. Flight
+    // direction is orthogonal to all of this (see m_dir).
+    enum class GullBehavior { Drift, Swooping, Flocking, Random };
 
     // A time-of-day colour set for the sea scene. One table (paletteFor) holds
     // every colour that changes between the scenes, so retuning one means editing
@@ -77,8 +81,10 @@ private:
     ScenePalette paletteFor(Mode m) const;
 
     struct Gull  { qreal x, y, size, speed, phase, flap; int foff;
-                   qreal rot, spin, vy, yoff; bool dying;
-                   qreal swoopP, swoopAmp, swoopDur; }; // swoopP: 0..1 progress, <0 = flying level
+                   qreal rot, spin, vy; bool dying;
+                   qreal xoff, yoff;                   // this bird's slot within the flock, -1..1 each
+                   qreal swoopP, swoopAmp, swoopDur;   // swoopP: 0..1 progress, <0 = flying level
+                   GullBehavior behavior; };           // this bird's own roll, obeyed only under Random
     // Each cloud is a little cluster of puffs (varied count/offset/size) so no
     // two look alike.
     struct Cloud { qreal x, y, scale, speed; QVector<QPointF> puffs; QVector<qreal> pr; };
@@ -91,6 +97,11 @@ private:
     void seedClouds();    // (re)build clouds sized relative to the current widget
     void seedScenery();   // (re)build the shore scene's static geometry (cliff, trees, stars)
     void recycleGull(Gull& g);
+    // The behaviour a given bird is actually flying: its own under Random, the
+    // global setting otherwise. Every read of m_behavior in step/draw goes
+    // through here so one gull can swoop while its neighbour drifts.
+    GullBehavior behaviorOf(const Gull& g) const;
+    static GullBehavior randomBehavior();
     void drawGull(QPainter& p, const Gull& g);
     void drawSky(QPainter& p);    // Seagull Morning/Dusk: reactive per-band EQ sky over the shore
     void drawSun(QPainter& p, const QPointF& c, qreal r); // solid gold sun + triangular rays (Morning draws it behind the veiled sky; Day straight on)
@@ -123,6 +134,7 @@ private:
     qreal m_todShown    = 0.0;   // eased 0..1 the scene actually renders, so the sun glides between polls
     qreal m_cycleNight  = -1.0;  // scratch nightness for the shared helpers: <0 = not cycling (use m_mode), 0..1 = cycle
     GullBehavior m_behavior = GullBehavior::Drift;
+    int  m_dir      = 1;           // flight direction, independent of behaviour: +1 = L->R, -1 = R->L
     int  m_maxGulls = 14;          // perf cap
 
     QVector<QPixmap> m_gullFrames;     // animated gull frames (faces left natively; flipped per direction)

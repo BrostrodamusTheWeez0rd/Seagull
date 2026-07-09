@@ -40,6 +40,7 @@
 #include <QRandomGenerator>
 #include <QSet>
 #include <QPalette>
+#include <QIcon>
 #include <iterator>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -1551,6 +1552,11 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Seagull"));
     QApplication::setApplicationVersion(QString::fromLatin1(SEAGULL_VERSION));
+    // The application-wide fallback icon: every top-level window that doesn't set
+    // its own inherits it. Without this the dialogs that open BEFORE (or apart
+    // from) MainWindow — the terms modal, SetupDialog, UpdateDialog, every
+    // QMessageBox — show Qt's default icon instead of the seagull.
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/Assets/Icon.ico")));
 
     // Migrate flat config files into Config/ if upgrading from a pre-0.14 install.
     // This must happen before any QSettings is opened so the settings are found at the new path.
