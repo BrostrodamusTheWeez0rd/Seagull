@@ -206,6 +206,23 @@ Load-bearing details, each one earned the hard way:
   the normaliser/limiter, whose whole job is to flatten exactly the dynamics the visuals
   need — and marshals its emits to the GUI thread, so a UI freeze pauses the visuals but
   never the audio.
+- **Visualizer scenes.** The `Visualizer` widget draws four fixed coastal scenes — `Seagull
+  Morning`/`Day`/`Dusk`/`Night` — each a pure function of a private `Mode` over one shared,
+  mode-independent simulation (advected water, gulls, clouds, shore geometry). A fifth type,
+  `Seagull Cycle`, walks a full day across the song as a seamless LOOP: `PlayerControls::positionPolled`
+  feeds `Visualizer::setProgress(pos, dur)`, which drives a time-of-day value `tod ∈ [0,1]`
+  (eased into `m_todShown` in `step()` so the sky glides between the 250ms polls). `renderCycle`
+  blends the keyframe palettes Morning→Day→Dusk→Night→Morning, so `tod = 1` renders identically
+  to `tod = 0` and the next song plays as the next day. The sun and moon share one east→west arc
+  half a day apart (`arcBody`): the sun is up through the day half, the moon through the night
+  half — each rises at the east horizon, arcs to zenith, and sets off the right edge, so both are
+  periodic in `tod` and the moon keeps moving all night rather than parking. Night eases in and
+  back out via a continuous `nightness` (stars/beam/dark gulls), and the music-reactive warmth
+  peaks at Morning/Dusk and drops to a floor at Day/Night (`reactiveAmt`, a periodic cosine). The
+  schedule, arc and easing constants sit at the top of the Cycle block in `Visualizer.cpp`;
+  unknown duration (live streams) holds at dawn. The four fixed scenes are unchanged — Cycle is a
+  parallel render path, and the shared night-gated helpers take a `night01` (0..1) that is exactly
+  0 or 1 for the fixed scenes.
 
 ### Equalizer and normalization state
 
@@ -602,7 +619,7 @@ install is self-contained and survives the self-update's robocopy swap.
 | `Search/` | `ResultLimit`, `SortMode`, `ClearHistoryOnExit`, `WarnDuplicateSite`, `CookiesWarningAck`; per-site families `HomeChannels<Site>`, `HomeAmount<Site>`, `HomeVideosPerChannel<Site>`, `HomeRandomize<Site>`, `HomeLazyLoad<Site>`, `ShowContinueWatching<Site>` |
 | `Tabs/` | `Closed`, `Order`, `ExtraTabs`, `ActiveLabel`, `ActiveOrdinal` |
 | `FileExplorer/` | `AddressHistory` |
-| `Visualizer/` | `Type`, `Active`, `Behavior`, `MaxGulls`, `KillOnEnd`, `LighthouseBeats` (beats per lighthouse flash, Night type only) |
+| `Visualizer/` | `Type` (`Seagull Morning`/`Day`/`Dusk`/`Night`/`Cycle`), `Active`, `Behavior`, `MaxGulls`, `KillOnEnd`, `LighthouseBeats` (beats per lighthouse flash, Night and Cycle only) |
 | `Logging/` | `Verbose` (the SEALOG persist) |
 
 ## 9. Key signals

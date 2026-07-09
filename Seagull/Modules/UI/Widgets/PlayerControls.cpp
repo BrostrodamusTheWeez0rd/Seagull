@@ -816,6 +816,10 @@ void PlayerControls::pollVlcState() {
         timeLabel->setText(formatTime(time) + QStringLiteral(" / ● LIVE"));
     else
         timeLabel->setText(formatTime(time) + " / " + formatTime(m_duration));
+
+    // Feed the Cycle visualizer its time of day (length <= 0 on live => it holds
+    // at dawn). Cheap; only meaningful while the Cycle mode is active.
+    emit positionPolled(time, length);
 }
 
 void PlayerControls::seek(int position) {

@@ -57,10 +57,9 @@ namespace {
     constexpr qreal kGenX  = -0.04;
     constexpr qreal kGenHw =  0.16; // generator half-width (raised cosine), in widths
 
-    constexpr qreal kSwoopBottom = 0.35; // fraction of the swoop spent diving
-    constexpr int   kDiveFrame   = 1;    // wings out level (mid-stroke): the dive + climb pose
-    constexpr int   kGlideFrame  = 2;    // wings fully spread, tips drooped: the bottom-of-arc glide
-    constexpr qreal kGlideDepth  = 0.80; // how deep into the arc the glide pose takes over
+    constexpr qreal kSwoopBottom = 0.31; // fraction of the swoop spent diving — a touch quicker down than the climb out
+    constexpr int   kDiveFrame   = 1;    // wings out (mid-stroke): the pose used DIVING down
+    constexpr int   kGlideFrame  = 2;    // wings fully spread, tips drooped: the pose used CLIMBING back up
     qreal swoopDepth(qreal p, qreal* slope = nullptr) {
         if (p < kSwoopBottom) {
             const qreal t = p / kSwoopBottom;
@@ -71,6 +70,28 @@ namespace {
         if (slope) *slope = -30.0 * u * u * (1.0 - u) * (1.0 - u) / (1.0 - kSwoopBottom);
         return 1.0 - u * u * u * (u * (u * 6.0 - 15.0) + 10.0);
     }
+
+    // Cubic smoothstep, clamped: eases 0..1 with zero slope at both ends.
+    qreal smooth01(qreal x) { x = qBound(0.0, x, 1.0); return x * x * (3.0 - 2.0 * x); }
+    qreal lerp(qreal a, qreal b, qreal t) { return a + (b - a) * t; }
+
+    // --- Seagull Cycle schedule (fractions of the song) ----------------------
+    // The day is a LOOP: it walks Morning -> Day -> Dusk -> Night and back to
+    // Morning, so a song ends at the time of day it began and the next song plays
+    // as the next day (endless cycling). Hold plateaus + blend bands; all tunable.
+    constexpr qreal kMornHoldEnd   = 0.08; // dawn holds, then blends to Day
+    constexpr qreal kDayHoldStart  = 0.18;
+    constexpr qreal kDayHoldEnd    = 0.33; // Day (noon) holds, then blends to Dusk
+    constexpr qreal kDuskHoldStart = 0.44;
+    constexpr qreal kDuskHoldEnd   = 0.52; // Dusk (sunset) holds, then blends to Night
+    constexpr qreal kNightHoldStart= 0.64;
+    constexpr qreal kNightHoldEnd  = 0.84; // Night (midnight) holds, then blends BACK to Morning by tod=1
+    constexpr qreal kReactFloor    = 0.12; // min music-reactive warmth (Day / deep Night)
+    // Nightfall (stars/beam/dark gulls) rises across dusk, holds, then eases back
+    // to zero by dawn so the loop closes cleanly.
+    constexpr qreal kNightRiseStart = 0.46;
+    constexpr qreal kNightRiseEnd   = 0.62;
+    constexpr qreal kNightFallStart = 0.84;
 }
 
 Visualizer::Visualizer(QWidget* parent) : QWidget(parent) {
@@ -190,14 +211,25 @@ void Visualizer::setBehavior(const QString& name) {
 
 void Visualizer::setMaxGulls(int n) { m_maxGulls = qBound(1, n, 30); }
 void Visualizer::setMode(const QString& name) {
-    // Anything unrecognised (including a legacy saved "Seagull Sky") lands on
-    // Morning. "Waves" is the pre-rename name for Dusk, so it maps there.
-    if      (name.contains(QStringLiteral("Night"), Qt::CaseInsensitive)) m_mode = Mode::Night;
-    else if (name.contains(QStringLiteral("Dusk"),  Qt::CaseInsensitive) ||
-             name.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)) m_mode = Mode::Dusk;
-    else if (name.contains(QStringLiteral("Day"),   Qt::CaseInsensitive)) m_mode = Mode::Day;
-    else                                                                  m_mode = Mode::Morning;
+    // "Cycle" runs the full-day arc (m_mode is ignored while cycling). Anything
+    // else is a fixed scene: unrecognised (including a legacy "Seagull Sky")
+    // lands on Morning; "Waves" is the pre-rename name for Dusk.
+    m_cycle = name.contains(QStringLiteral("Cycle"), Qt::CaseInsensitive);
+    if (!m_cycle) {
+        if      (name.contains(QStringLiteral("Night"), Qt::CaseInsensitive)) m_mode = Mode::Night;
+        else if (name.contains(QStringLiteral("Dusk"),  Qt::CaseInsensitive) ||
+                 name.contains(QStringLiteral("Waves"), Qt::CaseInsensitive)) m_mode = Mode::Dusk;
+        else if (name.contains(QStringLiteral("Day"),   Qt::CaseInsensitive)) m_mode = Mode::Day;
+        else                                                                  m_mode = Mode::Morning;
+    }
     update();
+}
+
+void Visualizer::setProgress(qint64 posMs, qint64 durMs) {
+    // Song position -> time of day for Cycle. Unknown/zero duration (live streams)
+    // holds at dawn rather than dividing by zero. The 60fps timer repaints; no
+    // update() needed here.
+    m_todProgress = (durMs > 0) ? qBound(0.0, double(posMs) / double(durMs), 1.0) : 0.0;
 }
 
 Visualizer::ScenePalette Visualizer::paletteFor(Mode m) const {
@@ -456,6 +488,15 @@ void Visualizer::step() {
     const qreal dt = 1.0 / kFps;
     m_t += dt;
 
+    // Cycle: the position poll only lands every 250ms, so glide the shown time of
+    // day toward the target each frame instead of jumping on each poll. A big gap
+    // (a seek) snaps; otherwise a ~0.8s first-order lag turns the stepped target
+    // into a smooth, near-constant-velocity drift across the sky.
+    if (m_cycle) {
+        if (std::abs(m_todProgress - m_todShown) > 0.06) m_todShown = m_todProgress; // seek
+        else m_todShown += (m_todProgress - m_todShown) * 0.02;
+    }
+
     if (m_demo) {
         m_tLevel  = 0.30 + 0.30 * (0.5 + 0.5 * std::sin(m_t * 1.7))
                           + 0.15 * (0.5 + 0.5 * std::sin(m_t * 5.3));
@@ -629,8 +670,8 @@ void Visualizer::step() {
             if (g.swoopP >= 1.0) g.swoopP = -1.0;
         } else if (m_behavior == GullBehavior::Swooping && frand(0.0, 1.0) < 0.005) {
             g.swoopP   = 0.0;
-            g.swoopAmp = frand(0.12, 0.26) * h;
-            g.swoopDur = frand(2.0, 2.8); // seconds; varied so the flock doesn't sync up
+            g.swoopAmp = frand(0.16, 0.32) * h; // wider, deeper arc
+            g.swoopDur = frand(2.2, 3.0); // seconds; varied so the flock doesn't sync up
         }
         const bool off = (dir > 0) ? (g.x - g.size > w) : (g.x + g.size < 0);
         if (off) {
@@ -673,12 +714,12 @@ void Visualizer::drawGull(QPainter& p, const Gull& g) {
         vOff = std::sin(g.phase) * g.size * 0.20;
     }
 
-    // Wings through a swoop: held out level (kDiveFrame) in the dive, snapped to
-    // the full spread (kGlideFrame) gliding through the bottom of the arc, back
-    // to level on the way up; normal flapping resumes only once the swoop ends.
+    // Wings through a swoop: the dive pose (kDiveFrame) all the way down, swapped
+    // to the glide pose (kGlideFrame) at the very bottom as the trajectory turns
+    // upward, and held through the climb; normal flapping resumes once it ends.
     int fi = (m_frameIdx + g.foff) % m_gullFrames.size();
     if (swooping)
-        fi = qMin(swoopDepth(g.swoopP) >= kGlideDepth ? kGlideFrame : kDiveFrame,
+        fi = qMin((g.swoopP < kSwoopBottom) ? kDiveFrame : kGlideFrame,
                   int(m_gullFrames.size()) - 1);
     const QPixmap& fr = m_gullFrames[fi];
     const qreal tw = g.size * 2.6; // wingspan
@@ -689,10 +730,15 @@ void Visualizer::drawGull(QPainter& p, const Gull& g) {
     if (g.rot != 0.0 || tilt != 0.0) p.rotate(g.rot + tilt);
     if (dir > 0) p.scale(-1.0, 1.0); // frames face left natively; flip to face travel direction
     const QRectF dst(-tw / 2, -th / 2, tw, th);
-    if (m_mode == Mode::Night && fi < m_gullFramesDark.size()) {
-        // Night: the gulls fly as dark shapes — and light back up wherever the
-        // lighthouse beam catches them, fading with the beam's own strength.
+    const qreal na = (m_cycleNight >= 0.0) ? m_cycleNight : (m_mode == Mode::Night ? 1.0 : 0.0);
+    if (na > 0.001 && fi < m_gullFramesDark.size()) {
+        // As night falls the gulls darken (dark frame fades in over the lit one),
+        // and light back up wherever the lighthouse beam catches them. At na = 1
+        // the dark frame is fully opaque — identical to the fixed Night scene.
+        p.drawPixmap(dst, fr, fr.rect());
+        p.setOpacity(na);
         p.drawPixmap(dst, m_gullFramesDark[fi], fr.rect());
+        p.setOpacity(1.0);
         const qreal lit = beamLightAt(g.x, g.y + vOff);
         if (lit > 0.01) {
             p.setOpacity(lit);
@@ -710,12 +756,211 @@ void Visualizer::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
+    if (m_cycle) { renderCycle(p, m_todShown); return; }
+
+    m_cycleNight = -1.0; // fixed scene: helpers use the discrete m_mode, not a ramp
     if (paletteFor(m_mode).reactiveSky) drawSky(p);   // Morning/Dusk: reactive per-band EQ sky
     else                                drawWaves(p); // Day/Night: static day / starry night
 
     drawClouds(p);
     // Draw smallest-first so bigger (nearer) gulls paint OVER smaller (farther)
     // ones — fakes perspective depth.
+    QVector<const Gull*> order;
+    order.reserve(m_gulls.size());
+    for (const Gull& g : m_gulls) order.push_back(&g);
+    std::sort(order.begin(), order.end(),
+              [](const Gull* a, const Gull* b) { return a->size < b->size; });
+    for (const Gull* g : order) drawGull(p, *g);
+}
+
+// ===== Seagull Cycle: a full day driven by song progress =====================
+
+QColor Visualizer::lerpColor(const QColor& a, const QColor& b, qreal t) {
+    t = qBound(0.0, t, 1.0);
+    return QColor::fromRgbF(a.redF()   + (b.redF()   - a.redF())   * t,
+                            a.greenF() + (b.greenF() - a.greenF()) * t,
+                            a.blueF()  + (b.blueF()  - a.blueF())  * t,
+                            a.alphaF() + (b.alphaF() - a.alphaF()) * t);
+}
+
+// Which two keyframes bound this instant, and how far between them (eased). The
+// final band blends Night BACK to Morning, so at tod=1 the sky equals tod=0.
+Visualizer::Seg Visualizer::segmentFor(qreal tod) const {
+    if (tod < kMornHoldEnd)    return { Mode::Morning, Mode::Morning, 0.0 };
+    if (tod < kDayHoldStart)   return { Mode::Morning, Mode::Day,   smooth01((tod - kMornHoldEnd)   / (kDayHoldStart   - kMornHoldEnd)) };
+    if (tod < kDayHoldEnd)     return { Mode::Day,     Mode::Day,    0.0 };
+    if (tod < kDuskHoldStart)  return { Mode::Day,     Mode::Dusk,  smooth01((tod - kDayHoldEnd)    / (kDuskHoldStart  - kDayHoldEnd)) };
+    if (tod < kDuskHoldEnd)    return { Mode::Dusk,    Mode::Dusk,   0.0 };
+    if (tod < kNightHoldStart) return { Mode::Dusk,    Mode::Night, smooth01((tod - kDuskHoldEnd)   / (kNightHoldStart - kDuskHoldEnd)) };
+    if (tod < kNightHoldEnd)   return { Mode::Night,   Mode::Night,  0.0 };
+    return { Mode::Night, Mode::Morning, smooth01((tod - kNightHoldEnd) / (1.0 - kNightHoldEnd)) }; // dawn returns
+}
+
+// 0 by day, up across dusk, full at night, easing back to 0 by dawn (tod=1) so
+// the loop closes. Drives stars, the beam, the gulls' dark shading, cloud dim.
+qreal Visualizer::nightness(qreal tod) const {
+    if (tod < kNightRiseStart) return 0.0;
+    if (tod < kNightRiseEnd)   return smooth01((tod - kNightRiseStart) / (kNightRiseEnd - kNightRiseStart));
+    if (tod < kNightFallStart) return 1.0;
+    return 1.0 - smooth01((tod - kNightFallStart) / (1.0 - kNightFallStart)); // -> 0 at tod=1
+}
+
+// Music-reactive warmth: peaks at Morning (tod 0/1) and Dusk (0.5), eases to a
+// low floor at Day (0.25) and Night (0.75). A cosine keeps it smooth AND periodic,
+// so it matches at the loop seam.
+qreal Visualizer::reactiveAmt(qreal tod) const {
+    const qreal bump = 0.5 + 0.5 * std::cos(4.0 * kPi * tod);
+    return kReactFloor + (1.0 - kReactFloor) * bump;
+}
+
+// The five vertical sky stops for a keyframe. Reactive scenes hand back their
+// skyEq* stops; static scenes (Day/Night) synthesise five from their two, so the
+// one reactive-column renderer can draw them as a plain smooth gradient.
+std::array<QColor, 5> Visualizer::skyStopsFor(Mode m) const {
+    const ScenePalette s = paletteFor(m);
+    if (s.reactiveSky)
+        return { s.skyEqTop, s.skyEqHigh, s.skyEqRose, s.skyEqAmb, s.skyEqGold };
+    return { s.skyTop,
+             lerpColor(s.skyTop, s.skyBot, 0.35),
+             lerpColor(s.skyTop, s.skyBot, 0.60),
+             lerpColor(s.skyTop, s.skyBot, 0.82),
+             s.skyBot };
+}
+
+// Shore/water colours lerped between the two bounding keyframes (crestShimmer is
+// pulled straight from Night and gated by nightness in drawShore, so it isn't
+// needed here).
+Visualizer::ScenePalette Visualizer::todPalette(qreal tod) const {
+    const Seg s = segmentFor(tod);
+    const ScenePalette a = paletteFor(s.a), b = paletteFor(s.b);
+    ScenePalette r;
+    r.grass       = lerpColor(a.grass,      b.grass,      s.f);
+    r.sand        = lerpColor(a.sand,       b.sand,       s.f);
+    r.trees       = lerpColor(a.trees,      b.trees,      s.f);
+    r.sandShadowA = int(lerp(a.sandShadowA, b.sandShadowA, s.f));
+    r.waterBack   = lerpColor(a.waterBack,  b.waterBack,  s.f);
+    r.waterMid    = lerpColor(a.waterMid,   b.waterMid,   s.f);
+    r.waterFront  = lerpColor(a.waterFront, b.waterFront, s.f);
+    return r;
+}
+
+// The unified sky: the same per-band EQ-column machinery as drawSky, but built
+// from the blended stops and with the warm "bleed" scaled by reactiveAmt so it
+// pumps at sunrise/sunset and settles flat through midday and night. No veiled
+// sun here — Cycle draws its travelling sun over the top.
+void Visualizer::drawCycleSky(QPainter& p, qreal tod) {
+    const qreal w = width(), h = height();
+    const Seg s = segmentFor(tod);
+    const std::array<QColor, 5> sa = skyStopsFor(s.a), sb = skyStopsFor(s.b);
+    QColor c[5];
+    for (int i = 0; i < 5; ++i) c[i] = lerpColor(sa[i], sb[i], s.f);
+
+    const qreal ra = reactiveAmt(tod);
+    const qreal e  = qBound(0.0, m_level, 1.0) * ra; // saturation pump scales with reactivity
+
+    auto glow = [e](const QColor& base) {
+        float hh, ss, l, a; base.getHslF(&hh, &ss, &l, &a);
+        ss = float(qBound(0.0, double(ss) * (0.72 + 0.38 * e), 1.0));
+        l  = float(qBound(0.0, double(l)  * (0.92 + 0.08 * e), 0.85));
+        return QColor::fromHslF(hh, ss, l);
+    };
+    const QColor cTop  = glow(c[0]);
+    const QColor cHigh = glow(c[1]);
+    const QColor cRose = glow(c[2]);
+    const QColor cAmb  = glow(c[3]);
+    const QColor cGold = glow(c[4]);
+
+    auto bandFrac = [&](qreal xn) {
+        qreal a, b, t;
+        if (xn < 0.5) { a = m_bass; b = m_mid;    t = xn / 0.5; }
+        else          { a = m_mid;  b = m_treble; t = (xn - 0.5) / 0.5; }
+        t = t * t * (3.0 - 2.0 * t);
+        return qBound(0.0, a + (b - a) * t, 1.0);
+    };
+
+    p.setRenderHint(QPainter::Antialiasing, false);
+    const int N = 80;
+    const qreal colStep = w / N;
+    for (int i = 0; i < N; ++i) {
+        const qreal xn = (i + 0.5) / N;
+        // The band only pushes the warm boundary up by ra: at the reactive floor
+        // it sits low and steady (plain gradient), at full it climbs per band.
+        const qreal warmTop = qBound(0.18, 1.0 - (0.12 + 0.72 * ra * bandFrac(xn)), 0.90);
+        QLinearGradient g(0, 0, 0, h * 0.72);
+        g.setColorAt(0.0, cTop);
+        g.setColorAt(qBound(0.0, warmTop * 0.6, 1.0), cHigh);
+        g.setColorAt(warmTop, cRose);
+        g.setColorAt(qBound(0.0, warmTop + (1.0 - warmTop) * 0.5, 1.0), cAmb);
+        g.setColorAt(1.0, cGold);
+        p.fillRect(QRectF(i * colStep, 0, colStep + 1.0, h), g);
+    }
+    p.setRenderHint(QPainter::Antialiasing, true);
+}
+
+void Visualizer::renderCycle(QPainter& p, qreal tod) {
+    m_cycleNight = nightness(tod); // shared helpers read this instead of m_mode
+    const qreal w = width(), h = height();
+
+    drawCycleSky(p, tod);
+
+    // Stars fade in with nightness, lifted a touch by the treble (as at Night).
+    if (m_cycleNight > 0.001) {
+        p.setPen(Qt::NoPen);
+        for (const Star& s : m_stars) {
+            const qreal tw = 0.5 + 0.5 * std::sin(m_t * 1.6 + s.tw);
+            const int a = int((60 + 120 * tw * (0.55 + 0.45 * m_treble)) * m_cycleNight);
+            if (a <= 0) continue;
+            p.setBrush(QColor(225, 235, 255, a));
+            p.drawEllipse(QPointF(s.x, s.y), s.r, s.r);
+        }
+    }
+
+    // Sun and moon share ONE east->west arc, half a day apart, so the loop closes:
+    // the sun is up through the day half, the moon through the night half, and both
+    // are periodic in tod (position at tod=1 == tod=0). The moon keeps moving all
+    // night and sets in the west by dawn, rather than parking at a perch.
+    const qreal sinceBeat = m_t - m_lastBeatT;
+    const qreal beatPulse = (m_lastBeatT >= 0.0) ? std::exp(-sinceBeat * 6.5) : 0.0; // same pulse the sun uses
+    auto arcBody = [&](qreal ph, qreal& outAlpha) -> QPointF {
+        // ph in [0,1): rises at the east horizon (0), zenith at 0.25, sets off the
+        // right edge (0.5), then below the horizon (0.5..1) -> not drawn.
+        if (ph >= 0.5) { outAlpha = 0.0; return QPointF(); }
+        const qreal a = ph / 0.5;                              // 0..1 across the visible sky
+        const qreal x = lerp(0.06, 1.16, a) * w;               // east horizon -> off the right edge
+        const qreal y = (0.74 - 0.60 * std::sin(a * kPi)) * h; // parabola: 0.74h horizon -> 0.14h zenith
+        const qreal edge = 0.12;                               // fade in/out at the horizon
+        outAlpha = qBound(0.0, (a < edge) ? a / edge : (a > 1.0 - edge) ? (1.0 - a) / edge : 1.0, 1.0);
+        return QPointF(x, y);
+    };
+
+    // Moon first (behind the sun during the brief dusk/dawn overlap), pulsing on
+    // the beat exactly like the sun.
+    qreal moonA;
+    const QPointF moonC = arcBody(std::fmod(tod + 0.5, 1.0), moonA);
+    if (moonA > 0.001) {
+        const qreal mr = h * 0.042 * (1.0 + 0.17 * beatPulse);
+        p.setOpacity(moonA);
+        QRadialGradient halo(moonC, mr * 3.4);
+        halo.setColorAt(0.0, QColor(215, 226, 242, 80));
+        halo.setColorAt(1.0, QColor(215, 226, 242, 0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(halo); p.drawEllipse(moonC, mr * 3.4, mr * 3.4);
+        p.setBrush(QColor("#e6ebf3")); p.drawEllipse(moonC, mr, mr);
+        p.setOpacity(1.0);
+    }
+
+    // The sun over the top, same arc half a day earlier (drawSun handles its pulse).
+    qreal sunA;
+    const QPointF sunC = arcBody(tod, sunA);
+    if (sunA > 0.001) {
+        p.setOpacity(sunA);
+        drawSun(p, sunC, h * 0.075);
+        p.setOpacity(1.0);
+    }
+
+    drawShore(p, todPalette(tod)); // waves + shore, night-gated bits via m_cycleNight
+    drawClouds(p);
+
     QVector<const Gull*> order;
     order.reserve(m_gulls.size());
     for (const Gull& g : m_gulls) order.push_back(&g);
@@ -835,27 +1080,6 @@ void Visualizer::drawSun(QPainter& p, const QPointF& c, qreal r) {
     const qreal beat = (m_lastBeatT >= 0.0) ? std::exp(-sinceBeat * 6.5) : 0.0;
     const qreal rp   = r * (1.0 + 0.17 * beat); // beat-pulsed radius
 
-    // A wobbly closed blob (a real sun's rim is never a clean circle — that's the
-    // moon). `rot` spins the lumps rigidly around the centre; three low harmonics
-    // give an organic, uneven edge. FILLED, never stroked, so it can't leave gaps
-    // or holes.
-    auto blob = [&](qreal radius, qreal rot, qreal amp) {
-        QPainterPath path;
-        const int steps = 128;
-        for (int i = 0; i <= steps; ++i) {
-            const qreal a = (2.0 * kPi * i) / steps;
-            const qreal wob = 1.0
-                + amp * 1.00 * std::sin((a + rot) *  7.0)
-                + amp * 0.60 * std::sin((a - rot) * 13.0)
-                + amp * 0.45 * std::sin((a + rot) *  3.0);
-            const qreal rr = radius * wob;
-            const QPointF pt(c.x() + std::cos(a) * rr, c.y() + std::sin(a) * rr);
-            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
-        }
-        path.closeSubpath();
-        return path;
-    };
-
     p.save();
     p.setPen(Qt::NoPen);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -880,16 +1104,14 @@ void Visualizer::drawSun(QPainter& p, const QPointF& c, qreal r) {
         p.drawPath(tri);
     }
 
-    // The disc: solid warm gold with a near-WHITE core so it stays the brightest
-    // point (Morning's veil then fades its rim into the sky's own colours). Its
-    // rippled limb churns very slowly; the soft edge melts into the corona.
+    // The disc: a clean PERFECT CIRCLE — warm gold with a near-white core so it's
+    // the brightest point, and a crisp gold edge (no soft outer ring / halo).
     QRadialGradient disc(c, rp);
-    disc.setColorAt(0.00, QColor(255, 251, 230, 255)); // bright warm-white core = THE brightest point
-    disc.setColorAt(0.45, QColor(255, 238, 172, 255));
-    disc.setColorAt(0.82, QColor(255, 210, 112, 235));
-    disc.setColorAt(1.00, QColor(255, 190,  92, 0));
+    disc.setColorAt(0.00, QColor(255, 251, 230)); // bright warm-white core
+    disc.setColorAt(0.55, QColor(255, 233, 160));
+    disc.setColorAt(1.00, QColor(255, 205, 104)); // solid gold rim, opaque = crisp edge
     p.setBrush(disc);
-    p.drawPath(blob(rp, m_t * 0.022, 0.032)); // gentle limb, very slow churn
+    p.drawEllipse(c, rp, rp);
 
     p.restore();
 }
@@ -933,7 +1155,9 @@ void Visualizer::drawWaves(QPainter& p) {
 }
 
 void Visualizer::drawShore(QPainter& p, const ScenePalette& pal) {
-    const bool night = pal.night; // gates the lighthouse beam / tug lamp / moonlit crest
+    // Nightness for the night-gated bits (lighthouse beam, tug lamp, moonlit
+    // crest): a continuous 0..1 while cycling, else the fixed scene's on/off.
+    const qreal na = (m_cycleNight >= 0.0) ? m_cycleNight : (pal.night ? 1.0 : 0.0);
     const qreal w = width(), h = height();
 
     // The distant shoreline, all of it AT the horizon behind the water: rolling
@@ -963,7 +1187,7 @@ void Visualizer::drawShore(QPainter& p, const ScenePalette& pal) {
         pine.closeSubpath();
         p.drawPath(pine);
     }
-    drawLighthouse(p, night);
+    drawLighthouse(p, na);
 
     // ONE water system: every sheet is its advected surface (step()), born at
     // the off-screen generator already dancing, rolling right and dancing as it
@@ -1022,15 +1246,15 @@ void Visualizer::drawShore(QPainter& p, const ScenePalette& pal) {
         wave.lineTo(w, h);
         wave.closeSubpath();
         p.fillPath(wave, ly.col);
-        if (pal.crestShimmer.isValid()) { // night only: moonlight glinting off the crests
+        if (na > 0.001) { // night only: moonlight glinting off the crests, fading in with nightness
             // The day-lit scenes leave the water matte (no crest outline); only
             // night draws this line, brightening as the band swells.
             // Brush OFF: drawPath also FILLS an open path (closing it with a
             // straight chord), and a leftover fill brush would paint that chord
             // sliver as a strip across the wave.
             p.setBrush(Qt::NoBrush);
-            QColor glint = pal.crestShimmer;
-            glint.setAlpha(int(28 + 70 * ly.band));
+            QColor glint = paletteFor(Mode::Night).crestShimmer; // cool moonlight tone (blended pal has none)
+            glint.setAlpha(int((28 + 70 * ly.band) * na));
             p.setPen(QPen(glint, qMax(1.0, h / 700.0)));
             p.drawPath(crest);
             p.setPen(Qt::NoPen);
@@ -1083,14 +1307,16 @@ void Visualizer::drawShore(QPainter& p, const ScenePalette& pal) {
                     }
                     m_tug.lastT = m_t;
                 }
-                drawTugboat(p, m_tug.x * w, m_tug.py, s, m_tug.tilt, m_tug.dir, night);
+                drawTugboat(p, m_tug.x * w, m_tug.py, s, m_tug.tilt, m_tug.dir, na);
             }
             // His trail: world-space puffs swelling and thinning as they age
             // (drawn with his sheet, so nearer water passes in front).
             for (const Puff& pf : m_smoke) {
                 const qreal k = pf.age / 1.6;
-                const int   a = int((night ? 90 : 130) * (1.0 - k));
-                p.setBrush(night ? QColor(165, 172, 184, a) : QColor(228, 231, 236, a));
+                const int   a = int(lerp(130, 90, na) * (1.0 - k));
+                QColor sc = lerpColor(QColor(228, 231, 236), QColor(165, 172, 184), na);
+                sc.setAlpha(a);
+                p.setBrush(sc);
                 p.drawEllipse(QPointF(pf.x, pf.y), s * (0.055 + 0.115 * k), s * (0.055 + 0.115 * k));
             }
         }
@@ -1104,7 +1330,8 @@ void Visualizer::drawShore(QPainter& p, const ScenePalette& pal) {
 // drawn gradient does. Night-only; used to light the gulls out of their
 // after-dark silhouettes as the beam sweeps them.
 qreal Visualizer::beamLightAt(qreal x, qreal y) const {
-    if (m_mode != Mode::Night) return 0.0;
+    const qreal na = (m_cycleNight >= 0.0) ? m_cycleNight : (m_mode == Mode::Night ? 1.0 : 0.0);
+    if (na <= 0.001) return 0.0;
     const qreal w = width(), h = height();
     const QPointF lc(m_lightBase.x(), m_lightBase.y() - h * 0.113); // ~lamp height on the taller tower
 
@@ -1137,13 +1364,16 @@ qreal Visualizer::beamLightAt(qreal x, qreal y) const {
         flashLit = flash * qBound(0.0, 1.0 - std::sqrt(dx * dx + dy * dy), 1.0);
     }
 
-    return qBound(0.0, qMax(sweepLit, flashLit), 1.0);
+    return qBound(0.0, qMax(sweepLit, flashLit) * na, 1.0); // fade the lighting with nightness
 }
 
 // The little red-and-white tugboat: a rare guest who chugs across the swells.
 // (x, y) is the waterline under him, s his height scale (smaller on farther
 // sheets), tiltDeg the local wave slope, dir his travel direction (bow leads).
-void Visualizer::drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltDeg, int dir, bool night) {
+void Visualizer::drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltDeg, int dir, qreal na) {
+    // Day/night colours lerp by na (0..1): exact endpoints for the fixed scenes,
+    // a smooth dusk in between for Cycle.
+    auto C = [na](const QColor& day, const QColor& night) { return lerpColor(day, night, na); };
     p.save();
     p.translate(x, y);
     p.rotate(tiltDeg);          // pitch with the water (screen-space, so it
@@ -1158,24 +1388,28 @@ void Visualizer::drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltD
     hull.lineTo( 0.38 * s,  0.16 * s);
     hull.lineTo(-0.30 * s,  0.16 * s); // keel back to the raked bow
     hull.closeSubpath();
-    p.setBrush(night ? QColor("#7e3336") : QColor("#c23b34"));
+    p.setBrush(C(QColor("#c23b34"), QColor("#7e3336")));
     p.drawPath(hull);
     // White wheelhouse amidships, then the funnel aft — red with a dark cap.
-    p.setBrush(night ? QColor("#a8adb5") : QColor("#f2efe6"));
+    p.setBrush(C(QColor("#f2efe6"), QColor("#a8adb5")));
     p.drawRect(QRectF(-0.20 * s, -0.44 * s, 0.34 * s, 0.28 * s));
-    p.setBrush(night ? QColor("#7e3336") : QColor("#c23b34"));
+    p.setBrush(C(QColor("#c23b34"), QColor("#7e3336")));
     p.drawRect(QRectF(0.20 * s, -0.40 * s, 0.11 * s, 0.24 * s));
-    p.setBrush(night ? QColor("#1c1f27") : QColor("#33383f"));
+    p.setBrush(C(QColor("#33383f"), QColor("#1c1f27")));
     p.drawRect(QRectF(0.20 * s, -0.40 * s, 0.11 * s, 0.07 * s));
     // Wheelhouse window: dark glass by day, warm lamplight at night.
     // (His smoke is world-space particles, emitted and drawn by drawShore —
     // not part of this rigid body, so the trail reacts to his motion.)
-    p.setBrush(night ? QColor(255, 214, 140, 235) : QColor("#3a4550"));
+    p.setBrush(C(QColor("#3a4550"), QColor(255, 214, 140, 235)));
     p.drawRect(QRectF(-0.14 * s, -0.39 * s, 0.10 * s, 0.10 * s));
     p.restore();
 }
 
-void Visualizer::drawLighthouse(QPainter& p, bool night) {
+void Visualizer::drawLighthouse(QPainter& p, qreal na) {
+    // na 0..1 fades day->night. The masonry/rock/dome tints switch at the midpoint
+    // (a tiny, far object), while the lit lamp and the swept beam fade smoothly by
+    // na — the fixed scenes pass exactly 0 or 1, so they render as before.
+    const bool night = na >= 0.5;
     const qreal w = width(), h = height();
     p.setPen(Qt::NoPen);
 
@@ -1223,8 +1457,8 @@ void Visualizer::drawLighthouse(QPainter& p, bool night) {
     const qreal flashK = night ? std::pow(std::abs(std::sin(m_beamA)), 12.0) : 0.0;
     const QRectF lantern(bx - lw, ty - h * 0.0022 - lh, lw * 2, lh);
     if (night) {
-        // The lit lamp, surging as the optic turns our way.
-        p.setBrush(QColor(255, int(205 + 30 * flashK), 135, int(150 + 105 * flashK)));
+        // The lit lamp, surging as the optic turns our way (alpha eases in by na).
+        p.setBrush(QColor(255, int(205 + 30 * flashK), 135, int((150 + 105 * flashK) * na)));
         p.drawRect(lantern);
     } else {
         // By day the lamp is off, so it reads as what it is: GLASS. Translucent
@@ -1245,7 +1479,7 @@ void Visualizer::drawLighthouse(QPainter& p, bool night) {
     p.setBrush(night ? QColor("#6b3540") : QColor("#c14238"));
     p.drawPath(dome);
 
-    if (!night) return;
+    if (na <= 0.001) return; // day: no beam (matches the fixed scenes exactly)
 
     // The optic spins in PLAN — a fixed horizontal plane, like the real thing —
     // and the screen shows its projection: two opposed beams reaching out to the
@@ -1267,7 +1501,7 @@ void Visualizer::drawLighthouse(QPainter& p, bool night) {
             cone.lineTo(QPointF(tipX, lc.y() + fan));
             cone.closeSubpath();
             QLinearGradient bg(lc, QPointF(tipX, lc.y()));
-            bg.setColorAt(0.0, QColor(255, 236, 170, 95));
+            bg.setColorAt(0.0, QColor(255, 236, 170, int(95 * na)));
             bg.setColorAt(1.0, QColor(255, 236, 170, 0));
             p.fillPath(cone, bg);
         }
@@ -1275,7 +1509,7 @@ void Visualizer::drawLighthouse(QPainter& p, bool night) {
     // The viewer-facing flash: blooms and dies in a fraction of a beat.
     const qreal haloR = h * (0.030 + 0.085 * flashK);
     QRadialGradient halo(lc, haloR);
-    halo.setColorAt(0.0, QColor(255, 224, 155, int(70 + 185 * flashK)));
+    halo.setColorAt(0.0, QColor(255, 224, 155, int((70 + 185 * flashK) * na)));
     halo.setColorAt(1.0, QColor(255, 224, 155, 0));
     p.setBrush(halo);
     p.drawEllipse(lc, haloR, haloR);
@@ -1284,7 +1518,8 @@ void Visualizer::drawLighthouse(QPainter& p, bool night) {
 
 void Visualizer::drawClouds(QPainter& p) {
     p.setPen(Qt::NoPen);
-    const int alpha = (m_mode == Mode::Night) ? 11 : 30; // night clouds are barely-there wisps
+    const qreal na = (m_cycleNight >= 0.0) ? m_cycleNight : (m_mode == Mode::Night ? 1.0 : 0.0);
+    const int alpha = int(lerp(30, 11, na)); // night clouds fade to barely-there wisps
     for (const Cloud& c : m_clouds) {
         for (int j = 0; j < c.puffs.size(); ++j) {
             const qreal r = c.pr[j] * c.scale;

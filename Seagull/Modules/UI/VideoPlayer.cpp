@@ -245,6 +245,10 @@ VideoPlayer::VideoPlayer(QWidget* parent) : QWidget(parent) {
     connect(titleBar, &PlayerTitleBar::closeRequested, this, &VideoPlayer::closePlayer); // banner X = teardown
     connect(playerControls, &PlayerControls::popoutRequested, this, [this]() { emit popOutRequested(); });
     connect(playerControls, &PlayerControls::recordToggleRequested, this, &VideoPlayer::toggleRecording);
+    // Song position -> the Cycle visualizer's time of day (only used while cycling).
+    connect(playerControls, &PlayerControls::positionPolled, this, [this](qint64 t, qint64 len) {
+        if (visualizer) visualizer->setProgress(t, len);
+        });
 }
 
 void VideoPlayer::setShortsMode(bool on) {
@@ -1499,7 +1503,7 @@ void VideoPlayer::applySeekBarWidth() {
 
 void VideoPlayer::cycleVisualizer(int delta) {
     if (!visualizer) return;
-    static const QStringList kTypes = { "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night" };
+    static const QStringList kTypes = { "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night", "Seagull Cycle" };
     QSettings cfg(SgPaths::configFile(), QSettings::IniFormat);
     QString cur = cfg.value("Visualizer/Type", "Seagull Morning").toString();
     if (cur == "Seagull Waves") cur = "Seagull Dusk"; // pre-rename name

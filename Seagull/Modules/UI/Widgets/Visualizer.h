@@ -7,6 +7,7 @@
 #include <QPixmap>
 #include <QPointF>
 #include <QPolygonF>
+#include <array>
 
 class QTimer;
 class QResizeEvent;
@@ -35,7 +36,8 @@ public slots:
     void setDemoMode(bool on);                           // self-drive until real audio
     void setBehavior(const QString& name);               // gull behaviour: Drift/Reverse/Swooping/Flocking
     void setMaxGulls(int n);                             // perf cap on the flock size
-    void setMode(const QString& name);                   // "Seagull Morning" / "Seagull Day" / "Seagull Dusk" / "Seagull Night"
+    void setMode(const QString& name);                   // "Seagull Morning" / "Seagull Day" / "Seagull Dusk" / "Seagull Night" / "Seagull Cycle"
+    void setProgress(qint64 posMs, qint64 durMs);        // song position/duration -> time-of-day for Cycle mode
     void setLighthouseBeats(int n);                      // beats per lighthouse flash (1 = every beat)
     void setPaused(bool on);                             // freeze/resume the animation
     void suspendRendering(bool on);                      // pause the render timer to free the GUI thread (e.g. Library build), independent of playback pause
@@ -91,16 +93,35 @@ private:
     void recycleGull(Gull& g);
     void drawGull(QPainter& p, const Gull& g);
     void drawSky(QPainter& p);    // Seagull Morning/Dusk: reactive per-band EQ sky over the shore
-    void drawSun(QPainter& p, const QPointF& c, qreal r); // solid gold rippled sun + 3 rotating coronas (Morning draws it behind the veiled sky; Day straight on)
+    void drawSun(QPainter& p, const QPointF& c, qreal r); // solid gold sun + triangular rays (Morning draws it behind the veiled sky; Day straight on)
     void drawWaves(QPainter& p);  // Seagull Day/Night: the sea scene under a static sky
     void drawShore(QPainter& p, const ScenePalette& pal); // the shared scene: grass/sand/pines/lighthouse + waves
-    void drawLighthouse(QPainter& p, bool night); // distant point + rocks + tower (+ swept beam at night)
-    void drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltDeg, int dir, bool night);
+    void drawLighthouse(QPainter& p, qreal night01); // distant point + rocks + tower (+ beam); night01 0..1 fades day->night
+    void drawTugboat(QPainter& p, qreal x, qreal y, qreal s, qreal tiltDeg, int dir, qreal night01);
     qreal beamLightAt(qreal x, qreal y) const; // lighthouse beam strength at a point (0 = in the dark)
+
+    // --- Seagull Cycle: one continuous day driven by song progress -------------
+    // The four fixed scenes are keyframes; renderCycle walks a time-of-day value
+    // tod in [0,1] (position/duration) through them, blending palettes, arcing a
+    // single sun off-screen right, rising the moon, and easing night in. The
+    // discrete scenes are untouched — this is a parallel render path.
+    void renderCycle(QPainter& p, qreal tod);
+    void drawCycleSky(QPainter& p, qreal tod);         // unified reactive/plain sky from blended stops
+    ScenePalette todPalette(qreal tod) const;          // shore/water colours lerped between keyframes
+    struct Seg { Mode a; Mode b; qreal f; };           // the two bounding keyframes + blend 0..1
+    Seg   segmentFor(qreal tod) const;                 // schedule: tod -> (a, b, f)
+    qreal nightness(qreal tod) const;                  // 0 by day -> 1 deep night (stars/moon/beam)
+    qreal reactiveAmt(qreal tod) const;                // music-reactive warmth: peaks Morning/Dusk, low Day/Night
+    std::array<QColor, 5> skyStopsFor(Mode m) const;   // the 5 vertical sky stops (synthesised for static modes)
+    static QColor lerpColor(const QColor& a, const QColor& b, qreal t);
     void drawClouds(QPainter& p);
     void loadGullFrames();
 
     Mode m_mode = Mode::Morning;
+    bool  m_cycle       = false; // Seagull Cycle: ignore m_mode, run the day arc from the progress below
+    qreal m_todProgress = 0.0;   // 0..1 song position/duration TARGET (updated by the 250ms position poll)
+    qreal m_todShown    = 0.0;   // eased 0..1 the scene actually renders, so the sun glides between polls
+    qreal m_cycleNight  = -1.0;  // scratch nightness for the shared helpers: <0 = not cycling (use m_mode), 0..1 = cycle
     GullBehavior m_behavior = GullBehavior::Drift;
     int  m_maxGulls = 14;          // perf cap
 

@@ -5,6 +5,8 @@
 #include "../../Backend/SgWatchHistory.h" // watched indicator (progress bar + dim)
 
 #include <QDateTime>
+#include <QUrl>
+#include <QFileInfo>
 #include <QEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -424,6 +426,16 @@ void VideoCard::refreshWatchState() {
     // plain path (toLocalFile), but library cards carry the file:/// URL string.
     const QUrl u(m_result.url);
     const QString key = u.isLocalFile() ? u.toLocalFile() : m_result.url;
+    // Audio files get no "continue watching" overlay: the progress bar + dim wash
+    // are for visual media, not a music track's cover art. (Resume position is
+    // still tracked; only the thumbnail indicator is suppressed.)
+    if (u.isLocalFile()) {
+        static const QStringList audioExts = { "mp3", "m4a", "opus", "wav", "flac", "aac", "ogg" };
+        if (audioExts.contains(QFileInfo(key).suffix().toLower())) {
+            m_thumb->setWatchProgress(-1.0, false);
+            return;
+        }
+    }
     SgWatchHistory* hist = SgWatchHistory::instance();
     if (!key.isEmpty() && hist->hasEntry(key)) {
         const SgWatchHistory::Entry e = hist->entry(key);

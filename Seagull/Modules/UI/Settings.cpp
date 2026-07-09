@@ -243,8 +243,9 @@ void Settings::setupUI() {
     // Visualizer picker + its settings. Tied to audio playback, but it's a visual
     // customization, so it lives here on Appearance rather than on the Audio (EQ) page.
     visualizerCombo = new QComboBox();
-    visualizerCombo->addItems({ "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night" });
-    visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio.");
+    visualizerCombo->addItems({ "Seagull Morning", "Seagull Day", "Seagull Dusk", "Seagull Night", "Seagull Cycle" });
+    visualizerCombo->setToolTip("Which visualizer the player's visualizer button shows for audio. "
+        "Cycle drifts through the whole day as the song plays.");
     displayLayout->addRow("Visualizer:", visualizerCombo);
 
     // All visualizer settings in one tight form folded under the picker. Behaviour, the
@@ -270,7 +271,9 @@ void Settings::setupUI() {
         "It spins at the song's tempo either way.");
     vizForm->addRow("Lighthouse flash:", lighthouseCombo);
     auto updateLighthouseRow = [this, vizForm]() {
-        const bool lit = visualizerCombo->currentText().contains("Night");
+        // The lamp is lit at night — the Night scene, and Cycle (which reaches night).
+        const QString v = visualizerCombo->currentText();
+        const bool lit = v.contains("Night") || v.contains("Cycle");
         lighthouseCombo->setVisible(lit);
         if (QWidget* label = vizForm->labelForField(lighthouseCombo)) label->setVisible(lit);
     };

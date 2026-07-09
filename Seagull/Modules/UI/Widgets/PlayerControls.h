@@ -72,6 +72,7 @@ signals:
     void replayRequested();
     void qualitySelected(QString formatId);
     void recordToggleRequested(); // Record button clicked (start if idle, stop if recording)
+    void positionPolled(qint64 timeMs, qint64 lengthMs); // per-poll playback position/duration (drives the Cycle visualizer)
 
     // delta = +1 for next, -1 for prev
     void skipRequested(int delta);
