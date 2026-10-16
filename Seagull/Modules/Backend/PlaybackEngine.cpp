@@ -263,6 +263,18 @@ PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
     };
 
     m_instance = std::make_shared<VLC::Instance>(6, vlcArgs);
+    // Mirror libVLC's own notices/warnings/errors into the SEALOG file (no-op when it's
+    // off), so a stream that freezes or crashes after "Stream resolved" leaves a trail.
+    // Debug level is skipped: it's thousands of lines a second during playback.
+    m_instance->logSet([](int level, const libvlc_log_t* ctx, std::string message) {
+        if (level < LIBVLC_NOTICE || !SgLog::instance().isEnabled()) return;
+        const char* module = nullptr; const char* file = nullptr; unsigned line = 0;
+        libvlc_log_get_context(ctx, &module, &file, &line);
+        const char* lvl = level >= LIBVLC_ERROR ? "error" : level >= LIBVLC_WARNING ? "warn" : "info";
+        SgLog::instance().log(QStringLiteral("vlc"), QStringLiteral("%1 %2: %3")
+            .arg(QLatin1String(lvl), QString::fromUtf8(module ? module : "?"),
+                 QString::fromStdString(message)));
+    });
     createPlayer();
 }
 
