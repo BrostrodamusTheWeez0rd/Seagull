@@ -154,6 +154,19 @@ namespace {
         return true;
     }
 
+    // The HLS *master* playlist (yt-dlp's manifest_url on an m3u8 format). YouTube's
+    // master carries both the video renditions and the audio group, and unlike
+    // Chaturbate's it isn't single-use, so VLC's adaptive demuxer can play it as-is.
+    QString hlsMasterUrl(const QJsonArray& formats) {
+        for (const auto& it : formats) {
+            QJsonObject f = it.toObject();
+            if (!f["protocol"].toString().startsWith("m3u8")) continue;
+            const QString m = f["manifest_url"].toString();
+            if (!m.isEmpty()) return m;
+        }
+        return QString();
+    }
+
     // Last resort: the highest format that carries any playable URL.
     QString anyPlayableUrl(const QJsonArray& formats) {
         QString url; int best = -1;
@@ -217,7 +230,7 @@ bool SgFormat::resolveStream(const QJsonObject& root, int targetH,
     // YouTube: container-matched separate video+audio so VLC's input-slave merge
     // stays in sync. (audioUrl set -> caller pairs them.) Direct-file formats only:
     // when YouTube offers just HLS, this finds no pair and we fall through to the
-    // single muxed HLS variant below, which VLC's native demuxer plays as-is.
+    // HLS master playlist below, which VLC's native demuxer plays as-is.
     //
     // Live is the exception: the matched pair forces the :demux=avformat +
     // :input-slave path, which treats a live DASH input as finite and hits EOF
@@ -230,6 +243,15 @@ bool SgFormat::resolveStream(const QJsonObject& root, int targetH,
     // Everything else (and the rare YouTube fallback): a single muxed stream that
     // plays directly — most sites serve progressive/HLS.
     audioUrl.clear();
+
+    // YouTube VOD with no direct-file pair: its default clients now serve split HLS
+    // tracks only (web is SABR-only, visionos is HLS). Hand VLC the master playlist,
+    // which pairs video+audio itself — before bestMuxedUrl, whose only YouTube
+    // candidate here is usually the 360p itag 18 progressive file.
+    if (isYoutube && !isLive) {
+        videoUrl = hlsMasterUrl(formats);
+        if (!videoUrl.isEmpty()) return true;
+    }
 
     videoUrl = bestMuxedUrl(formats, targetH);
     if (!videoUrl.isEmpty()) return true;   // YouTube/Twitch live: muxed variant carries audio
