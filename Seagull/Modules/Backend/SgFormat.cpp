@@ -30,6 +30,14 @@ namespace {
         QString ac = f["acodec"].toString();
         return !vc.isEmpty() && vc != "none" && !ac.isEmpty() && ac != "none";
     }
+    // A plain progressive file URL (protocol https/http) — not an HLS/DASH manifest.
+    // YouTube now lists HLS playlists (manifest.googlevideo.com, m3u8) as mp4
+    // video-only/audio-only formats too; pairing one of those through the
+    // :demux=avformat + :input-slave merge (or the synthesised HLS master) crashes VLC.
+    bool isDirectHttp(const QJsonObject& f) {
+        const QString proto = f["protocol"].toString().toLower();
+        return proto == "https" || proto == "http";
+    }
     // Higher is better: height, then fps, then total bitrate.
     bool betterVideo(const QJsonObject& a, const QJsonObject& b) {
         int ah = a["height"].toInt(), bh = b["height"].toInt();
@@ -63,7 +71,7 @@ namespace {
                 QJsonObject f = it.toObject();
                 if (!isVideoOnly(f)) continue;
                 if (!vExts.contains(f["ext"].toString().toLower())) continue;
-                if (f["url"].toString().isEmpty()) continue;
+                if (!isDirectHttp(f) || f["url"].toString().isEmpty()) continue;
                 int h = f["height"].toInt();
                 if (h <= 0) continue;
                 if (targetH > 0 && h > targetH) continue;
@@ -81,7 +89,7 @@ namespace {
                 if (!isAudioOnly(f)) continue;
                 QString ext = f["ext"].toString().toLower();
                 if (!aExts.contains(ext)) continue;
-                if (f["url"].toString().isEmpty()) continue;
+                if (!isDirectHttp(f) || f["url"].toString().isEmpty()) continue;
                 QString ac = f["acodec"].toString().toLower();
                 bool okCodec = false;
                 for (const auto& p : aCodecPrefixes) if (ac.startsWith(p)) { okCodec = true; break; }
@@ -207,7 +215,9 @@ bool SgFormat::resolveStream(const QJsonObject& root, int targetH,
     const bool isLive = root["is_live"].toBool();
 
     // YouTube: container-matched separate video+audio so VLC's input-slave merge
-    // stays in sync. Unchanged behaviour. (audioUrl set -> caller pairs them.)
+    // stays in sync. (audioUrl set -> caller pairs them.) Direct-file formats only:
+    // when YouTube offers just HLS, this finds no pair and we fall through to the
+    // single muxed HLS variant below, which VLC's native demuxer plays as-is.
     //
     // Live is the exception: the matched pair forces the :demux=avformat +
     // :input-slave path, which treats a live DASH input as finite and hits EOF
@@ -232,7 +242,9 @@ bool SgFormat::resolveStream(const QJsonObject& root, int targetH,
     // sites like Chaturbate that serve separate video-only + audio-only HLS — the
     // caller builds a local master playlist from the returned pair (the site's own
     // master manifest is single-use, so VLC can't reuse it). See PlaybackEngine.
-    if (chooseGenericAvPair(formats, targetH, videoUrl, audioUrl))
+    // Not for YouTube: its separate HLS tracks are what crashed VLC through that
+    // synthesised master.
+    if (!isYoutube && chooseGenericAvPair(formats, targetH, videoUrl, audioUrl))
         return true;
 
     // Last resort: anything with a playable URL.
