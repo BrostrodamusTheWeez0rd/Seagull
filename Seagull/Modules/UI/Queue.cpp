@@ -23,8 +23,6 @@
 #include <QRegularExpression>
 #include <QRandomGenerator>
 #include <QDebug>
-#include <QScrollArea>
-#include <QTimer>
 #include <algorithm>
 
 namespace {
@@ -686,20 +684,7 @@ void Queue::handlePrefetchedStreamUrlReady(const QUrl& videoUrl, const QUrl& aud
 }
 
 void Queue::onUrlTextChanged(const QString& text) {
-    if (text == "Bdev") {
-        logConsole->setVisible(!logConsole->isVisible());
-        urlInput->clear();
-        // The page lives in MainWindow's QScrollArea and the console sits below the
-        // queue table, so on a normal-height window it opens off-screen. Scroll it into
-        // view once the layout has grown to fit it.
-        if (logConsole->isVisible()) {
-            QTimer::singleShot(0, this, [this]() {
-                for (QWidget* p = parentWidget(); p; p = p->parentWidget())
-                    if (auto* sa = qobject_cast<QScrollArea*>(p)) { sa->ensureWidgetVisible(logConsole); break; }
-            });
-        }
-        return;
-    }
+    if (text == "Bdev") { logConsole->setVisible(!logConsole->isVisible()); urlInput->clear(); return; }
     // Hidden support trigger: "SEALOG" toggles verbose diagnostic logging to a text
     // file the user can send in. It captures every yt-dlp command + output line, the
     // other backend workers, and Qt debug/warnings, and persists across restarts so a
