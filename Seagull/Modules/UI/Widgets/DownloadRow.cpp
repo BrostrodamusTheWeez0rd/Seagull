@@ -103,7 +103,10 @@ DownloadRow::DownloadRow(const SgDownloadHistory::Record& rec, QNetworkAccessMan
     // date-time sits pinned at the info line's right edge. All dim themed text.
     auto* typeLabel = new QLabel(typeText(rec));
     typeLabel->setObjectName("metaStats");
-    typeLabel->setVisible(!typeLabel->text().isEmpty()); // legacy records have no type
+    // Legacy records have no type. Only ever hide() here: the label has no parent yet,
+    // and setVisible(true) on a parentless widget pops it up as its own top-level
+    // window (a blank framed flash per row) until the layout reparents it.
+    if (typeLabel->text().isEmpty()) typeLabel->hide();
     m_meta = new QLabel();
     m_meta->setObjectName("metaStats"); // themed dim text
     m_meta->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); // clip long paths
