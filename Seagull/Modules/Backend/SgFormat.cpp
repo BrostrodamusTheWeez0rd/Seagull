@@ -38,11 +38,24 @@ namespace {
         if (af != bf) return af > bf;
         return a["tbr"].toDouble() > b["tbr"].toDouble();
     }
-    // Higher is better: audio bitrate, then total bitrate.
+    // Higher is better: original language, then audio bitrate, then non-DRC, then
+    // total bitrate. Videos with auto-dubbed tracks list every language at the same
+    // bitrate (140-0 Arabic, 140-1 Bangla, ...), so without the language check a tie
+    // goes to whichever comes first. yt-dlp marks the original track with
+    // language_preference 10 (others -1).
     bool betterAudio(const QJsonObject& a, const QJsonObject& b) {
+        int al = a["language_preference"].toInt(-1), bl = b["language_preference"].toInt(-1);
+        if (al != bl) return al > bl;
         double aa = a["abr"].toDouble(), ba = b["abr"].toDouble();
         if (aa != ba) return aa > ba;
+        // "-drc" is YouTube's dynamic-range-compressed copy; prefer the untouched one.
+        bool ad = a["format_id"].toString().contains("drc"), bd = b["format_id"].toString().contains("drc");
+        if (ad != bd) return !ad;
         return a["tbr"].toDouble() > b["tbr"].toDouble();
+    }
+    // A direct progressive/DASH file URL, not an HLS/DASH manifest.
+    bool isDirectUrl(const QJsonObject& f) {
+        return f["protocol"].toString().startsWith("http");
     }
     // Playable URL for a format: the direct url, else the HLS/DASH manifest url
     // (m3u8/mpd) which VLC can open just as well.
@@ -64,6 +77,11 @@ namespace {
                 if (!isVideoOnly(f)) continue;
                 if (!vExts.contains(f["ext"].toString().toLower())) continue;
                 if (f["url"].toString().isEmpty()) continue;
+                // YouTube now also lists HLS-only video (e.g. itag 616, VP9 in .m3u8)
+                // as ext "mp4" with the highest bitrate. The input-slave merge needs a
+                // direct file on both sides; an HLS video here would route through the
+                // synthesised master with a non-playlist audio URI -> no audio.
+                if (!isDirectUrl(f)) continue;
                 int h = f["height"].toInt();
                 if (h <= 0) continue;
                 if (targetH > 0 && h > targetH) continue;
@@ -82,6 +100,7 @@ namespace {
                 QString ext = f["ext"].toString().toLower();
                 if (!aExts.contains(ext)) continue;
                 if (f["url"].toString().isEmpty()) continue;
+                if (!isDirectUrl(f)) continue;
                 QString ac = f["acodec"].toString().toLower();
                 bool okCodec = false;
                 for (const auto& p : aCodecPrefixes) if (ac.startsWith(p)) { okCodec = true; break; }
