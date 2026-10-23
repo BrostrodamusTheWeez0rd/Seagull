@@ -116,6 +116,10 @@ private:
     // URL of the in-flight -J job, so the result can be cached when it lands.
     QString m_pendingMetaUrl;
 
+    // Bumped by every stream request and cancel(). A streamUrlReady held back for
+    // YouTube's available_at only fires if no newer request has come in since.
+    quint64 m_streamGen = 0;
+
     struct MetaCacheEntry { QJsonObject obj; qint64 atMs; };
     QHash<QString, MetaCacheEntry> m_metaCache; // per-instance fallback when no shared cache is set
 

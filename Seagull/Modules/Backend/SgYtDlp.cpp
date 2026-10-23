@@ -12,6 +12,7 @@
 #include <QLocale>
 #include <QDate>
 #include <QDateTime>
+#include <QTimer>
 
 namespace {
     bool isYoutubeUrl(const QString& url) {
@@ -94,6 +95,7 @@ void SgYtDlp::download(const QString& url) {
 }
 
 void SgYtDlp::fetchMetadataAndStreamUrl(const QString& url, const QString& formatId, bool freshResolve) {
+    ++m_streamGen; // supersedes any stream URL still waiting on available_at
     if (freshResolve) { // the cached stream URL went stale
         if (m_metaCacheShared) m_metaCacheShared->evict(url);
         else                   m_metaCache.remove(url);
@@ -228,6 +230,7 @@ void SgYtDlp::fetchComments(const QString& url, int maxComments) {
 }
 
 void SgYtDlp::cancel() {
+    ++m_streamGen;
     if (m_process->state() == QProcess::Running) {
         m_process->kill();
         m_process->waitForFinished();
@@ -427,6 +430,22 @@ void SgYtDlp::processMetadata(const QJsonObject& obj) {
 
     QString videoUrl, audioUrl;
     if (SgFormat::resolveStream(obj, targetH, videoUrl, audioUrl)) {
+        // YouTube issues some stream URLs (e.g. the TV client's) that only go live a
+        // few seconds later: yt-dlp reports this as available_at, and a request before
+        // then gets HTTP 403. yt-dlp itself sleeps for it ("Sleeping N seconds as
+        // required by the site"), so hold the URL back the same way rather than hand
+        // VLC a link that fails to open. Cache hits are past it and go straight out.
+        double availableAt = 0;
+        for (const auto& it : formats) {
+            const QJsonObject f = it.toObject();
+            const QString u = f["url"].toString();
+            if (!u.isEmpty() && (u == videoUrl || u == audioUrl))
+                availableAt = qMax(availableAt, f["available_at"].toDouble());
+        }
+        const qint64 waitMs = availableAt > 0
+            ? qint64(availableAt * 1000) - QDateTime::currentMSecsSinceEpoch() + 500 // margin for clock skew
+            : 0;
+
         // Twitch stitches ads server-side. yt-dlp resolves with playerType="site"
         // (ad-served); the proxy instead resolves its OWN PlaybackAccessToken with
         // playerType="embed" (clean stream) and serves that, ad-stripping yt-dlp's
@@ -443,7 +462,18 @@ void SgYtDlp::processMetadata(const QJsonObject& obj) {
         }
         logLine(QString("Stream resolved%1: %2")
             .arg(audioUrl.isEmpty() ? QString() : QString(" (+separate audio)"), videoUrl.left(160)));
-        emit streamUrlReady(QUrl(videoUrl), audioUrl.isEmpty() ? QUrl() : QUrl(audioUrl));
+        const QUrl vUrl(videoUrl);
+        const QUrl aUrl = audioUrl.isEmpty() ? QUrl() : QUrl(audioUrl);
+        if (waitMs > 0) {
+            logLine(QString("Waiting %1s for the stream URL to become available (site requirement).")
+                .arg(waitMs / 1000.0, 0, 'f', 1));
+            const quint64 gen = m_streamGen;
+            QTimer::singleShot(waitMs, this, [this, gen, vUrl, aUrl]() {
+                if (gen == m_streamGen) emit streamUrlReady(vUrl, aUrl);
+            });
+        }
+        else
+            emit streamUrlReady(vUrl, aUrl);
     }
     else
         logLine("No playable stream format found.");
